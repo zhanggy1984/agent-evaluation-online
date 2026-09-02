@@ -1,12 +1,13 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.4（待评审）
+> 版本：v3.4.1（待评审）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。
 > v3.2 变更：补充 §12.1 前端页面体系——浏览器层角色（viewer/admin）→ 菜单树 → 页面清单与功能点 → 权限/归属阶段映射，与 §12 三域隔离、D11 研发人工操作口径对齐。
 > v3.3 变更：针对自估 3 个最薄弱点的修正——(a) §11 #3/#4 回归 quality 判分改**独立判定器路径**（不借道 SCORING/score_run、不进 agent_score，规避 offline 闭集合穿透）；(b) §10.1 LLM 判定改 **trace 内动态事实**（llm_call/llm_* error/quality），`interface.llm` 标记退化为看板分类 + 自动补标 + 疑似漏标告警；(c) §10.3/§5.1 复现门槛**按层差异化**（error 用例不依赖会话历史）+ SDK 增 `record_session_state()` 状态快照钩子。
 > v3.4 变更：§13 重构为「agent 接入与统一整改」——新增 §13.0 **通用接入方案**（面向任何 agent、语言中立：接入前契约核对（Step 0 盘点）→ 三步接入（Step 1~3）→ 接入验收 checklist；非 Python/Serverless 走事件协议直发），存量 4 agent 整改清单保留为 §13.1。
+> v3.4.1 变更：吸收 §13.0 独立变更增量评审（无致命）——checklist 拆「放量门禁/维度 3 开放验收」两档（M1）；collector 明确为非首版能力并登记 §14（M2）；Step 0 盘点补接口枚举方式、后台任务型对齐 D18（M3）；§13.1 #1 补 sp `request_id` 规约、§5.1 rewrite 禁用口径单源、db/redis 建议口径、Step 2.4 存量 gq/cs/sp 例外、§10.1 引用修正（N1~N4）。
 
 ---
 
@@ -206,7 +207,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
   1. stdlib `logging.Handler`（gq/cs/cc 走标准库日志）；
   2. **structlog processor / LoggerFactory 集成**（sp 用 `PrintLoggerFactory` 直出 stdout，不经 stdlib logging → Handler 采不到）。**落地约束（写进整改清单）**：sp 须在 `core/logging.py` 的 processors 链（JSONRenderer 之前）插入 SDK 转发 processor，或改 LoggerFactory 为 stdlib.LoggerFactory；且 SDK `init()` 在 sp `setup_logging()`（structlog.configure）**之后**执行防覆盖；把 sp 的 `request_id` 规约为 `trace_id` 注入事件帧。
 - **节点打点**：`record_request()` / `record_llm()` / `record_tool()` / `record_retrieve()` / `record_db()` / `record_redis()` / `record_quality()`。agent 在请求入口/出口、LLM 调用、DB/Redis 访问、兜底分支插桩。
-- **LLM 通道覆盖（修正）**：除统一客户端/网关层的打点外，SDK 提供"第二通道显式打点"清单——gq 的 httpx 直连流式 + `ChatOpenAI.invoke`（rewrite/compress）、sp 的 `conversation_service` 自建 AsyncOpenAI 汇总通道等旁路 LLM 调用都要接入（统一包装或 `@record_llm` 装饰器），否则 usage/错误率存在黑洞。
+- **LLM 通道覆盖（修正）**：除统一客户端/网关层的打点外，SDK 提供"第二通道显式打点"清单——gq 的 httpx 直连流式 + `ChatOpenAI.invoke`（rewrite/compress，其中 rewrite 通道现于 agent 侧注释禁用，接入时按实际状态核对）、sp 的 `conversation_service._summarize_with_llm` 自建 AsyncOpenAI 汇总通道等旁路 LLM 调用都要接入（统一包装或 `@record_llm` 装饰器），否则 usage/错误率存在黑洞。
 - **trace 上下文**：contextvar 承载 trace_id、全局单调 seq（原子递增）、branch（并行分支标注）；日志 handler 自动注入。
 - **可靠性与降级**：内存队列 + 批量（≤500 条 / ≤2s 冲刷）+ 失败退避（≤3 次）→ 本地磁盘兜底（`/tmp/obs_buffer`）→ 恢复补传；**平台/Kafka 故障绝不影响 agent 业务**。
 - **会话状态钩子（可选，会话型 agent）**：`record_session_state(trace_id, state)` 采集影响后续判断的状态快照（检索命中文档 id、用户已确认/否决的约束、累计轮数），供 L3 会话型用例重建会话（§10.3 C2）。
@@ -321,7 +322,7 @@ Agent 概览卡（QPS、P50/P95/P99、失败率、超时率、趋势 1h/24h/7d�
 | L3 | LLM 失败被兜底吸收 / 低置信硬答（请求仍 ok） | `quality.level ∈ {fallback, low_confidence}`（agent 插桩为主 + 关键词兜底） | 不再兜底/低置信 |
 
 - **异常判定 = trace 级聚合**（§4.2）：子节点 error 或 quality 与 request 是否 error 无关，都能进入聚类。request 级 status 只服务维度 2 指标。
-- **自愈不出回流**：子节点 error 但 request ok 且无 quality（如 LLM 退避重试最终成功）→ 不进入回流候选（§9.1 重试自愈口径）。
+- **自愈不出回流**：子节点 error 但 request ok 且无 quality（如 LLM 退避重试最终成功）→ 不进入回流候选（§4.2 重试自愈口径）。
 - **LLM 判定 = trace 内动态事实（v3.3 修正）**：trace 内出现 `llm_call` 子节点 / `llm_*` 错误 / quality 信号即视为 LLM 相关，**不依赖 `interface.llm` 人工标记**；该标记退化为看板分类——平台自动补标（窗口内观测到 llm_call 的接口 → 置 llm=true 待确认）+ **疑似漏标告警**（llm=false 却观测到 llm_call，§12.1 Agent 管理）。
 - 回流前置：agent ∈ 白名单（gq/cs/sp，硬排除 cc）+ 该 trace 内 LLM 事实成立；login 等非 LLM 接口出指标不出回流。
 - 范围：**gq / cs / sp**（D18，cc 不纳入维度 3）。
@@ -455,11 +456,12 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 |---|---|---|
 | 1 | 运行形态：常驻服务 / Serverless / 批任务 | 内嵌 SDK vs 事件协议直发（见「非 Python 路径」） |
 | 2 | 语言与 HTTP 框架、日志方式（stdlib / structlog / print / JSON lines） | 日志接入三选一（Step 1.2） |
-| 3 | 请求入口形态：同步 / SSE 流式 / 后台任务（无 HTTP 生命周期） | `request` 根节点打法（SSE 在 handler 出口聚合打一条；后台任务需人工声明任务边界，§4.2） |
+| 3 | 请求入口形态：同步 / SSE 流式 / 后台任务（无 HTTP 生命周期覆盖） | `request` 根节点打法（SSE 在 handler 出口聚合打一条；后台任务型首版仅 request 级观测，任务根模型 P2 评估，对齐 D18） |
 | 4 | LLM 通道清单：统一网关/客户端？有无直连/旁路（自行构造 HTTP、stream、重写/压缩、汇总）？ | `llm_call` 覆盖点（每逻辑调用一条，§4.2） |
 | 5 | 会话状态驻留位置（server / 客户端） | 是否接 `record_session_state()`（§5.1，仅会话型） |
 | 6 | 兜底 / 低置信分支位置 | `record_quality()` 插桩点（§4.4） |
 | 7 | 数据属性：接口是否涉 PII、正文是否需要检索 | 正文开关与掩码配置（§4.5/§4.6） |
+| 8 | 接口枚举方式：OpenAPI / 路由注册表 / 需人工维护字典 | Step 2.2 字典核对方式（仅可枚举 agent 走自动发现；否则首次上报经 §6.1 自动注册 + 人工补标） |
 
 盘点表是接入验收（Step 3 checklist）的对照基线。
 
@@ -475,8 +477,8 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 3. **trace 上下文**：入口生成/透传 `trace_id`；请求内全局单调 `seq` 原子递增、并行 `branch` 标注（§4.1）；日志行自动携带。
 4. **必需打点覆盖**（新老 agent 同标准）：
    - `request` 根事件：请求入口/出口（归一化 interface，动态段→`{id}`；`status` ok/error/timeout 互斥；`duration_ms`）；
-   - `llm_call`：**每逻辑调用一条**（内部退避重试不拆分，仅标最终失败；重试自愈不回流 §9.1）；
-   - DB/Redis 访问打 `db` / `redis`；工具/检索视业务打 `tool_call` / `retrieve`；
+   - `llm_call`：**每逻辑调用一条**（内部退避重试不拆分，仅标最终失败；重试自愈不回流，§4.2 口径）；
+   - 存在 DB/Redis 访问的 agent 打 `db` / `redis` 子节点（§4.2 建议口径）；工具/检索视业务打 `tool_call` / `retrieve`；
    - 兜底/低置信分支打 `record_quality(level∈{fallback, low_confidence}, reason)`；
    - 会话型按 Step 0 结论接 `record_session_state()`。
 5. **可靠性与降级默认值**：内存队列 + 批量（≤500 条/≤2s）+ 退避 + 本地磁盘兜底 + 恢复补传；**平台/Kafka 故障绝不影响 agent 业务**（§5.1）；键级掩码 SDK 侧默认开（§4.5）。
@@ -484,17 +486,19 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 **Step 2 平台注册与配置**——平台侧登记 agent、开通信道（admin，§12.1 Agent 管理）：
 
 1. 建 Kafka topic `obs.agent.<name>`（p=1），授 agent 上报凭证（§12 agent 域）；
-2. 录入 agent；接口字典自动发现后核对（疑似漏标告警 → llm 标记置"待确认"；该标记只做看板分类，不卡回流 §10.1）；
+2. 录入 agent；接口字典核对：可枚举 agent（FastAPI/OpenAPI）自动发现后核对；不可枚举 agent 首次上报经 §6.1 自动注册 + 人工补标（疑似漏标告警 → llm 标记置"待确认"；该标记只做看板分类，不卡回流 §10.1）；
 3. 按 Step 0 数据属性结论配置：正文开关、掩码、超时阈值、兜底关键词库（dict_config）；
-4. 回流白名单登记：维度 3 **默认不开放**，平台评估（含 LLM 通道覆盖与兜底插桩到位性）后加入；未加入的 agent 只出维度 1/2。
+4. 回流白名单登记：对**新接入 agent**，维度 3 **默认不开放**，平台评估（含 LLM 通道覆盖与兜底插桩到位性，见下 checklist #4/#5/#8）后加入；未加入的只出维度 1/2。存量 gq/cs/sp **例外**：首版即开放维度 3（对齐 D18/§3），不走此默认关闭。
 
-**Step 3 灰度与验收**——先 1~2 个代表性接口（覆盖同步/SSE 各一，含兜底分支）跑通观察 1~2 天，再过下列 checklist；无未决项才允许全量放量：
+**Step 3 灰度与验收（维度 1/2 基础验收）**——先 1~2 个代表性接口（覆盖同步/SSE 各一，含兜底分支）跑通观察 1~2 天，过【放量门禁】（下 checklist #1/#2/#3/#6/#7）；无未决项才允许全量放量：
 
 1. **链路完整性**：线上抽检 N 条请求，trace 详情能按 `(ts, parent, seq)` 还原全树、日志行与节点穿插、异常节点红显（维度 1 达标）；
-2. **指标正确性**：看板 request 级 P50/P95/P99/失败率/超时率 与 agent 自监控对账（维度 2 达标）；
-3. **回流判定正确**：制造一次透传 LLM 错误与一次兜底，确认分别落 L1 / L3、聚类去重符合预期、同错不重复生成（维度 3 达标，§10.2）。
+2. **指标正确性**：看板 request 级 P50/P95/P99/失败率/超时率 + LLM 级双指标 与 agent 自监控对账（维度 2 达标）；
+3. **回流判定正确**：制造一次透传 LLM 错误与一次兜底，确认分别落 L1 / L3、聚类去重符合预期、同错不重复生成（维度 3 达标，§10.2）——**仅当该 agent 已开放维度 3（Step 2.4 白名单）时执行**；未开放则随维度 3 开通后再验。
 
 **接入验收 checklist（新老 agent 通用）**：
+
+> 分两档：#1/#2/#3/#6/#7 = **放量门禁**（维度 1/2 达标，任何 agent 放量前必过；#3 llm_call 覆盖同时支撑维度 2 的 LLM 级双指标）；#4/#5/#8 = **维度 3 开放验收**，仅对申请/已开放维度 3 白名单的 agent 生效（作为 Step 2.4 加入白名单的前提），不入放量门禁。
 
 | # | 检查项 | 通过标准 | 对应 |
 |---|---|---|---|
@@ -507,16 +511,14 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 | 7 | 可靠性降级 | 平台 Kafka 停 5 分钟：agent 业务无感、恢复后补传不丢（抽检 ES `_id` 幂等） | §5.1 |
 | 8 | 回流范围 | 白名单/接口范围与配置一致；同错不重复生成（去重键验证） | §10.2 |
 
-**非 Python / Serverless / 无法内嵌 SDK 的接入**：以 §4.1 schema 为标准实现最小采集边带——入口中间件产 `request`，拦截日志把日志行与业务事件合并为统一 JSON 事件流，再二选一送出：
-- **就近 Kafka**：agent 自身或独立小进程产 Kafka 消息（topic/结构/幂等要求与 SDK 相同）；
-- **collector/边车代理**：事件先发本机旁路 collector（HTTP 或文件），由平台侧 collector 代转发（collector 作为可选组件，P2 后排期；第一版非 Python 以直发为主）。
+**非 Python / Serverless / 无法内嵌 SDK 的接入**：以 §4.1 schema 为标准实现最小采集边带——入口中间件产 `request`，拦截日志把日志行与业务事件合并为统一 JSON 事件流，送出方式：**就近 Kafka**（agent 自身或独立小进程产 Kafka 消息；topic/结构/幂等要求与 SDK 相同）。**这是首版唯一承诺路径**。平台侧 **collector/边车代收组件**（可选，非首版能力）未来由平台实现统一代收（登记 §14/§15，P2 后排期）；接入标准不依赖它，agent 侧按直发实现即可，未来接入 collector 无需改协议。
 LLM 打点若无封装层可钩，用最外层包装（工具函数/装饰器）或出口统一补记 usage 汇总。**核心约束不变：事件同构、平台强校验**。
 
 ### 13.1 4 个 agent 存量整改清单（按 §13.0 逐项清零）
 
 | # | 整改项（对齐 §13.0） | 涉及 |
 |---|---|---|
-| 1 | 引入 obs-sdk `init()`，日志接入三选一：gq/cs/cc 走 stdlib Handler；**sp 走 structlog processor**（sp `core/logging.py` processors 链插 SDK 转发器或改 LoggerFactory；SDK init 在 sp setup_logging 后执行防覆盖） | 4 agent |
+| 1 | 引入 obs-sdk `init()`，日志接入三选一：gq/cs/cc 走 stdlib Handler；**sp 走 structlog processor**（sp `core/logging.py` processors 链插 SDK 转发器或改 LoggerFactory；SDK init 在 sp setup_logging 后执行防覆盖；sp 自有 `request_id` 规约为 `trace_id` 注入事件帧，§5.1） | 4 agent |
 | 2 | 业务请求入口/出口打 `request` 事件（归一化 interface、status、duration_ms、input/output 脱敏） | 4 agent |
 | 3 | LLM 调用打 `llm_call`（error_type、model/usage）：统一网关层 + **第二通道显式打点**（gq httpx 直连流式 / `ChatOpenAI.invoke`（rewrite/compress，rewrite 现注释禁用，接入时按实际核对）/ sp `conversation_service._summarize_with_llm` 自建 AsyncOpenAI 汇总通道），旁路通道逐一接入 | gq/cs/sp |
 | 4 | DB/Redis 访问打 `db` / `redis` 子节点 | 4 agent |
@@ -550,6 +552,8 @@ agent-evaluation-online/
 ├── docker-compose.yml      # + Kafka / ES
 └── docs/                   # 观测契约规范 + agent 接入文档
 ```
+
+> 未来可选组件（P2 后排期，非首版）：`collector/` 非 Python/Serverless agent 事件代收组件（§13.0 非 Python 路径）。
 
 ---
 
@@ -609,5 +613,6 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | v3.2 | 补充 §12.1 前端页面体系：浏览器层角色（viewer/admin，含回流人工操作归 viewer）→ 菜单树 → 页面清单与功能点 → 权限/归属阶段映射 |
 | v3.3 | 针对自估 3 个最薄弱点的修正：§11 #3/#4 回归 quality 判分改**独立判定器路径**（不借道 SCORING/score_run、不进 agent_score，规避 offline 闭集合穿透）；§10.1 LLM 判定改 **trace 内动态事实**（llm_call/llm_* error/quality），`interface.llm` 标记退化看板分类 + 自动补标 + 疑似漏标告警；§10.3/§5.1 复现门槛按层差异化（error 用例不依赖会话历史）+ SDK 增 `record_session_state()` 状态快照钩子 |
 | v3.4 | §13 重构为「agent 接入与统一整改」：新增 **§13.0 通用接入方案**（语言/框架中立——接入前契约核对 Step 0 盘点 → 三步接入 Step 1~3（观测通道产出事件 / 平台注册配置 / 灰度验收）→ 接入验收 checklist；日志接入三选一；非 Python/Serverless 事件协议直发）；存量 4 agent 整改清单保留为 §13.1 |
+| v3.4.1 | 吸收 §13.0 独立变更增量评审（无致命）：checklist 拆放量门禁 / 维度 3 开放验收两档（维度 3 验收作为 Step 2.4 白名单前提）；collector 明确为非首版能力并登记 §14（首版非 Python 仅承诺就近 Kafka 直发）；Step 0 盘点补接口枚举方式（可枚举/不可枚举 agent 字典核对路径）；后台任务型对齐 D18（任务根模型 P2）；§13.1 #1 补回 sp `request_id` 规约 `trace_id`；§5.1 与 §13.1 rewrite 禁用口径统一单源；db/redis 改建议口径（§4.2）；Step 2.4 加存量 gq/cs/sp 例外；§10.1 自愈口径引用改 §4.2 |
 
 > 待办（Task #4）：online 方案定稿后，单独推进 offline 配套改造方案（§11 依赖清单为输入），独立方案文档 + 独立评审。
