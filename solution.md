@@ -1,6 +1,6 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.4.3（待评审）
+> 版本：v3.4.4（待评审）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。
@@ -10,6 +10,7 @@
 > v3.4.1 变更：吸收 §13.0 独立变更增量评审（无致命）——checklist 拆「放量门禁/维度 3 开放验收」两档（M1）；collector 明确为非首版能力并登记 §14（M2）；Step 0 盘点补接口枚举方式、后台任务型对齐 D18（M3）；§13.1 #1 补 sp `request_id` 规约、§5.1 rewrite 禁用口径单源、db/redis 建议口径、Step 2.4 存量 gq/cs/sp 例外、§10.1 引用修正（N1~N4）。
 > v3.4.2 变更：吸收六方向独立评审（逻辑/数据流、安全、性能、异常容错、易用性、offline 对接；无致命）——§4.3 回流前置与 §10.1 L2 门控改 **trace 内 LLM 动态事实**（不依赖 `interface.llm` 人工标记，消除补标滞后静默过滤）；自愈示例修正 + **静默降级盲区**缓解（§10.1）；cluster 生命周期重写（首现即开→静默归档，§10.2）+ L3 现场留痕快照（§7.2）；ts 水位只告警不丢弃 + 维度 3 分析源改同批消费事件（§6.1）、MySQL 侧幂等（§6.2）；error_cluster/error_case_link 幂等与快照（§7.2）；offline 配套补强 block 并入 §11（单错级回查、verifier 状态机、互斥槽、no_fallback 判分、豁免集）；安全补强 block 并入 §12（JWT refresh/吊销、Kafka SASL/TLS+ACL、最小 API 面）；§10.4 人工确认审计可 reopen、§10.5 单错级回查；§16 风险表登记 8 项。易用性增强（跨 agent 首页汇总、漏标归属 viewer、ES 分 index、预聚合、offline 用例保留）列入 §17 待确认。
 > v3.4.3 变更：吸收第二轮六方向全量复评去重后的**无争议修**（方向性决策点另列待用户逐项裁定）——ES `_id` 幂等键补 agent 维度（D16/§6.1/§7.1，防跨 agent 同 trace_id 互覆，容错 N-1）；§4.2 删"只要接口为 LLM 相关即进入聚类候选"残留旧口径、统一 trace 内动态事实 + 缓存命中不回流出（逻辑 M-3）；quality 落库形态明确为 schema 事件字段、不新增事件不参与计数（逻辑 N-5）；verify_status 枚举补 superseded（逻辑 N-7）；conversion_record 补 actor_user_id（安全 N5）；trace 详情日志行分页懒加载 + 关键字检索补 error_type/error_msg 与时间窗（性能 M-4/易用 M4）；§16 修正"文本与指标 index 分离"为实际机制（性能 M-3）、回查不因 cluster 归档跳过在途 case（逻辑 M1/容错 N6）、补 needs_review 无主堆积风险行（易用 M1，修复 §10.4 落空引用）；§5.1 本地兜底默认挂持久卷（容错 N2）；上报鉴权对齐 Kafka-only——§12.1 agent 行改 Kafka SASL/ACL、§14 目录去 HTTP ingest 残留、agent_credential 语义改 Kafka 凭证（安全 M7/M8）。
+> v3.4.4 变更：**7 个方向性决策点逐项裁定并修入**（编号 R1~R7，与 §2 既有 D1~D18 关键决策表独立）——R1 跨批 trace 累积态（§6.1：判定"是否缺完整 trace"基于消费侧跨 SSE/多批/子节点分批的累积态，非单事件自判断；§10.1 判定源同步）；R2 Agent 数据隔离**维持统一 viewer**（延续 §12.1"无 agent 级数据隔离"既有结论）；R3 上报通道访问控制**首版即上**（§17 #9 默认改 Kafka SASL/TLS + topic 级 ACL，§12.1/§7.2 凭证映射 producer 身份）；R4 人工"标记已修复"拆 **claim 认领 → 置 fixed 两步**（§7.2 error_cluster 增 claim 中间态；§10.4/§12.1/D11：置 fixed 需回归证据通过或 admin 复核，viewer 不单方 closed）；R5 回归回查契约**本轮落定边界**（§10.5/§10.3/§11：case 建时记触发版本、按版本锚定回归 run 判单错不取最新 run；回归 run 与 manual 共存、不占互斥槽、不参与 max_active_runs；quality 型 L3 判分回写 run_results.pass_fail 供 online 单错级判定）；R6 L1 error 用例补**兜底断言**（§10.3/§11 #3/#4：判"接口无技术错误 + 未落入兜底/低置信"才生成 error 用例，且 error 用例技术跑通后 offline 补判 no_fallback，防 catch 硬错转兜底话术返回 200 假绿过门禁）；R7 指标 7d 小时级 rollup **提前到 v1**（§7.1/§9.2 双路：1h/24h 实时 agg + 7d 查 `obs-metrics-rollup`；§17 #8、§16 容量行同步）。
 
 ---
 
@@ -41,7 +42,7 @@
 | D8 | quality 信号 | agent 在兜底/低置信分支显式上报；平台关键词兜底为辅 |
 | D9 | 回流输入范围 | 文本 / 对话（input_turns）双通道可回流；**文件型输入第一版不回流**；L1/L2 error 用例复现**不依赖会话历史**（C1）；会话型 quality 用例采集**状态相关快照**（session_state 钩子，C2）辅助复现 |
 | D10 | 去重 | 键 = agent + interface + error_type 分类 + input_hash；时间窗口聚类合并；**不带 agent 版本**；per-trace 归并、分层优先 |
-| D11 | 人工确认 | **轻量版**：自动生成 + 去重，回流看板可人工 invalidate/ignore/标记已修复；不引入审批工作流 |
+| D11 | 人工确认 | **轻量版**：自动生成 + 去重，回流看板可人工 invalidate/ignore/**claim 认领**（决策 R4：置 fixed 需回归证据通过或 admin 复核，viewer 不单方标记已修复）；不引入审批工作流 |
 | D12 | 鉴权 | **三域隔离**：平台用户（viewer/admin）、agent 上报凭证、online↔offline 平台间服务凭证 |
 | D13 | 脱敏 | 键级掩码复用 offline `mask_dict` 规则集提升为标准，**SDK 侧完成，平台不还原**；**内容型 PII 依赖采集策略（正文默认关 + 最小化）控制，不以键级掩码为底线** |
 | D14 | 正文存储 | 回复正文保存进 ES（支持 traceId/关键字检索）；**默认关，按接口逐 agent 评估数据属性后开**；带开关/截断/权限/保留期 |
@@ -195,7 +196,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 |---|---|
 | 开关 | **默认关**；需要正文的接口（优先 llm=true 对话类）**逐个评估数据属性后开**，落库前做内容型检测/最小化 |
 | 截断 | 单条 ≤ 8K 字符 |
-| 权限 | 查看正文需该 agent viewer 及以上角色（§12） |
+| 权限 | 查看正文需 viewer 及以上 + **该 agent 正文开关已开**（统一 viewer、无 per-agent 授权域，决策 R2；§12） |
 | 保留期 | 随事件 ILM（30 天），不做独立延长 |
 
 ---
@@ -231,8 +232,9 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 1. 订阅 `obs.agent.*`，批量拉取；
 2. **校验**：schema 强校验、必填字段、`ts` 明显偏离设定漂移窗（agent 时钟可能不精确）**只告警不丢弃**——丢弃会破坏 §5.1「恢复补传不丢」；乱序由 `_id` 幂等 + `(seq,ts)` 树序校验吸收；interface 与字典匹配（不匹配 → 自动注册 + 待人工补 llm 标记）、agent 标识与 topic 一致；
 3. **脱敏复核**（§4.5）；
-4. **分派入库 ES**（event_kind 分流；`_id = sha256(agent|trace_id|seq)`，seq 全局唯一 → 重复投递覆盖）；**聚类/回流分析源 = 同批消费后事件（§10.2），不依赖 ES 回读**——ES 写失败丢弃不阻断维度 3 判定；
-5. offset 管理；失败重试队列，超阈值丢弃并计数。
+4. **trace 级累积态（决策 R1）**：partition=1 相对有序 → 消费侧维护 per-trace 累积缓冲（TTL=完成窗口）：request 根事件到达 → 标记该 trace 可判定；子节点 error/quality 汇入该 trace 状态；**trace 完成才做 L2/L3 判定 + per-trace 归并（§10.2）**——SSE/多批/子节点分批到达下判定不缺完整 trace；缓冲可重建（重启/重平衡后从未入库事件按 trace_id 重放），**不依赖 ES 回读**；
+5. **分派入库 ES**（event_kind 分流；`_id = sha256(agent|trace_id|seq)`，seq 全局唯一 → 重复投递覆盖）；ES 写失败丢弃不阻断维度 3 判定（分析源在 step4 累积态内）；
+6. offset 管理；失败重试队列，超阈值丢弃并计数。
 
 ### 6.2 幂等与顺序
 
@@ -255,7 +257,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 | 幂等 | `_id = sha256(agent\|trace_id\|seq)`（seq 全局唯一；agent 入键防跨 agent 同 trace_id 互覆，评审修正） |
 | 映射 | trace_id/agent/interface/node(keyword)、ts(date)、duration_ms(long)、status、error_type、quality、input/output/log_message(text 中文分词)、usage(object)、session_ctx(text 截断) |
 | 容量 | 内部环境 4 agent 峰值 ≤500 事件/s + 日志同量级，周滚动 index 远低于单节点压力 |
-| 指标 | 直接 ES agg：date_histogram × percentiles(p50/95/99) × filter(error/timeout)，近实时（<5s），不落分钟预聚合 |
+| 指标 | **双路（决策 R7）**：1h/24h 实时 agg（date_histogram × percentiles(p50/95/99) × filter(error/timeout)，近实时 <5s）；**7d 查小时级 rollup**（`obs-metrics-rollup`，每小时 job 预聚合 agent×interface×bucket×percentiles）——7d 深聚合超单节点实时能力，P1 看板页需 rollup 前置（见 §17 #8） |
 
 ### 7.2 MySQL（平台元数据，库 `obs`）
 
@@ -264,8 +266,8 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 | `user` / `role` / 会话 | 平台账号（独立体系，§12） |
 | `agent` | 自发现注册（name、base_url、enable、**路由来源标记**） |
 | `interface` | 接口字典缓存（agent_id、归一化 interface、**llm 标记（配置驱动+人工补标）**） |
-| `error_cluster` | 错误聚类（error_type、input_hash、首次/最近 ts、次数、**代表事件最小快照**、状态 open/fixed/inactive/needs_review） |
-| `error_case_link` | 错误 ↔ offline 回归用例关联（case_id、case_type、verify_status、source trace_id、**建 case 幂等键**） |
+| `error_cluster` | 错误聚类（error_type、input_hash、首次/最近 ts、次数、**代表事件最小快照**、状态 open/claim/fixed/inactive/needs_review） |
+| `error_case_link` | 错误 ↔ offline 回归用例关联（case_id、case_type、verify_status、source trace_id、**建 case 时记录的触发 agent 版本**（version 锚定回查，决策 R5）、**建 case 幂等键**） |
 | `conversion_record` | 回流审计（trace→case、action、detail、ts、actor_user_id——系统自动回流记 system，人工确认/回退记操作人） |
 | `agent_credential` | agent 上报凭证（Kafka SASL/ACL 映射，加密存储 + 轮换，§12） |
 | `dict_config` | 平台配置（兜底话术库、超时阈值、正文开关白名单、会话上下文轮数、聚类窗口等） |
@@ -310,7 +312,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 
 ### 9.2 查询链路
 
-前端选 agent + 接口 + 时间窗 → `GET /api/v1/metrics` → ES agg（date_histogram + percentiles + filter）。近实时，不落预聚合。
+前端选 agent + 接口 + 时间窗 → `GET /api/v1/metrics` → **时间窗路由（决策 R7）**：1h/24h → ES 实时 agg（date_histogram + percentiles + filter）；7d → 查小时级 rollup index（obs-metrics-rollup）。近实时。
 
 ### 9.3 看板视图
 
@@ -328,7 +330,7 @@ Agent 概览卡（QPS、P50/P95/P99、失败率、超时率、趋势 1h/24h/7d�
 | L2 | LLM 相关接口的程序错误（接口直接 error） | trace 内 request / 子节点 `error_type ∈ {llm_interface_business, external_non_llm, db_error, redis_error}` 且 **该 trace 内 LLM 动态事实成立**（不依赖 `interface.llm` 标记） | 接口不再报该错误 |
 | L3 | LLM 失败被兜底吸收 / 低置信硬答（请求仍 ok） | `quality.level ∈ {fallback, low_confidence}`（agent 插桩为主 + 关键词兜底） | 不再兜底/低置信 |
 
-- **异常判定 = trace 级聚合**（§4.2）：子节点 error 或 quality 与 request 是否 error 无关，都能进入聚类。request 级 status 只服务维度 2 指标。
+- **异常判定 = trace 级聚合**（§4.2）：子节点 error 或 quality 与 request 是否 error 无关，都能进入聚类。**判定源 = 消费侧 trace 累积态（trace 完成判定，§6.1 step4，决策 R1）**，不依赖 ES 回读。request 级 status 只服务维度 2 指标。
 - **自愈不出回流（修正举例）**：llm_call 内部退避重试最终成功 → 仅 `status=ok`、无 error 子节点（§4.2），自然不进候选。真正需盯的是**静默降级盲区**：LLM 最终失败被业务吞掉（请求仍 ok）且未插桩 quality——不进回流、也不进 quality 出口（§9.3 只数 quality 事件）。缓解：agent 兜底分支必打 quality（§13.1 #5）+ 该场景 P2 以 agent 自监控/看板告警收敛（§16 登记）。
 - **LLM 判定 = trace 内动态事实（v3.3 修正）**：trace 内出现 `llm_call` 子节点 / `llm_*` 错误 / quality 信号即视为 LLM 相关，**不依赖 `interface.llm` 人工标记**；该标记退化为看板分类——平台自动补标（窗口内观测到 llm_call 的接口 → 置 llm=true 待确认）+ **疑似漏标告警**（llm=false 却观测到 llm_call，§12.1 Agent 管理）。
 - 回流前置：agent ∈ 白名单（gq/cs/sp，硬排除 cc）+ 该 trace 内 LLM 事实成立；login 等非 LLM 接口出指标不出回流。
@@ -341,7 +343,7 @@ Agent 概览卡（QPS、P50/P95/P99、失败率、超时率、趋势 1h/24h/7d�
 - **L3 去重键用伪分类**：L3 是 quality 信号非 error_type，键内 `error_type 分类` 映射为 `quality/fallback`、`quality/low_confidence`，不与 error 类空串混键、两类互不合并。
 - **per-trace 归并**：同一 trace 多异常（如 LLM error + 兜底）按**分层优先 L1/L2 > L3** 归并为一次候选；**已知取舍（明示）**：同 trace 含 L1/L2 时该 trace 的 L3 现场被吞并、不单独生成回归用例（回归重点是其硬错误）；纯 L3 现场（无 error）独立生成。
 - **L3 现场留痕（评审补）**：被 L1/L2 归并吞掉的 L3 现场（兜底/低置信）只存 ES、随 ILM 30 天过期后不可补回流；若需在 L1/L2 修复周期 >30 天时补回 L3，在 `conversion_record` 留 L3 观察标记（P2 可选）。
-- **生命周期（评审修正，消除首现/静默语义死结）**：同键**首现即开** `error_cluster` 并自动生成一次回归用例（§10.4 自动生成默认开）→ `error_case_link` 处于待复验时，窗口（默认 7 天）内同键新现**只计数、刷新最近 ts、不重复生成**；同键持续静默超窗口 → cluster 转 inactive（归档，保留最近 ts/计数供查）；被 ignore/标记已修复 → 旧 link superseded，同键再现允许重新开 cluster 再生成。不再采用"窗口内无新现→转 open"表述（与首现即生成冲突）。
+- **生命周期（评审修正，消除首现/静默语义死结）**：同键**首现即开** `error_cluster` 并自动生成一次回归用例（§10.4 自动生成默认开）→ `error_case_link` 处于待复验时，窗口（默认 7 天）内同键新现**只计数、刷新最近 ts、不重复生成**；同键持续静默超窗口 → cluster 转 inactive（归档，保留最近 ts/计数供查）；被 ignore，或 claim 后经回归证据/admin 复核置 fixed（§10.4 决策 R4）→ 旧 link superseded，同键再现允许重新开 cluster 再生成。不再采用"窗口内无新现→转 open"表述（与首现即生成冲突）。
 - **不带版本**：同错误跨版本持续存在直到修复。
 
 ### 10.3 回归用例生成（D9）
@@ -350,7 +352,7 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 
 | 层 | case_type | input | 判定方式 |
 |---|---|---|---|
-| L1 | `regression_error` | 出错请求 input（脱敏，含会话上下文摘要） | offline 判"接口无技术错误" |
+| L1 | `regression_error` | 出错请求 input（脱敏，含会话上下文摘要） | offline 判"接口无技术错误" **+ 未落入兜底/低置信**（决策 R6：防研发 catch 硬错转兜底话术返回 200 假绿过门禁；error 用例技术跑通后亦过 §11 #3/#4 的 `no_fallback` 兜底断言，落兜底→fail） |
 | L2 | `regression_error` | 同上 | 同上 |
 | L3 | `regression_quality` | 兜底/低置信现场 input | offline **无 golden 语义判分通道**判"不再兜底/低置信"（§11） |
 
@@ -361,21 +363,21 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 
 ### 10.4 人工确认（轻量版，D11）
 
-每条 `error_cluster` 可 ignore（inactive）、标记已修复（**人工确认，须填修复版本/说明并留 conversion_record 审计；可 reopen**）、查看已生成用例与复验状态。自动生成默认开启。`needs_review` 聚类由 cluster 属主 viewer 认领处置、超时升级（§16 易用性登记），避免无主堆积。
+每条 `error_cluster` 可 ignore（inactive）、**claim（人工标记已修复，仅进入"待复核"中间态，须填修复版本/说明 + conversion_record 审计）**、查看已生成用例与复验状态。**置 fixed 需回归证据（该 case 单错级 passed，§10.5）或 admin 复核**——viewer 不能单方面 closed（决策 R4，防绕过 pending 回归门禁）。可 reopen。自动生成默认开启。`needs_review` 聚类由 cluster 属主 viewer 认领处置、超时升级（§16 易用性登记），避免无主堆积。
 
 ### 10.5 offline 复验闭环
 
 ```
 研发修复 → offline 触发该 agent regression run（绑定待发布版本）
-  → online 回查（**单错级，评审修正**）：以 error_case_link.case_id 对最新回归 run 的 run_results.pass_fail **逐条判单错**——该 case pass 即该错 verify_status=passed → error_cluster 标 fixed（闭环）；与 run 级绿解耦（run 内他错仍红不阻塞本错 closed）
+  → online 回查（**单错级，评审修正 + 决策 R5**）：以 error_case_link.case_id 对**该 link 记录的触发版本所对应的**回归 run 的 run_results.pass_fail **逐条判单错**——error_case_link 建 case 时记录触发时 agent 版本，回查按版本取对应 run（**不取"最新 run"**，防 v1.4/v1.5 先后触发拿错 run）；该 case pass 即该错 verify_status=passed → error_cluster 标 fixed（闭环）；与 run 级绿解耦（run 内他错仍红不阻塞本错 closed）
 回归未通过（该 case 仍 error / 仍兜底）→ verify_status=failed，错误保持 open
   → 聚类窗口内同类新错误并入该 cluster，不再生成新用例
 回查连续失败（offline API 不可用）→ verify_status 保持 pending + 退避重试，超时在聚类详情提示"回查失败待人工"（§16）
 ```
 
-- `verify_status ∈ {pending, passed, failed, invalidated, superseded}`（superseded：旧 link 被人工 ignore/标记已修复取代，见 §10.2）。
+- `verify_status ∈ {pending, passed, failed, invalidated, superseded}`（superseded：旧 link 被 ignore 或 claim→fixed 流程取代，见 §10.2）。
 - 修复后又复发 → 新 cluster 重新生成。
-- **闭环归属（边界）**：回归 run 的触发、版本绑定、与发布流程的门禁集成在 **offline 侧**（§11 #7，offline 改造方案范围）；online 负责生成用例集、回查 verify_status、展示回流看板。online 侧 P2 回流看板提供"该 agent 当前 open 错误数 + 关联回归用例/复验状态"总览。
+- **闭环归属（边界）**：回归 run 的触发、版本绑定、与发布流程的门禁集成在 **offline 侧**（§11 #7，offline 改造方案范围）；online 负责生成用例集、回查 verify_status、展示回流看板。online 侧 P2 回流看板提供"该 agent 当前 open+claim 错误数 + 关联回归用例/复验状态"总览（claim 计入待闭环口径，与聚类列表一致）。
 
 ---
 
@@ -387,8 +389,8 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 |---|---|---|
 | 1 | `EvalRun.trigger_type` 加 `"regression"` | MySQL ENUM + Alembic；`RunCreate.trigger_type` Literal 同步扩；回归 run 与 manual/held_out 平行 |
 | 2 | `TestCase.case_type` 加 `regression_error / regression_quality` | 标识来源与语义；online 生成的用例打标，名称/元数据带 `source` 溯源（可回溯 online trace） |
-| 3 | 回归评测语义 + 状态机 | **executor**：regression_error 判技术错误（报错/超时→error，跑通→pass），不进 LLM-judge/score_case；**orchestrator 按用例构成分叉（v3.3 采用独立 verifier，不借道 SCORING）**：① 仅含 regression_error 的 run → 全技术通过即终态绿 / 任一 error→红，**不落 SCORING、不产 agent_score**（现有"全 pass→SCORING→score_run"需按 trigger_type 分支）；② 含 regression_quality 的 run → error 用例由 executor 技术判定后，orchestrator **直接触发独立回归 verifier**（#4）完成 quality 判分，不依赖 scoring 态；run 绿 = error 用例全技术通过 ∧ quality 用例全达标 |
-| 4 | **L3 无 golden 语义判分通道（独立判定器，v3.3 首选）** | offline 为回归 quality 判分开**独立 `regression_verifier`**（首选路径，避开常规评测链路）：对 quality 用例直接调 judge client 做无 golden 判分（judge `build_messages` 在无 golden + 无 reference 时可用、不空标签误导），结果单落（eval_result 独立字段/表），**不进 agent_score / score_per_dimension / 常规门禁聚合**——offline 常规评测零污染，**规避 SEMANTIC_DIMENSIONS / metrics 插件注册 / metric_def / dimension.code 等闭集合穿透**。仍需：新增 `no_fallback` rubric（judge 判"是否仍兜底"）+ **必配达标线**（无 target 时门禁缺省全 pass=假绿；按 agent 配 baseline_target 或独立规则）。**备选路径**（不用 verifier 时）：走现有维度体系，则须穿透上述闭集合。横切约束：现有维度判分依赖 golden 基准，无 golden 时 judge 无基准乱判（并非默认 na）→ **regression_error 在任何判分路径下都须按 case_type 跳过 judge 任务** |
+| 3 | 回归评测语义 + 状态机 | **executor**：regression_error 判技术错误（报错/超时→error，跑通→pass），不进 LLM-judge/score_case；**R6 兜底断言**：error 用例技术跑通后由独立回归 verifier（#4）补判 `no_fallback`（回复未落入兜底/低置信），落入兜底/低置信 → 该 case 判 fail——防研发 catch 硬错转兜底话术返回 200 假绿过门禁；**orchestrator 按用例构成分叉（v3.3 采用独立 verifier，不借道 SCORING）**：① 仅含 regression_error 的 run → 全技术通过 ∧ 全未落兜底（R6）即终态绿 / 任一 error 或落兜底→红，**不落 SCORING、不产 agent_score**（现有"全 pass→SCORING→score_run"需按 trigger_type 分支）；② 含 regression_quality 的 run → error 用例由 executor 技术判定 + no_fallback 断言后，orchestrator **直接触发独立回归 verifier**（#4）完成 quality 判分，不依赖 scoring 态；run 绿 = error 用例全技术通过 ∧ 全未落兜底（R6）∧ quality 用例全达标 |
+| 4 | **L3 无 golden 语义判分通道（独立判定器，v3.3 首选）** | offline 为回归 quality 判分开**独立 `regression_verifier`**（首选路径，避开常规评测链路）：对 quality 用例直接调 judge client 做无 golden 判分（judge `build_messages` 在无 golden + 无 reference 时可用、不空标签误导），结果单落（eval_result 独立字段/表），**不进 agent_score / score_per_dimension / 常规门禁聚合**——offline 常规评测零污染，**规避 SEMANTIC_DIMENSIONS / metrics 插件注册 / metric_def / dimension.code 等闭集合穿透**。仍需：新增 `no_fallback` rubric（judge 判"是否仍兜底"——quality 用例判"未兜底"达标、**error 用例判"未落兜底"即 pass（R6，#3）**）+ **必配达标线**（无 target 时门禁缺省全 pass=假绿；按 agent 配 baseline_target 或独立规则）。**备选路径**（不用 verifier 时）：走现有维度体系，则须穿透上述闭集合。横切约束：现有维度判分依赖 golden 基准，无 golden 时 judge 无基准乱判（并非默认 na）→ **regression_error 在任何判分路径下都须按 case_type 跳过 judge 任务** |
 | 5 | 装载/激活改造 | run 创建校验与 `case_loader` 加 **case_type 谓词**（普通 run 排除 regression 用例、regression run 只装载对应 case_type；现谓词仅 `status=active + is_held_out`）；online 建 case 后补**激活**（`PUT /cases/{id}` status=active，现 create_case 默认 draft，不激活跑不了 run）；明确 regression 用例归属独立 suite |
 | 6 | 看板隔离（**8 处**） | dashboard.py 的 `EvalRun.trigger_type != "held_out"` 实为 8 处（L43/60/85/87/139/174/196/254，compare 为双查询）→ 常规聚合全部加排除 regression；全仓核对 `==/!= "held_out"` 两类语义：**防污染排除**（加排除 regression）vs **held_out owner 隐藏**（保持 manual 语义，不套用 regression） |
 | 7 | **回归复验区块（硬门禁展示）** | gate 墙旁按 agent 显示最近回归 run：版本/触发时间/error 回归 M/N + quality 回归 K/L + 结论绿/红 + 未通过错误源列表；评测记录列表加"回归"标签 + trigger_type 筛选 |
@@ -398,10 +400,11 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 > offline 改动集中在 runner（executor/orchestrator/case_loader/scorer）/ judge（rubric）/ **verifier（新增独立回归判定器，v3.3 首选——据此避免改动 SEMANTIC_DIMENSIONS / metrics 注册 / dimension.code，但 eval_result 需加字段承载 verifier 判分）** / dashboard。run/result 表不加列（PASS_FAIL 四态已承载），TestCase/EvalRun 各加一个枚举/标记字段。此项单独出方案、单独评审（Task #4）。
 
 > **offline 配套补强（六方向评审，全部并入 Task #4 offline 方案输入）**：
-> - **回查契约（单错级，修正 §10.5 全绿口径）**：online 以 `error_case_link.case_id` 对**最新回归 run** 的 `run_results.pass_fail` **逐条判单错**——该 case pass 即 passed，与 run 级绿解耦（同 run 内他错修复不阻塞本错 closed）。offline 侧补齐：`list_runs` 按 agent+version 过滤回归 run（现无 trigger_type 过滤）、`run_results` 返回 case_id+case_type+pass_fail（现不含）。
+> - **回查契约（单错级，修正 §10.5 全绿口径 + 决策 R5 version 锚定）**：`error_case_link` 建 case 时记录触发时 agent 版本；online 以 `case_id` + **link 记录版本** 对**该版本对应**的回归 run 的 `run_results.pass_fail` **逐条判单错**——该 case pass 即 passed，与 run 级绿解耦（同 run 内他错修复不阻塞本错 closed）。offline 侧补齐：`list_runs` 按 agent+version 过滤回归 run（现无 trigger_type 过滤）、`run_results` 返回 case_id+case_type+pass_fail（现不含）。
 > - **verifier 期状态机**：含 quality 的回归 run，verifier 判分发生在 run 终态路径，需**保活心跳/续租**或新增 verifier 中间态并让 scanner 回收豁免（lease 过期标 timeout 的 `score_run_salvage` 存在竞态）。
+> - **quality 判分回写（决策 R5）**：含 quality 的回归 case，verifier 判分详情落 eval_result 后，**case 级 pass_fail 由 verifier 结果回写 run_results**（quality 达标线 → pass；na/error/不达标 → fail），使 §10.5 单错级回查对 quality 型 L3 用例同样生效；error-only case 的 pass_fail 仍由 executor/scorer 常规判——两型并行走回查。
 > - **no_fallback 落库前置**：新增 `no_fallback` dimension 行（dimension.code）+ seed judge_rubric(interface_id=0)；否则 rubric/达标线 FK 落不了库；误入常规判分 `get_metric("no_fallback")` 会 KeyError——印证独立 verifier 路径必要。
-> - **回归 run 与 manual 互斥槽**：`create_run._MUTEX_STATUS`（pending/running）计数需评估——发布门禁触发回归时同 agent 常规 run 在跑会 409；回归 run 不占互斥槽或放宽 max_active_runs。
+> - **回归 run 与 manual 互斥槽（决策 R5：共存，不互斥）**：`create_run._MUTEX_STATUS`（pending/running）计数需评估——发布门禁触发回归时同 agent 常规 run 在跑会 409；**结论：回归 run 不占互斥槽、不参与 max_active_runs 计数，与 manual/held_out 共存**；代价是回查可用性窗口受常规 run 排队影响——online 判绿以 link 记录版本的 run 为准，跑哪个 run 属 offline 调度自由度。
 > - **看板/清理豁免**：`/coverage` 与 gate stale_suites 的 case/suite 计数排除回归（否则门禁恒显"陈旧 suite"/覆盖率虚高）；`cleanup_rules`（按 agent+suite 保留 N=50）豁免回归 run（pinned/独立保留档），否则回查历史被清。
 > - **回放强契约**：executor 缺 usage/done 标 `ERROR_NO_USAGE`——L1 原现场若 agent 不产 usage 会假红，SDK 侧 llm_call 必带 usage（采集契约，§13.1）；SDK input ↔ offline adapter `build_request` 字段映射需 converter 落结构（配置驱动需定形）；回归 run 跳过 `_probe_before_run` 或指定专用探测用例（首条用例探测失真）。
 
@@ -425,7 +428,7 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 
 | 角色 | 定位 | 权限范围 |
 |---|---|---|
-| viewer | 研发/负责人（排障与观测闭环） | 三个维度页面**查看** + 回流看板**人工操作**（ignore / 标记已修复 / needs_review 处置，D11 研发闭环入口）+ 正文查看 |
+| viewer | 研发/负责人（排障与观测闭环） | 三个维度页面**查看** + 回流看板**人工操作**（ignore / **claim 认领** / needs_review 处置，D11 研发闭环入口；置 fixed 需回归证据通过或 admin 复核，决策 R4）+ 正文查看 |
 | admin | 平台维护 | viewer 全部 + **系统管理**：Agent/接口字典（llm 标记补标、归一化核对）、dict_config 配置、正文开关、用户管理 |
 
 > 角色为内部工具模型，**不做 agent 维度的数据隔离**（统一 viewer 可查全部 agent）；正文查看开放范围按 agent 在 Agent 管理中配置（默认 viewer 可见，可收缩 admin only）。
@@ -452,8 +455,8 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 | 指标看板（/dashboard） | agent × 时间窗切换；概览卡（QPS/P50/P95/P99/失败率/超时率 + 趋势 1h/24h/7d）；接口明细（全接口 + **请求级/LLM 级双指标 tab**）；异常聚焦（失败/超时排序 → trace 联动）；**L3 质量出口**（quality 计数 + fallback/low_confidence 占比） | viewer | P1 |
 | 链路查询（/traces） | traceId 和/或关键字自由输入（可任一）；命中 trace 列表 + agent/接口过滤 → trace 详情 | viewer | P0+P1 |
 | trace 详情（共享抽屉） | `(ts,parent,seq)` 树时间轴；异常节点红显；日志行穿插；input/output/error_msg 脱敏展示；quality/llm_call 标记高亮；正文查看（受 agent 配置，§4.6） | viewer | P1 |
-| 回流-错误聚类（/backflow） | cluster 列表/筛选（agent、接口、层、状态 open/fixed/inactive/needs_review）；代表 trace 与 input_hash；去重与生成计数；复验总览（open 错误数 + 关联回归用例 verify 分布） | viewer 查看 | P2 |
-| 回流-聚类详情 | 关联回归用例（case_id/case_type/verify_status、`source` 溯源）；conversion_record 审计时间线；**人工操作**：ignore、标记已修复、needs_review 人工处置 | viewer 可操作 | P2 |
+| 回流-错误聚类（/backflow） | cluster 列表/筛选（agent、接口、层、状态 open/**claim**/fixed/inactive/needs_review）；代表 trace 与 input_hash；去重与生成计数；复验总览（open+claim 错误数 + 关联回归用例 verify 分布） | viewer 查看 | P2 |
+| 回流-聚类详情 | 关联回归用例（case_id/case_type/verify_status、`source` 溯源）；conversion_record 审计时间线；**人工操作**：ignore、**claim 认领**、needs_review 处置（决策 R4：置 fixed 需该 link 回归 passed 或 admin 复核） | viewer 可操作 | P2 |
 | Agent 与接口字典 | agent 启停；接口字典（自动发现清单、llm 标记补标 + **疑似漏标告警**、归一化核对）；正文开关 | admin | P1 |
 | 配置管理 | dict_config：兜底话术关键词库、超时阈值、会话上下文轮数、聚类窗口、回流总开关 | admin | P1/P2 |
 | 用户管理 | 账号 CRUD、角色（viewer/admin）、启停 | admin | P0 |
@@ -604,7 +607,7 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | 回归隔离遗漏污染常规门禁 | 高（offline） | §11 #6 真实 8 处排除 + case_type 谓词 + 状态机分支；offline 方案自审 checklist 全仓核对 `== "held_out"` |
 | 指标口径漂移 | 中 | 双指标口径文档 + 统一 agg + 归一化路径一致 + 超时口径单源（agent SDK 打标） |
 | Kafka 无访问控制、可伪造上报（评审） | 高 | Kafka SASL/TLS + topic 级 ACL（每 agent 凭证隔离、topic 不可互写）；ES/MySQL 仅 backend 网段并认证（§12 安全补强） |
-| ES 容量/性能论证缺失（评审） | 中 | Step 3 灰度实测后定容量档；事件/日志 index 分离 + size rollover；指标 7d 走小时级 rollup（P2/P3）；单 trace 详情日志分页懒加载（§17 #1/§7.1/§8） |
+| ES 容量/性能论证缺失（评审） | 中 | Step 3 灰度实测后定容量档；事件/日志 index 分离 + size rollover；指标 7d 走小时级 rollup（**v1，决策 R7**，§17 #8/§7.1/§9.2）；单 trace 详情日志分页懒加载（§17 #1/§8） |
 | 静默降级盲区：LLM 失败被吞且未插桩 quality（评审） | 中 | 兜底分支必打 quality（§13.1 #5）+ P2 agent 自监控/看板告警收敛（§10.1） |
 | 回流用例携 PII 进 offline、超 ES 保留期（评审） | 中 | offline 回归用例保留策略 + 级联删除（入 offline 方案，§11）；回流前会话快照内容最小化（§4.5） |
 | 关键字全文检索打满单节点拖垮看板/链路（评审） | 中 | 检索限 7d + 超时 + 结果上限 + 慢查询熔断/限流（§8/§17 #1）——input/output 与指标同住事件 index（无独立文本 index，基线为事件/日志分 index），隔离靠限流/熔断而非索引拆分 |
@@ -626,8 +629,8 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | 5 | 错误聚类窗口 | 7 天 | 可配 |
 | 6 | 接口 `llm` 标记 | 配置驱动 + 人工补标 | 从 agent 元数据推断 |
 | 7 | 平台账号 | 独立体系（首 admin 初始化） | 复用 offline 账号 |
-| 8 | 指标预聚合 | 首版无 rollup（7d 内全量 agg，单节点论证内够用） | P2/P3 按小时级 rollup（性能评审：看板大范围 P95/P99 深聚合成本高，超容量论证后启用） |
-| 9 | 上报通道访问控制 | 首版 Kafka 内网信任（topic ACL 后置） | Kafka SASL/TLS + topic 级 ACL、每 agent 凭证隔离（安全评审：topic 不可互写、防伪造上报） |
+| 8 | 指标预聚合 | **小时级 rollup（v1，决策 R7）**：7d 看板查 `obs-metrics-rollup`、1h/24h 实时 agg（§7.1/§9.2 双路） | 首版无 rollup 后置（弃） |
+| 9 | 上报通道访问控制 | **首版 Kafka SASL/TLS + topic 级 ACL（决策 R3）**：每 agent 凭证映射 producer 身份、topic 不可互写、防伪造上报（§12.1/§16） | 首版内网信任后置（弃） |
 | 10 | 首页跨 agent 汇总 | 登录落点 = 单 agent 指标卡（agent 选择前置） | 顶部跨 agent 汇总行：open 错误数 / QPS / 失败率 TOP（易用评审：先览全局再下钻） |
 | 11 | 疑似漏标告警处置 | admin 复核 | **该 agent 的 viewer 确认 + admin 复核**（易用评审：漏标归因 agent 自身打点，viewer 最懂） |
 | 12 | offline 回归用例保留 | 随 offline 常规清理（cleanup_rules N=50） | 回归用例独立保留档（offline 评审：error_case 复现价值高于泛化语料，豁免批量清理） |
@@ -648,5 +651,6 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | v3.4.1 | 吸收 §13.0 独立变更增量评审（无致命）：checklist 拆放量门禁 / 维度 3 开放验收两档（维度 3 验收作为 Step 2.4 白名单前提）；collector 明确为非首版能力并登记 §14（首版非 Python 仅承诺就近 Kafka 直发）；Step 0 盘点补接口枚举方式（可枚举/不可枚举 agent 字典核对路径）；后台任务型对齐 D18（任务根模型 P2）；§13.1 #1 补回 sp `request_id` 规约 `trace_id`；§5.1 与 §13.1 rewrite 禁用口径统一单源；db/redis 改建议口径（§4.2）；Step 2.4 加存量 gq/cs/sp 例外；§10.1 自愈口径引用改 §4.2 |
 | v3.4.2 | 吸收六方向独立评审（逻辑/数据流、安全、性能、异常容错、易用性、offline 对接；**无致命**）：回流前置与 L2 门控改 trace 内 LLM 动态事实（§4.3/§10.1，消除 `interface.llm` 补标滞后静默过滤）；自愈示例修正 + 静默降级盲区缓解（§10.1，兜底必打 quality + P2 收敛）；cluster 生命周期重写 首现即开→静默→归档（§10.2）+ L3 现场留痕（§7.2 代表事件最小快照）；ts 水位只告警不丢弃 + 维度 3 分析源改同批消费事件（§6.1 step2/step4）、MySQL 侧幂等（§6.2）；error_cluster 去重唯一索引 + error_case_link 幂等键（§7.2）；offline 配套补强 block 并入 §11（单错级回查契约、verifier 期状态机/lease/scanner salvage、回归 run 与 manual 互斥槽、no_fallback dimension 行 + 判分豁免、coverage/gate/cleanup_rules 豁免集、ERROR_NO_USAGE/probe 跳过）；安全补强 block 并入 §12（JWT 短效 + refresh + 吊销；Kafka SASL/TLS + topic 级 ACL + 每 agent 凭证隔离；ES/MySQL 仅 backend 网段；agent_credential 加密轮换；online↔offline 最小 API 面）；§10.4 标记已修复审计 + 可 reopen、§10.5 回查改单错级；§16 风险表登记 8 项；**新增待确认**（§17 表 8~12）：指标预聚合、上报通道访问控制、首页跨 agent 汇总、疑似漏标归 viewer、offline 回归用例保留，及 §17 #1 改**事件+日志分 index**（评审共识） |
 | v3.4.3 | 吸收第二轮六方向全量复评去重后的**无争议修**（方向性决策点另列待用户逐项裁定）：ES `_id` 幂等键补 agent 维度（D16/§6.1/§7.1）；§4.2 删残留"只要接口为 LLM 相关即进入聚类候选"旧口径、统一 trace 内动态事实 + 缓存命中不回流出；quality 落库形态明确为 schema 事件字段、不新增事件不参与计数（§4.4）；verify_status 补 superseded；conversion_record 补 actor_user_id；trace 详情日志行分页懒加载 + error_type/error_msg 检索与时间窗（§8）；§16 修正 index 分离表述、回查不因归档跳过在途 case、补 needs_review 行；§5.1 本地兜底默认持久卷；上报鉴权对齐 Kafka-only（§12.1/§7.2/§14） |
+| v3.4.4 | **7 个方向性决策点（第二轮复评去重后，编号 R1~R7）逐项裁定并修入**：R1 跨批 trace 累积态（§6.1 step4~step6：SSE/多批/子节点分批下"判定不缺完整 trace/分派/offset"均基于消费侧累积态，非单事件自判；§10.1 判定源同步）；R2 Agent 数据隔离**维持统一 viewer**（延续 §12.1"无 agent 级数据隔离"既有结论，本轮确认）；R3 上报通道访问控制**首版即上**（§17 #9 默认改 Kafka SASL/TLS + topic 级 ACL、每 agent 凭证映射 producer 身份，备选"内网信任后置"弃）；R4 人工"标记已修复"拆 **claim 认领中间态**（§7.2 error_cluster.status 增 claim；§10.4/§12.1/D11 先 claim 再置 fixed，置 fixed 需回归证据或 admin 复核、viewer 不单方 closed，审计可 reopen；聚类页筛选与人工操作入口补 claim）；R5 回归回查契约**本轮落定边界**（§10.5/§10.3/§11：case 建时记触发 agent 版本 → 按版本锚定对应回归 run 判单错，不取最新 run；回归 run 与 manual 共存、不占互斥槽、不参与 max_active_runs；新增 quality 判分回写 bullet——verifier 结果回写 run_results.pass_fail 使单错级回查覆盖 quality 型 L3）；R6 L1 error 用例补**兜底断言**（§10.3/§11 #3/#4：判"接口无技术错误 + 未落入兜底/低置信"才生成 error 用例，且 error 用例技术跑通后 offline 补判 no_fallback，防 catch 硬错转兜底话术返回 200 假绿过门禁）；R7 指标 7d 小时级 rollup **提前到 v1**（§7.1/§9.2 双路：1h/24h 实时 agg + 7d 查 `obs-metrics-rollup`；§17 #8 默认改 rollup v1、§16 容量行同步） |
 
 > 待办（Task #4）：online 方案定稿后，单独推进 offline 配套改造方案（§11 依赖清单为输入），独立方案文档 + 独立评审。
