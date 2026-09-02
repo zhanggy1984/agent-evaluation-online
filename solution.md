@@ -1,6 +1,6 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.4.2（待评审）
+> 版本：v3.4.3（待评审）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。
@@ -9,6 +9,7 @@
 > v3.4 变更：§13 重构为「agent 接入与统一整改」——新增 §13.0 **通用接入方案**（面向任何 agent、语言中立：接入前契约核对（Step 0 盘点）→ 三步接入（Step 1~3）→ 接入验收 checklist；非 Python/Serverless 走事件协议直发），存量 4 agent 整改清单保留为 §13.1。
 > v3.4.1 变更：吸收 §13.0 独立变更增量评审（无致命）——checklist 拆「放量门禁/维度 3 开放验收」两档（M1）；collector 明确为非首版能力并登记 §14（M2）；Step 0 盘点补接口枚举方式、后台任务型对齐 D18（M3）；§13.1 #1 补 sp `request_id` 规约、§5.1 rewrite 禁用口径单源、db/redis 建议口径、Step 2.4 存量 gq/cs/sp 例外、§10.1 引用修正（N1~N4）。
 > v3.4.2 变更：吸收六方向独立评审（逻辑/数据流、安全、性能、异常容错、易用性、offline 对接；无致命）——§4.3 回流前置与 §10.1 L2 门控改 **trace 内 LLM 动态事实**（不依赖 `interface.llm` 人工标记，消除补标滞后静默过滤）；自愈示例修正 + **静默降级盲区**缓解（§10.1）；cluster 生命周期重写（首现即开→静默归档，§10.2）+ L3 现场留痕快照（§7.2）；ts 水位只告警不丢弃 + 维度 3 分析源改同批消费事件（§6.1）、MySQL 侧幂等（§6.2）；error_cluster/error_case_link 幂等与快照（§7.2）；offline 配套补强 block 并入 §11（单错级回查、verifier 状态机、互斥槽、no_fallback 判分、豁免集）；安全补强 block 并入 §12（JWT refresh/吊销、Kafka SASL/TLS+ACL、最小 API 面）；§10.4 人工确认审计可 reopen、§10.5 单错级回查；§16 风险表登记 8 项。易用性增强（跨 agent 首页汇总、漏标归属 viewer、ES 分 index、预聚合、offline 用例保留）列入 §17 待确认。
+> v3.4.3 变更：吸收第二轮六方向全量复评去重后的**无争议修**（方向性决策点另列待用户逐项裁定）——ES `_id` 幂等键补 agent 维度（D16/§6.1/§7.1，防跨 agent 同 trace_id 互覆，容错 N-1）；§4.2 删"只要接口为 LLM 相关即进入聚类候选"残留旧口径、统一 trace 内动态事实 + 缓存命中不回流出（逻辑 M-3）；quality 落库形态明确为 schema 事件字段、不新增事件不参与计数（逻辑 N-5）；verify_status 枚举补 superseded（逻辑 N-7）；conversion_record 补 actor_user_id（安全 N5）；trace 详情日志行分页懒加载 + 关键字检索补 error_type/error_msg 与时间窗（性能 M-4/易用 M4）；§16 修正"文本与指标 index 分离"为实际机制（性能 M-3）、回查不因 cluster 归档跳过在途 case（逻辑 M1/容错 N6）、补 needs_review 无主堆积风险行（易用 M1，修复 §10.4 落空引用）；§5.1 本地兜底默认挂持久卷（容错 N2）；上报鉴权对齐 Kafka-only——§12.1 agent 行改 Kafka SASL/ACL、§14 目录去 HTTP ingest 残留、agent_credential 语义改 Kafka 凭证（安全 M7/M8）。
 
 ---
 
@@ -45,7 +46,7 @@
 | D13 | 脱敏 | 键级掩码复用 offline `mask_dict` 规则集提升为标准，**SDK 侧完成，平台不还原**；**内容型 PII 依赖采集策略（正文默认关 + 最小化）控制，不以键级掩码为底线** |
 | D14 | 正文存储 | 回复正文保存进 ES（支持 traceId/关键字检索）；**默认关，按接口逐 agent 评估数据属性后开**；带开关/截断/权限/保留期 |
 | D15 | 日志查询 / 指标口径 | 查询页 traceId 与关键字**自由输入、可都输可任一**；p95/p99 **正常显示，不考虑样本 <30** |
-| D16 | 数据层 | **Elasticsearch 8.x 单节点**为主（事件+日志，ILM 30 天自动删，index 按周滚动，`_id=hash(trace_id+seq)` 幂等）；MySQL 只放平台元数据；指标用 ES agg |
+| D16 | 数据层 | **Elasticsearch 8.x 单节点**为主（事件+日志**分 index**，ILM 30 天自动删，index 按周滚动，`_id=sha256(agent\|trace_id\|seq)` 幂等——agent 入键防跨 agent 同 trace_id 互覆）；MySQL 只放平台元数据；指标用 ES agg |
 | D17 | offline 配套 | 见 §11：回归评测模式 + **回归复验硬门禁区块**（发布两道门禁并列）；L3 走 **offline 无 golden 语义判分通道**（第一版落地） |
 | D18 | cc 范围 | **contract-check（后台任务型）第一版只出 request 级指标与链路，维度 3 不纳入**；task/job 根节点模型 P2 评估 |
 
@@ -147,7 +148,7 @@
 
 **锚点语义（关键修订）**：
 - `request` 只承载维度 2 的请求级指标（P50/95/99、失败率、超时率）。
-- **异常判定 / 回流聚类是 trace 级聚合**，不依赖 `request.status` 单点：该 trace 内任一 `llm_call`/`db`/`redis` 子节点 `status∈{error,timeout}`、或 `request` 自身 error、或 `quality` 信号，只要接口为 LLM 相关，即进入聚类候选。适配"LLM 调用失败被兜底吸收、请求仍 ok"的结构（归 L3，见 4.3/4.4）。
+- **异常判定 / 回流聚类是 trace 级聚合**，不依赖 `request.status` 单点：该 trace 内任一 `llm_call`/`db`/`redis` 子节点 `status∈{error,timeout}`、或 `request` 自身 error、或 `quality` 信号即进入聚类候选，但**是否回流以该 trace 内 LLM 动态事实为准**（出现 `llm_call` / `llm_*` error / quality，§4.3/§10.1），不依赖 `interface.llm` 接口标记（§4.3 前置修正）——缓存命中（§9.1，无 llm_call）等无 LLM 事实的 trace 不出回流。适配"LLM 调用失败被兜底吸收、请求仍 ok"的结构（归 L3，见 4.3/4.4）。
 - **重试自愈**：`llm_call` 按逻辑调用打点（一次请求=一条，内部退避重试为 attempt、不拆条不标 error）；最终成功 → `status=ok`，不产生 error 子节点、不出回流（§10.1）；最终仍失败才标 error。
 
 ### 4.3 错误分类（error_type）→ 回流分层映射
@@ -171,6 +172,8 @@ agent 在自身「兜底/低置信」业务分支显式调用 `sdk.record_qualit
 - `level=low_confidence`：检索未命中/置信度低仍硬答。
 
 平台侧辅以**兜底话术关键词库**（dict_config，可维护）兜底识别，主判 agent 显式上报。SDK 自动判定兜底不靠谱，以 agent 插桩为准（4 agent 统一整改项）。
+
+- **落库形态（评审修正，逻辑 N-5）**：quality 是 schema 事件**字段**（§4.1），不是独立节点/独立事件行。`record_quality()` 在 SDK 内更新该 trace 当前 request 根事件（或最近活跃事件）的 `quality` 字段，随原事件一起 flush 落库——**不新增事件、不参与 request 计数**（§9.1 请求指标只统计 request/llm_call 锚点事件），消除"quality 是否作为独立 request node 发出"的歧义。
 
 ### 4.5 脱敏规范（键级掩码，SDK 侧完成）
 
@@ -210,7 +213,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 - **节点打点**：`record_request()` / `record_llm()` / `record_tool()` / `record_retrieve()` / `record_db()` / `record_redis()` / `record_quality()`。agent 在请求入口/出口、LLM 调用、DB/Redis 访问、兜底分支插桩。
 - **LLM 通道覆盖（修正）**：除统一客户端/网关层的打点外，SDK 提供"第二通道显式打点"清单——gq 的 httpx 直连流式 + `ChatOpenAI.invoke`（rewrite/compress，其中 rewrite 通道现于 agent 侧注释禁用，接入时按实际状态核对）、sp 的 `conversation_service._summarize_with_llm` 自建 AsyncOpenAI 汇总通道等旁路 LLM 调用都要接入（统一包装或 `@record_llm` 装饰器），否则 usage/错误率存在黑洞。
 - **trace 上下文**：contextvar 承载 trace_id、全局单调 seq（原子递增）、branch（并行分支标注）；日志 handler 自动注入。
-- **可靠性与降级**：内存队列 + 批量（≤500 条 / ≤2s 冲刷）+ 失败退避（≤3 次）→ 本地磁盘兜底（`/tmp/obs_buffer`）→ 恢复补传；**平台/Kafka 故障绝不影响 agent 业务**。
+- **可靠性与降级**：内存队列 + 批量（≤500 条 / ≤2s 冲刷）+ 失败退避（≤3 次）→ 本地磁盘兜底（默认挂**持久卷**、路径可配，容器重启不丢——不写死 `/tmp` 易失盘，对齐 §16）→ 恢复补传；**平台/Kafka 故障绝不影响 agent 业务**。
 - **会话状态钩子（可选，会话型 agent）**：`record_session_state(trace_id, state)` 采集影响后续判断的状态快照（检索命中文档 id、用户已确认/否决的约束、累计轮数），供 L3 会话型用例重建会话（§10.3 C2）。
 - **自监控**：SDK 上报成功率/丢弃量作为平台自身可观测信号。
 
@@ -228,7 +231,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 1. 订阅 `obs.agent.*`，批量拉取；
 2. **校验**：schema 强校验、必填字段、`ts` 明显偏离设定漂移窗（agent 时钟可能不精确）**只告警不丢弃**——丢弃会破坏 §5.1「恢复补传不丢」；乱序由 `_id` 幂等 + `(seq,ts)` 树序校验吸收；interface 与字典匹配（不匹配 → 自动注册 + 待人工补 llm 标记）、agent 标识与 topic 一致；
 3. **脱敏复核**（§4.5）；
-4. **分派入库 ES**（event_kind 分流；`_id = sha256(trace_id|seq)`，seq 全局唯一 → 重复投递覆盖）；**聚类/回流分析源 = 同批消费后事件（§10.2），不依赖 ES 回读**——ES 写失败丢弃不阻断维度 3 判定；
+4. **分派入库 ES**（event_kind 分流；`_id = sha256(agent|trace_id|seq)`，seq 全局唯一 → 重复投递覆盖）；**聚类/回流分析源 = 同批消费后事件（§10.2），不依赖 ES 回读**——ES 写失败丢弃不阻断维度 3 判定；
 5. offset 管理；失败重试队列，超阈值丢弃并计数。
 
 ### 6.2 幂等与顺序
@@ -249,7 +252,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 | 集群 | 8.x 单节点（内部环境，独立部署，与 offline 无关） |
 | Index | 按周滚动 `obs-event-yyyyWW` / `obs-log-yyyyWW`（**事件 + 日志分 index 为基线**——性能/容错评审共识，见 §17 #1；仅当容量实测极端不足时回退合并单 index、doc 带 event_kind） |
 | ILM | 30 天自动删除；正文保留期同 ILM |
-| 幂等 | `_id = sha256(trace_id\|seq)`（seq 全局唯一） |
+| 幂等 | `_id = sha256(agent\|trace_id\|seq)`（seq 全局唯一；agent 入键防跨 agent 同 trace_id 互覆，评审修正） |
 | 映射 | trace_id/agent/interface/node(keyword)、ts(date)、duration_ms(long)、status、error_type、quality、input/output/log_message(text 中文分词)、usage(object)、session_ctx(text 截断) |
 | 容量 | 内部环境 4 agent 峰值 ≤500 事件/s + 日志同量级，周滚动 index 远低于单节点压力 |
 | 指标 | 直接 ES agg：date_histogram × percentiles(p50/95/99) × filter(error/timeout)，近实时（<5s），不落分钟预聚合 |
@@ -263,8 +266,8 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 | `interface` | 接口字典缓存（agent_id、归一化 interface、**llm 标记（配置驱动+人工补标）**） |
 | `error_cluster` | 错误聚类（error_type、input_hash、首次/最近 ts、次数、**代表事件最小快照**、状态 open/fixed/inactive/needs_review） |
 | `error_case_link` | 错误 ↔ offline 回归用例关联（case_id、case_type、verify_status、source trace_id、**建 case 幂等键**） |
-| `conversion_record` | 回流审计（trace→case、action、detail、ts） |
-| `agent_credential` | agent 上报凭证 |
+| `conversion_record` | 回流审计（trace→case、action、detail、ts、actor_user_id——系统自动回流记 system，人工确认/回退记操作人） |
+| `agent_credential` | agent 上报凭证（Kafka SASL/ACL 映射，加密存储 + 轮换，§12） |
 | `dict_config` | 平台配置（兜底话术库、超时阈值、正文开关白名单、会话上下文轮数、聚类窗口等） |
 
 > MySQL 一致性补强（六方向评审）：`error_cluster` 去重键（agent+interface+error_type 分类+input_hash）加**唯一索引**防并发首现双写；`error_case_link` 带 source trace 幂等键防重试/重放重复建 case（§10.3 对账）；`error_cluster` 存**首次异常代表事件最小快照**（input_hash、error_type、error_msg≤512、首次 trace_id），供 ES ILM 过期后聚类处置仍有可辨原文（needs_review/人工处置场景）。
@@ -279,8 +282,8 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 ## 八、维度 1：traceId 链路日志查询（D15）
 
 **能力：** 查询页可自由输入 traceId 和/或关键字（可都输入、可任一）。
-- **traceId 查询**：返回该 trace 全部事件（`(ts,parent,seq)` 树排序，branch 仅标注）→ 前端时间轴（request 根 + 子节点），异常节点红显，日志行穿插，详情含脱敏后堆栈/正文。
-- **关键字查询**：全文检索 input/output/log_message → 命中 trace 列表 → 进入 trace 视图。
+- **traceId 查询**：返回该 trace 全部事件（`(ts,parent,seq)` 树排序，branch 仅标注）→ 前端时间轴（request 根 + 子节点），异常节点红显，日志行穿插，详情含脱敏后堆栈/正文。**大 trace 防护（评审）**：日志行（event_kind=log）分页懒加载，避免单 trace 上千日志行一次拉爆；事件行设单 trace 返回上限 + 超时（§16 登记）。
+- **关键字查询**：全文检索 input/output/log_message/**error_type/error_msg**（评审补：error_msg 需可命中才能按错误摘要找链路）→ 命中 trace 列表 → 进入 trace 视图；检索面限最近 7d（可调）+ 结果上限 + 超时（§16 登记）。
 - **边界**：链路覆盖 agent 后端进程内打点；网关/前端 access log 第一版不纳入。
 
 ---
@@ -370,7 +373,7 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 回查连续失败（offline API 不可用）→ verify_status 保持 pending + 退避重试，超时在聚类详情提示"回查失败待人工"（§16）
 ```
 
-- `verify_status ∈ {pending, passed, failed, invalidated}`。
+- `verify_status ∈ {pending, passed, failed, invalidated, superseded}`（superseded：旧 link 被人工 ignore/标记已修复取代，见 §10.2）。
 - 修复后又复发 → 新 cluster 重新生成。
 - **闭环归属（边界）**：回归 run 的触发、版本绑定、与发布流程的门禁集成在 **offline 侧**（§11 #7，offline 改造方案范围）；online 负责生成用例集、回查 verify_status、展示回流看板。online 侧 P2 回流看板提供"该 agent 当前 open 错误数 + 关联回归用例/复验状态"总览。
 
@@ -409,7 +412,7 @@ worker 按聚类生成回归用例，映射 offline（`agent+interface → offli
 | 域 | 主体 | 机制 |
 |---|---|---|
 | 平台用户 | 观测平台登录（React） | 独立账号体系（JWT），viewer/admin；viewer 观测/回流**查看** + 回流**人工操作**（D11 研发闭环），admin 另管 agent/接口字典/配置/用户/正文开关 |
-| agent 上报 | obs-sdk → online | 每 agent 一对平台 token（`agent_credential`），请求级鉴权 |
+| agent 上报 | obs-sdk → Kafka（§5.2） | Kafka SASL + topic 级 ACL（每 agent 凭证映射 producer 身份、topic 不可互写，§12 补强）；`agent_credential` 存 Kafka 凭证、加密存储并轮换 |
 | 平台间 | online → offline | offline 专用服务账号（evaluator 角色）+ 独立凭证，最小 API 面 |
 
 正文查看需该 agent viewer 及以上（§4.6）；脱敏底线见 §4.5。
@@ -553,7 +556,7 @@ LLM 打点若无封装层可钩，用最外层包装（工具函数/装饰器）
 agent-evaluation-online/
 ├── backend/
 │   ├── app/
-│   │   ├── api/            # ingest / logs / metrics / clusters / auth / agents(字典)
+│   │   ├── api/            # logs / metrics / clusters / auth / agents(字典)（无 HTTP ingest——上报走 Kafka，§5.2）
 │   │   ├── consumer/       # Kafka 消费、校验、脱敏复核、ES 分派
 │   │   ├── store/          # ES 客户端 + MySQL 元数据
 │   │   ├── analyzer/       # L1/L2/L3 分层、聚类、归一化、去重
@@ -604,10 +607,11 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | ES 容量/性能论证缺失（评审） | 中 | Step 3 灰度实测后定容量档；事件/日志 index 分离 + size rollover；指标 7d 走小时级 rollup（P2/P3）；单 trace 详情日志分页懒加载（§17 #1/§7.1/§8） |
 | 静默降级盲区：LLM 失败被吞且未插桩 quality（评审） | 中 | 兜底分支必打 quality（§13.1 #5）+ P2 agent 自监控/看板告警收敛（§10.1） |
 | 回流用例携 PII 进 offline、超 ES 保留期（评审） | 中 | offline 回归用例保留策略 + 级联删除（入 offline 方案，§11）；回流前会话快照内容最小化（§4.5） |
-| 关键字全文检索打满单节点拖垮看板/链路（评审） | 中 | 检索限 7d + 超时 + 结果上限；文本与指标 index 分离；慢查询熔断/限流（§8/§17 #1） |
+| 关键字全文检索打满单节点拖垮看板/链路（评审） | 中 | 检索限 7d + 超时 + 结果上限 + 慢查询熔断/限流（§8/§17 #1）——input/output 与指标同住事件 index（无独立文本 index，基线为事件/日志分 index），隔离靠限流/熔断而非索引拆分 |
 | SDK「绝不影响业务」承诺前提未成文（评审） | 高 | 有界队列 + 写满**丢弃并计数**（非无限阻塞）+ 本地盘路径可配持久卷（容器重启不丢）+ 降级自监控（§5.1） |
 | ES 写失败丢弃导致维度 3 漏判（评审） | 中 | 分析源 = 消费同批事件（§6.1 step4），不依赖 ES 回读；丢弃/失败计数进自监控 |
-| error_cluster / 建 case 并发与重试非幂等（评审） | 中 | §7.2 去重唯一索引 + link 幂等键 + 处理位点（§6.2）；回查跳过 inactive（ignore 与在途回归竞态） |
+| error_cluster / 建 case 并发与重试非幂等（评审） | 中 | §7.2 去重唯一索引 + link 幂等键 + 处理位点（§6.2）；回查不因 cluster 归档跳过在途 case（防 case pass 而 cluster 永不 fixed）；仅人工 ignore（link 已 superseded）的 cluster 停回查 |
+| needs_review 聚类无主堆积/无人认领（评审） | 中 | 属主 viewer 认领处置 + 超时升级（§10.4） |
 
 ---
 
@@ -643,5 +647,6 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | v3.4 | §13 重构为「agent 接入与统一整改」：新增 **§13.0 通用接入方案**（语言/框架中立——接入前契约核对 Step 0 盘点 → 三步接入 Step 1~3（观测通道产出事件 / 平台注册配置 / 灰度验收）→ 接入验收 checklist；日志接入三选一；非 Python/Serverless 事件协议直发）；存量 4 agent 整改清单保留为 §13.1 |
 | v3.4.1 | 吸收 §13.0 独立变更增量评审（无致命）：checklist 拆放量门禁 / 维度 3 开放验收两档（维度 3 验收作为 Step 2.4 白名单前提）；collector 明确为非首版能力并登记 §14（首版非 Python 仅承诺就近 Kafka 直发）；Step 0 盘点补接口枚举方式（可枚举/不可枚举 agent 字典核对路径）；后台任务型对齐 D18（任务根模型 P2）；§13.1 #1 补回 sp `request_id` 规约 `trace_id`；§5.1 与 §13.1 rewrite 禁用口径统一单源；db/redis 改建议口径（§4.2）；Step 2.4 加存量 gq/cs/sp 例外；§10.1 自愈口径引用改 §4.2 |
 | v3.4.2 | 吸收六方向独立评审（逻辑/数据流、安全、性能、异常容错、易用性、offline 对接；**无致命**）：回流前置与 L2 门控改 trace 内 LLM 动态事实（§4.3/§10.1，消除 `interface.llm` 补标滞后静默过滤）；自愈示例修正 + 静默降级盲区缓解（§10.1，兜底必打 quality + P2 收敛）；cluster 生命周期重写 首现即开→静默→归档（§10.2）+ L3 现场留痕（§7.2 代表事件最小快照）；ts 水位只告警不丢弃 + 维度 3 分析源改同批消费事件（§6.1 step2/step4）、MySQL 侧幂等（§6.2）；error_cluster 去重唯一索引 + error_case_link 幂等键（§7.2）；offline 配套补强 block 并入 §11（单错级回查契约、verifier 期状态机/lease/scanner salvage、回归 run 与 manual 互斥槽、no_fallback dimension 行 + 判分豁免、coverage/gate/cleanup_rules 豁免集、ERROR_NO_USAGE/probe 跳过）；安全补强 block 并入 §12（JWT 短效 + refresh + 吊销；Kafka SASL/TLS + topic 级 ACL + 每 agent 凭证隔离；ES/MySQL 仅 backend 网段；agent_credential 加密轮换；online↔offline 最小 API 面）；§10.4 标记已修复审计 + 可 reopen、§10.5 回查改单错级；§16 风险表登记 8 项；**新增待确认**（§17 表 8~12）：指标预聚合、上报通道访问控制、首页跨 agent 汇总、疑似漏标归 viewer、offline 回归用例保留，及 §17 #1 改**事件+日志分 index**（评审共识） |
+| v3.4.3 | 吸收第二轮六方向全量复评去重后的**无争议修**（方向性决策点另列待用户逐项裁定）：ES `_id` 幂等键补 agent 维度（D16/§6.1/§7.1）；§4.2 删残留"只要接口为 LLM 相关即进入聚类候选"旧口径、统一 trace 内动态事实 + 缓存命中不回流出；quality 落库形态明确为 schema 事件字段、不新增事件不参与计数（§4.4）；verify_status 补 superseded；conversion_record 补 actor_user_id；trace 详情日志行分页懒加载 + error_type/error_msg 检索与时间窗（§8）；§16 修正 index 分离表述、回查不因归档跳过在途 case、补 needs_review 行；§5.1 本地兜底默认持久卷；上报鉴权对齐 Kafka-only（§12.1/§7.2/§14） |
 
 > 待办（Task #4）：online 方案定稿后，单独推进 offline 配套改造方案（§11 依赖清单为输入），独立方案文档 + 独立评审。
