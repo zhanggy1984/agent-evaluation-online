@@ -4,6 +4,7 @@
 > 本文件把 v3.5.1 方案落到「可直接指导开发」的粒度：**字段级 schema、DDL、API 契约、状态机矩阵、时序、页面功能点、接入与验收用例**。
 > 文档关系：**`solution.md` 是权威（定标准、定边界、定口径）；本文件是实现基线（定字段、定接口、定实现顺序）**。两者冲突时以 `solution.md` 为准，并把冲突点记录到 solution.md §17 / 本文件 §12.2。
 > 修订记录：2026-09-03 **v1.1（六方向独立评审修入）**——判定执行方裁定（judge_scan_job）、现行 link 唯一键语义（cur_key 生成列）、公共 infra 故障降级与 `{env}.` 租户命名、平台间 ack 前置矩阵与 requeue 游标、全站实时护栏默认值（O-1 裁定）、引用清理；其余见 §12.2 与文内标注。
+> 修订记录：2026-09-03 **v1.2（契约修订包 R1~R3，Task #4-① 环 0 拍板）**——R1：`pull/payloads` 响应每条 payload 附顶层 `assembled_ts`（online 组装/requeue 时刻，offline 增量锚唯一来源，§7.2/§8.7）；R2：ack 前置矩阵补 `invalidated(offline_cap_gap)→active` 自愈回写例外（§7.3「激活」行本支持，v1.1 矩阵文本修订遗漏）；R3：ack 前置不符 400（`ERR_CLUSTER_0003`）响应带当前 `offline_status`+`invalidate_reason`（offline manual-invalidate 竞态对账，§8.7/§8.9）。字段/状态机语义未再变更；offline 配套方案 `error-backflow-phase1.md` v0.2 按其语义实现。
 
 ---
 
@@ -848,7 +849,7 @@ CREATE TABLE `trace_judge_state` (
 - 聚类页「已待 N 天」= `now - assembled_ts` 由 API 现算展示（**展示非告警**；超阈值提示性标记"offline 疑似停摆，人工核查"，文案见 §9.3）。
 - 恢复后积压限速/新鲜度窗口属 offline 拉取侧行为（Task #4 输入），online 不参与。
 
-- pull-API 返回 assembled 按 `assembled_ts` 升序 + `next_token` 分页游标（§8.7）；offline 崩溃重拉以 `payload_id` upsert 幂等去重。**requeue 刷新 `assembled_ts=now()`**（§7.4），使重推案重新进入增量拉取范围——否则 offline 按 since/位置游标会跳过已读旧档。
+- pull-API 返回 assembled 按 `assembled_ts` 升序 + `next_token` 分页游标（§8.7）；offline 崩溃重拉以 `payload_id` upsert 幂等去重。**requeue 刷新 `assembled_ts=now()`**（§7.4），使重推案重新进入增量拉取范围——否则 offline 按 since/位置游标会跳过已读旧档。**契约修订 R1（v1.2）**：响应每条 payload 附顶层 `assembled_ts`（online 组装/最近 requeue 时刻，ISO8601 UTC，§8.7）——offline 增量锚唯一可靠来源（水位取 max、空轮不前移），不依赖 offline 本地墙钟。
 
 ### 7.3 平台间状态回写与回查（online 侧处理）
 
@@ -860,7 +861,7 @@ CREATE TABLE `trace_judge_state` (
 | 人工 invalidate（online） | online 本地 | admin 对未激活 case（assembled/draft）判无效 | `offline_status=invalidated` + `conversion_record`；**active 后不走此路**（superseded+reopen，§7.6） |
 | 回查 run_results | online→offline | cluster claim 后按 fix_version 轮询回归 run | 逐条判单错 → 写 `verify_run_record` + 更新 `verify_status`（§7.6 单错级回查） |
 
-**ack 前置矩阵（v1.1）**：`draft` 要求当前 `offline_status=assembled`；`active` 要求 ∈{assembled,draft}（收单即激活）或对同一 payload 重复 ack（幂等）；`invalidated`（驳回）要求 ∈{assembled,draft} 且**必带结构化 reason**。前置不符 → `ERR_CLUSTER_0003`(400)/`ERR_PULL_0003`(404)；对**已知** payload_id 的重复 ack → 200 幂等成功。reason 码见 §7.4。
+**ack 前置矩阵（v1.2，含契约修订 R2 例外）**：`draft` 要求当前 `offline_status=assembled`；`active` 要求 ∈{assembled,draft}（收单即激活），或 ∈{invalidated 且 `invalidate_reason='offline_cap_gap'`}（offline 重扫自愈回写 active，复用 payload_id，§7.4 上行；**契约修订 R2**），或对同一 payload 重复 ack（幂等）；`invalidated`（驳回）要求 ∈{assembled,draft} 且**必带结构化 reason**。前置不符 → `ERR_CLUSTER_0003`(400，**响应带当前 `offline_status`+`invalidate_reason`，契约修订 R3**)/`ERR_PULL_0003`(404)；对**已知** payload_id 的重复 ack → 200 幂等成功。reason 码见 §7.4。
 
 **offline 期望行为（Task #4 输入，online 侧依赖不变式）**：
 1. pull 拉取后**不改写 case 内容**；发现内容缺口不就地编辑补全 → 驳回 rejected + 回写 invalidated，由 online 修正现场重推（§7.4）——防内容与线上现场漂移。
@@ -996,8 +997,8 @@ CREATE TABLE `trace_judge_state` (
 
 | Method & Path | 说明 |
 |---|---|
-| `POST /pull/payloads` | 拉取 assembled payload：请求 `{schema_version:"1.0", case_type:"regression_error", agent?, limit≤100, since_ts?}`。**case_type 白名单校验：非白名单返回空集而非全量**（§12 加固）。响应 `{payloads:[信封全文(§7.1)], next_token?}` |
-| `POST /pull/ack` | 拉取/状态回写：`{payload_id, action∈{draft,active,invalidated}, case_id?, reason?}` → 按 §7.3 表更新（payload_id upsert 幂等；**已知** payload_id 重复 ack=200）。**ack 前置矩阵（v1.1）**：draft 前置 `assembled`；active 前置 ∈{assembled,draft} 且**必带 case_id**；invalidated 前置 ∈{assembled,draft} 且必带结构化 reason（码见 §7.4）；前置不符→`ERR_CLUSTER_0003`、未知 payload_id→`ERR_PULL_0003` |
+| `POST /pull/payloads` | 拉取 assembled payload：请求 `{schema_version:"1.0", case_type:"regression_error", agent?, limit≤100, since_ts?}`。**case_type 白名单校验：非白名单返回空集而非全量**（§12 加固）。响应 `{payloads:[{…信封全文(§7.1), assembled_ts}], next_token?}`，按 `assembled_ts` 升序。**契约修订 R1（v1.2）**：payloads 每条元素 = 信封全文 + 顶层 `assembled_ts`（online 组装/最近 requeue 时刻，ISO8601 UTC）——offline 增量锚唯一可靠来源（水位取 max、空轮不前移），不依赖 offline 本地墙钟；`since_ts` 语义 = `assembled_ts ≥ since_ts`，requeue 刷新后重推案重新进入范围（§7.2/§7.4） |
+| `POST /pull/ack` | 拉取/状态回写：`{payload_id, action∈{draft,active,invalidated}, case_id?, reason?}` → 按 §7.3 表更新（payload_id upsert 幂等；**已知** payload_id 重复 ack=200）。**ack 前置矩阵（v1.2，含契约修订 R2 例外）**：draft 前置 `assembled`；active 前置 ∈{assembled,draft} 且**必带 case_id**，或 ∈{invalidated 且 reason=`offline_cap_gap`}（重扫自愈回写，契约修订 R2）；invalidated 前置 ∈{assembled,draft} 且必带结构化 reason（码见 §7.4）；前置不符→`ERR_CLUSTER_0003`（**响应带当前 `offline_status`+`invalidate_reason`**，契约修订 R3）、未知 payload_id→`ERR_PULL_0003` |
 
 **online → offline（回查侧，v1；offline 实现，online 侧 client 契约）**：
 
@@ -1028,7 +1029,7 @@ CREATE TABLE `trace_judge_state` (
 | `ERR_METRICS_0001` | 400 | 时间窗/聚合参数非法；rollup 缺桶回退提示随响应体 |
 | `ERR_CLUSTER_0001` | 404 | cluster/link 不存在 |
 | `ERR_CLUSTER_0002` | 409 | CAS 状态冲突（他人已操作），返回当前状态 |
-| `ERR_CLUSTER_0003` | 400 | 非法迁移（如 active case 人工 invalidate；claim 缺 fix_version） |
+| `ERR_CLUSTER_0003` | 400 | 非法迁移（如 active case 人工 invalidate；claim 缺 fix_version）。**ack 前置不符时（契约修订 R3）响应体带当前 `offline_status`+`invalidate_reason`**（供 offline 对账 manual-invalidate 竞态等，§8.7） |
 | `ERR_CONFIG_0001` | 403 | 词表等 admin-only 键变更被拒 |
 | `ERR_PULL_0001` | 401 | evaluator 凭证无效 |
 | `ERR_PULL_0002` | 400 | case_type 非白名单 / schema_version 不识别（返回空集约定在 8.7，强校验失败 400） |

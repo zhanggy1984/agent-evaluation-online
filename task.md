@@ -43,6 +43,7 @@
 
 关键工程口径：
 - **Task #4 切两刀（2026-09-03）**：**批 1 = 契约（环 0）+ offline 收单/结构自检/激活/回写 + pull job**，判定先用 stub/fixture 通管道；**批 2 = 判定器（executor 复现）+ verifier no_fallback**（= T-3.8 落点）。批 1 独立方案独立评审、先行；批 2 换真判定后回归不碰契约。
+- **契约修订包 R1~R3 已入环 0（2026-09-03，Task #4-① 评审拍板）**：R1 = `pull/payloads` 响应逐 payload 附顶层 `assembled_ts`（offline 增量锚唯一来源）；R2 = ack 前置矩阵补 `invalidated(offline_cap_gap)→active` 自愈回写例外；R3 = ack 400（`ERR_CLUSTER_0003`）响应带当前 `offline_status`+`invalidate_reason`。**已落 detail v1.2（§7.2/§7.3/§8.7/§8.9 + 修订记录）**；环 1 stub/fixture 按修订形状造样例（offline 侧 `error-backflow-phase1.md` v0.2 已按其语义实现，§2/§12 标注依赖）；环 2 前双端对齐。
 - **底座决策（2026-09-03）**：**ES/Kafka 直接在本地共享 infra（../infra）创建**——share-infra docker-compose 内新增 ES 8.x + Kafka（KRaft）服务（infra 仓改造，前置依赖，见风险节），online/offline 双端连本地 share-infra（MySQL 分库、ES/Kafka 租户前缀隔离），online 侧落权对象 = 本地 share-infra 的 ES/Kafka/MySQL（受 T-0.2 权限矩阵约束）。`compose.infra.dev.yml` 不作主线（防双底座漂移），仅故障注入兜底。生产公共 infra 租户与网关 SSO（§17 #14/#15）是**上线门**、不阻塞 dev 联调。**此扩展同时是平台轨阶段 0/1 的硬前置**（S-1 冒烟与 P0 观测链即需 ES/Kafka），未完成前可用 `compose.infra.dev.yml` 临时过渡冒烟、不作为主线。
 - **对端 stub 是测试基建**：fake-offline（online 仓）+ offline fixtures（offline 仓）随批 1 建立，后续能力迭代无需真实对端即可回归。
 - **映射**：环 0→1 = offline 配套轨**批 1**；环 2 = 阶段 4（T-4.2/T-4.6/T-4.7/T-4.13⑤/T-4.14 对端场景在此串）；环 3 = 阶段 5。
