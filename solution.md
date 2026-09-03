@@ -1,6 +1,6 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.5.1（error-only 一期定稿；v3.5.0 六方向复评修入）
+> 版本：v3.5.2（error-only 一期定稿；同步部署边界：仅 backend+frontend Docker、依赖走公共 infra 与公共 API 网关）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。
@@ -15,6 +15,7 @@
 > v3.4.6 变更：脑暴收敛定稿——①低置信判定**去 LLM 自评、改平台客观推导**（§4.4/§10.1）：trace 内取数动作空/弱命中（retrieve_hit）仍给断言性回复 = low_confidence 候选，agent 不再自报"低置信"；②SDK/打点补取数结果契约（§4.1/§4.2/§13.0）；③回流传输改 **pull 模式 + 统一 case payload 信封**（D19/D20：offline 定时经 online pull-API 拉取、online 组装分层可扩展 payload、offline 不直连 ES）；④低置信去重改**证据签名**（§10.2）；⑤online 保留"观察事实"复发反馈 + 回查守卫（§10.5）；⑥pending-fix set / 激活 / judge 放行开关列为 offline Task#4 输入（§11）；⑦**指标看板加全站跨 agent QPS 趋势纵览**（agent 缺省=全站，§9.2/§9.3/§12.1；§17 #10 由待定落定为全站纵览）。
 > v3.5.0 变更：**范围收缩定稿——一期 = 纯 L1/L2 error 回流闭环**。低置信/quality 回流（L3：fallback + low_confidence）整体**移出一期**（无法闭环把握不足，与 PRD 首动机分离）：**agent 一期不接 quality 观测插桩**（不 record_quality / record_session_state / record_retrieve，兜底劣化基础可见性由 llm_call 失败指标 + trace 承担）；v3.4.6 的 L3 机制（T1/T2/T3、弃留墙、词表、证据签名去重、low_confidence 客观判定、quality offline 人工确认、judge 放行开关）**原位降级为【二期规划，v1 不实装】**（§2 D8/D9/D10、§4.4、§10.2/§10.3、§11、§13、§15、§16、§17 同步标注；不物理搬迁，保留交叉引用完整）。**error 主链保留**：三层回流收窄 L1/L2（quality 现场不再归类回流）、pull 传输 D20、统一信封 D19（**一期实装仅 `regression_error` 一种 case_type，assert 区带 no_fallback 断言**；`regression_quality`/low_confidence 字段在信封元数据 schema 层保留占位待扩展）、offline error 收单即结构自检激活、R6 no_fallback 兜底断言（**一期保留，dict_config 配 `fallback_utterance` 兜底话术词表**，防研发 catch 硬错转兜底话术返回 200 假绿过门禁）、§10.4/§10.5 error 处置与回查、指标 7d rollup（R7）、QPS 全站纵览。`quality`/`retrieve_hit` schema 字段保留占位（二期使用），不删不新增。详见修订记录 v3.5.0 行。
 > v3.5.1 变更：v3.5.0 定稿后六方向独立复评修入——3 项方向裁定：① **no_fallback 兜底话术词表随 D19 信封 assert 区快照下发**（per-agent 含版本，offline 判分以 payload 内快照为准，杜绝跨平台同步漂移；§4.4/§10.3/§11 #4）；② **error 结构自检失败重推 = offline 侧重扫自愈**（rejected draft 保留、配置变更后自动重跑自检，online 现场内容缺另走 admin 复位 assembled；§10.3/§11 #5）；③ **error_cluster 快照扩存 input 实文**（组装不依赖 ES 回读；§7.2/§10.3）。无争议修：会话 N 轮摘要收敛二期（§4.1/§10.3/§7.1/§17 #3）、needs_review 收敛 v1 边缘触发（§10.4/§12.1/§15/§16）、降级劣化基础可见性补看板下钻段（§9.1/§9.3/§12.1）、§16 风险行拆分与重复登记清理、回归假绿行补词表残余承认 + fail-closed、pull-API case_type 白名单加固、词表覆盖度入维度 3 开放验收、invalidated 人工适用范围约束 + pending-fix 展示口径、兜底吸收基础可见性验收用例、锚点/验收措辞统一、ES 映射占位标注。详见修订记录 v3.5.1 行。
+> v3.5.2 变更：**同步部署边界（部署约束定稿，方案层同步、无技术决策变更）**——① 交付物 = Docker **仅 backend + frontend 两个服务**（docker-compose.yml 不含任何中间件容器，§14 目录树注释改、§3 bullet 重写）；② MySQL / Kafka / ES 与公共 API 网关 / 域名 / TLS 全为**公共 infra 租户**接入——Kafka topic/ACL/consumer group 由平台向 infra **申请落权**、平台无 broker 管理权（§5.2/§12），ES index template / ILM / shard / replicas 平台定策略、infra 落建（§7.1）；③ 命名 `{env}.` 前缀参数化（库 / index / topic / group，无前缀 = 独立集群默认）；④ 公共 API 网关默认拓扑 = 终止 TLS + 内部自持 JWT，offline↔online 平台间**不走公网网关**；infra 若强制前置 SSO → 带签名身份透传头 + backend 验签（§12/§17 #14）；⑤ §16 增"公共 infra 共享 / 多租户耦合"风险行、ES 单节点行改租户口径；§17 增 #14/#15（与 infra 敲定项）、状态总览更新至 #1~#15；架构图框标注与图注同步（§3）。承接：solution_detail.md v1.1 §1.1 部署边界 / §13.2-13.3 / §12.2 O-6/O-7 已落实现口径。详见修订记录 v3.5.2 行。
 
 ---
 
@@ -51,7 +52,7 @@
 | D13 | 脱敏 | 键级掩码复用 offline `mask_dict` 规则集提升为标准，**SDK 侧完成，平台不还原**；**内容型 PII 依赖采集策略（正文默认关 + 最小化）控制，不以键级掩码为底线**；**input/session_ctx 的检索/落 ES 展示面与正文同级控制**（§4.6，第三轮裁定——输入类 PII 暴露面大于 output） |
 | D14 | 正文存储 | 回复正文保存进 ES（支持 traceId/关键字检索）；**默认关，按接口逐 agent 评估数据属性后开**；带开关/截断/权限/保留期 |
 | D15 | 日志查询 / 指标口径 | 查询页 traceId 与关键字**自由输入、可都输可任一**；p95/p99 **正常显示，不考虑样本 <30** |
-| D16 | 数据层 | **Elasticsearch 8.x 单节点**为主（事件+日志**分 index**，ILM 30 天自动删，index 按周滚动，`_id=sha256(agent\|trace_id\|seq)` 幂等——agent 入键防跨 agent 同 trace_id 互覆）；MySQL 只放平台元数据；指标用 ES agg |
+| D16 | 数据层 | **Elasticsearch 8.x**为主（**部署 = 公共 infra 租户（v3.5.2，§7.1/§14），"单节点"仅容量评估语境、非平台自管**；事件+日志**分 index**，ILM 30 天自动删，index 按周滚动，`_id=sha256(agent\|trace_id\|seq)` 幂等——agent 入键防跨 agent 同 trace_id 互覆）；MySQL 只放平台元数据；指标用 ES agg |
 | D17 | offline 配套 | 见 §11：回归评测模式 + **回归复验硬门禁区块**（发布两道门禁并列）；**v1 落 error 侧（regression_error executor 技术判定 + R6 no_fallback 兜底断言）；L3 无 golden 语义判分通道 = 二期**（§11 #4 登记） |
 | D18 | cc 范围 | **contract-check（后台任务型）第一版只出 request 级指标与链路，维度 3 不纳入**；task/job 根节点模型 P2 评估 |
 | D19 | case payload 统一信封 | online→offline 传输载体 = **统一 case payload 信封**：信封元数据（schema_version/case_type/source/幂等键/版本）+ **通用 evidence 区**（input、会话快照、取数证据 retrieve_hit、正文摘要——跨类型共用同一组字段）+ **类型化 assert 区**（随 case_type 扩展：error 断言 / no_fallback……）；**v1 实装 `case_type=regression_error` 一种（assert 区 = 无技术错误 + no_fallback 兜底断言）；`regression_quality` 及 low_confidence 断言二期，schema 层占位不删**；**新增异常类型 = 加 case_type + assert 子结构 + offline 注册对应判定器，信封结构/传输链路/去重/状态机不动**（§10.3/§11 #5） |
@@ -70,12 +71,12 @@
                                     │ obs.agent.<name>（每 agent 一 topic, p=1）
                                     ▼
                               ┌───────────┐
-                              │  Kafka    │  KRaft 单 broker
+                              │  Kafka    │  公共 infra 租户 · KRaft
                               └─────┬─────┘
                                     │ 异步消费
                     ┌───────────────▼───────────────────────────────┐
                     │            agent-evaluation-online           │
-                    │  (独立容器，走 api-gateway eval-online.local)  │
+                    │  (独立容器：仅 backend+frontend，走公共网关)  │
                     │                                               │
                     │  ┌──────────────┐    ┌─────────────────────┐  │
                     │  │ 消费 worker   │───▶│ Elasticsearch       │  │
@@ -105,7 +106,9 @@
                     → 复验结果经 online 回查 → 错误标「已复验」
 ```
 
-- **复用共享 infra**：MySQL 8（库 `obs`）、Kafka（独立 compose）、ES 8.x（独立容器）。前端经 api-gateway `eval-online.local` 路由。
+> 图中 ES / Kafka 框为**逻辑依赖示意**：实际 MySQL / Kafka / ES 均为**公共 infra 租户**，不在 online 自持的 docker-compose 内——online 自持容器仅 backend + frontend 两个（§14 部署边界）。
+
+- **复用共享 infra（部署边界，v3.5.2）**：交付物仅 **backend + frontend 两个 Docker 服务**（`docker-compose.yml` 编排，不含任何中间件容器）；MySQL 8（库 `obs`）、Kafka、ES 8.x 均为**公共 infra 租户**——平台定策略、infra 落权执行（Kafka topic/ACL/consumer group 申请落权，§5.2/§12；ES index template/ILM/shard/replicas 归 infra，§7.1）；租户内命名带 `{env}.` 前缀参数化（无前缀 = 独立集群默认）。前端与 backend 统一经**公共 API 网关**路由（`{env}.` 子域/路径，网关终止 TLS）；offline↔online 平台间走内网、不经公网网关（§14 部署边界 / §17 #14/#15）。
 - **技术栈跟随 offline**：FastAPI + React + MySQL + Alembic + JWT。
 - **范围声明**：第一版观测 gq / cs / sp 三个 LLM 相关 agent + cc 的 HTTP 接口层；维度 3（回流）仅覆盖 gq / cs / sp（D18）。
 
@@ -249,6 +252,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 
 - 每 agent 一个 `obs.agent.<name>` topic，`partition=1`（同 trace 近似保序，消费简单）。
 - SDK 内 kafka-python producer；消息为单条 JSON 事件（schema §4.1），消息内带 `agent` 供消费侧双重校验。
+- **broker 归属（v3.5.2）**：Kafka 为公共 infra 租户——topic / ACL / consumer group 由平台向 infra **申请落权后凭证才生效**（先建 topic、后发凭证，§12），平台无 broker 建删权、凭证最小化（读写各一）；共享集群 topic 名带 `{env}.` 前缀（`{env}.obs.agent.<name>`，§14）。
 
 ---
 
@@ -279,13 +283,15 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 
 | 项 | 规划 |
 |---|---|
-| 集群 | 8.x 单节点（内部环境，独立部署，与 offline 无关） |
+| 集群 | 8.x（**公共 infra 租户接入，v3.5.2**）：独立租户默认 1 主分片 0 副本；租户共享集群时 shards / replicas / index template / ILM 由平台定策略、infra 落建（§14 部署边界）——"平台自管单节点"不再成立；与 offline 以租户及 `{env}.` 前缀隔离、互不可见 |
 | Index | 按周滚动 `obs-event-yyyyWW` / `obs-log-yyyyWW`（**事件 + 日志分 index 为基线**——性能/容错评审共识，见 §17 #1；仅当容量实测极端不足时回退合并单 index、doc 带 event_kind） |
 | ILM | 30 天自动删除；正文保留期同 ILM |
 | 幂等 | `_id = sha256(agent\|trace_id\|seq)`（seq 全局唯一；agent 入键防跨 agent 同 trace_id 互覆，评审修正） |
 | 映射 | trace_id/agent/interface/node(keyword)、ts(date)、duration_ms(long)、status、error_type、quality(**二期占位，v1 恒 null 不索引，无倒排成本**)、input/output/log_message(text 中文分词)、usage(object)、session_ctx(text 截断，**二期，v1 不采集不索引**——会话上下文摘要随 §4.1 收敛二期) |
-| 容量 | 内部环境 4 agent 峰值 ≤500 事件/s + 日志同量级，周滚动 index 远低于单节点压力 |
-| 指标 | **双路（决策 R7）**：1h/24h 实时 agg（date_histogram × percentiles(p50/95/99) × filter(error/timeout)，近实时 <5s）；**7d 查小时级 rollup**（`obs-metrics-rollup`，每小时 job 预聚合 agent×interface×node×小时（计数桶 + t-digest 可合并分位草图，机制见 7.1 表后））——7d 深聚合超单节点实时能力，P1 看板页需 rollup 前置（见 §17 #8） |
+| 容量 | 内部环境 4 agent 峰值 ≤500 事件/s + 日志同量级，周滚动 index 远低于租户分配档压力（容量以 infra 实际分配档为准，Step 3 灰度实测核对） |
+| 指标 | **双路（决策 R7）**：1h/24h 实时 agg（date_histogram × percentiles(p50/95/99) × filter(error/timeout)，近实时 <5s）；**7d 查小时级 rollup**（`obs-metrics-rollup`，每小时 job 预聚合 agent×interface×node×小时（计数桶 + t-digest 可合并分位草图，机制见 7.1 表后））——7d 深聚合超租户档实时 agg 能力，P1 看板页需 rollup 前置（见 §17 #8） |
+
+> **索引治理归属（v3.5.2）**：index template / 按周滚动 / ILM / shard / replicas 由平台定策略、提交 infra 落建（§14 部署边界）；共享集群 index 名带 `{env}.` 前缀（`{env}.obs-event-yyyyWW` / `{env}.obs-log-yyyyWW`），无前缀 = 独立租户默认。同表"集群"行。
 
 **rollup 运行机制（v3.4.5 补全，决策 R7 实现细化——第三轮性能/容错/逻辑三方向同源）**：
 
@@ -321,7 +327,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 
 **能力：** 查询页可自由输入 traceId 和/或关键字（可都输入、可任一）。
 - **traceId 查询**：返回该 trace 全部事件（`(ts,parent,seq)` 树排序，branch 仅标注）→ 前端时间轴（request 根 + 子节点），异常节点红显，日志行穿插，详情含脱敏后堆栈/正文。**大 trace 防护（评审）**：日志行（event_kind=log）分页懒加载，避免单 trace 上千日志行一次拉爆；事件行设单 trace 返回上限 + 超时（§16 登记）。
-- **关键字查询**：全文检索 input/output/log_message/**error_type/error_msg**（评审补：error_msg 需可命中才能按错误摘要找链路）→ 命中 trace 列表（**search_after 深翻页**，避免大 from 偏移拖垮单节点）→ 进入 trace 视图；检索面限最近 7d（可调）+ 结果上限 + 超时（§16 登记）。
+- **关键字查询**：全文检索 input/output/log_message/**error_type/error_msg**（评审补：error_msg 需可命中才能按错误摘要找链路）→ 命中 trace 列表（**search_after 深翻页**，避免大 from 偏移拖垮租户档节点）→ 进入 trace 视图；检索面限最近 7d（可调）+ 结果上限 + 超时（§16 登记）。
 - **边界**：链路覆盖 agent 后端进程内打点；网关/前端 access log 第一版不纳入。
 
 ---
@@ -489,7 +495,7 @@ fix_version 尚无对应回归 run（版本未发布/回归未触发）→ verif
 
 正文查看需该 agent viewer 及以上（§4.6）；脱敏底线见 §4.5。
 
-> **安全补强（六方向评审）**：平台用户域——JWT 用短效 access + refresh、口令散列 + 失败锁定、admin 禁用用户即吊销。agent 上报域——**Kafka 启用 SASL/TLS + topic 级 ACL**（每 agent 凭证映射 producer 身份、topic 间不可互写；否则可写 topic 者即能伪造任意 agent 事件：跨 agent 投毒、伪造 input/quality 制造回流候选、借 §6.1 自动注册污染接口字典）；**broker 侧前置（R3 落地，第三轮）**：`auto.create.topics.enable=false`（防任意主体自建 topic 绕过白名单）、authorizer 默认拒绝（未显式授权即不可读写）、**先建 topic + 绑定 ACL、后发凭证**（消除"先发后建"窗口内凭证持有者可预建/预写）；topic 名白名单（`obs.agent.[a-z0-9-]+`）；**online 消费侧 principal 单独入 ACL**（消费与生产主体分离），开启认证后消费侧遇未授权 topic 消息**丢弃并计数告警**（不静默忽略）；`agent_credential` 加密存储并轮换（版本化、吊销即时生效）。平台间域——online↔offline 最小 API 面（端点白名单 + 双向认证 + 凭证轮换）。存储访问——ES/MySQL 仅 backend 网段可达并启认证 + 传输加密（TLS）、MySQL 按 schema 最小账号权限（9200 对浏览器可及网段开放即绕过本权限模型）。平台用户域——JWT 吊销支持升级为 **token version**（用户表版本号自增，强制历史 token 失效）；被攻陷 agent 借真实凭证刷回流候选/灌指标 → **每 agent 上报/回流候选量级速率闸**（异常激增告警 + 阈值熔断）。
+> **安全补强（六方向评审）**：平台用户域——JWT 用短效 access + refresh、口令散列 + 失败锁定、admin 禁用用户即吊销。agent 上报域——**Kafka 启用 SASL/TLS + topic 级 ACL**（每 agent 凭证映射 producer 身份、topic 间不可互写；否则可写 topic 者即能伪造任意 agent 事件：跨 agent 投毒、伪造 input/quality 制造回流候选、借 §6.1 自动注册污染接口字典）；**broker 侧前置（R3 落地，第三轮）**：`auto.create.topics.enable=false`（防任意主体自建 topic 绕过白名单）、authorizer 默认拒绝（未显式授权即不可读写）、**先建 topic + 绑定 ACL、后发凭证**（消除"先发后建"窗口内凭证持有者可预建/预写）；topic 名白名单（`obs.agent.[a-z0-9-]+`）；**online 消费侧 principal 单独入 ACL**（消费与生产主体分离），开启认证后消费侧遇未授权 topic 消息**丢弃并计数告警**（不静默忽略）；`agent_credential` 加密存储并轮换（版本化、吊销即时生效）。平台间域——online↔offline 最小 API 面（端点白名单 + 双向认证 + 凭证轮换）。存储访问——ES/MySQL 仅 backend 网段可达并启认证 + 传输加密（TLS）、MySQL 按 schema 最小账号权限（9200 对浏览器可及网段开放即绕过本权限模型）。**部署边界承接（v3.5.2）**：ES/MySQL 为公共 infra 租户，"仅 backend 网段可达"由 **infra 网络策略（必配）** + backend 容器不映射 host 中间件端口承接（§14）；浏览器侧仅能到达公共 API 网关、网关为唯一对外入口，杜绝绕过权限模型。平台用户域——JWT 吊销支持升级为 **token version**（用户表版本号自增，强制历史 token 失效）；被攻陷 agent 借真实凭证刷回流候选/灌指标 → **每 agent 上报/回流候选量级速率闸**（异常激增告警 + 阈值熔断）。
 
 ### 12.1 前端页面体系（浏览器层：角色 / 菜单 / 页面 / 功能点）
 
@@ -641,11 +647,20 @@ agent-evaluation-online/
 │   └── tests/
 ├── sdk/                    # obs-sdk（kafka-python + 标准库 + structlog 可选集成）
 ├── frontend/               # React：链路查询 / 指标看板 / 回流记录
-├── docker-compose.yml      # + Kafka / ES
+├── docker-compose.yml      # 仅编排 backend+frontend（交付物）；中间件走公共 infra、连接串经 .env 注入
 └── docs/                   # 观测契约规范 + agent 接入文档
 ```
 
 > 未来可选组件（P2 后排期，非首版）：`collector/` 非 Python/Serverless agent 事件代收组件（§13.0 非 Python 路径）。
+
+**部署边界（v3.5.2 部署约束定稿）**：
+- **交付物**：仅 `backend`（FastAPI，含 api/consumer/analyzer/converter/worker 全部服务）+ `frontend`（React）两个 Docker 镜像，由根 `docker-compose.yml` 编排——**不含任何中间件容器**。
+- **依赖接入（公共 infra 租户）**：MySQL / Kafka / ES 的 endpoint + 最小权限账号由 infra 分配，经 `.env` 注入（不入镜像、不入仓库）；Kafka topic / ACL / consumer group 由平台向 infra **申请落权**后凭证才生效（先建 topic、后发凭证，§12），平台无 broker 建删权；ES index template / ILM / shard / replicas 平台定策略、infra 落建（§7.1）。
+- **租户命名**：库 / index / topic / consumer group 带 `{env}.` 前缀参数化（`{env}.obs`、`{env}.obs-*`、`{env}.obs.*`），无前缀 = 独立集群默认（§17 #15）。
+- **公共 API 网关**：浏览器 → 公共网关（终止 TLS + 域名）→ backend；平台内部自持 JWT（§17 #14）；backend 服务仅接受网关 / 白名单来源；offline↔online 平台间走内网、不经公网网关。
+- **网络**：infra 网络策略为必配项（仅 backend 容器 / 网段可达三依赖端口）；backend 容器不对外暴露 host 的 3306/9200/9092（浏览器侧仅能达公共网关，§12）。
+- **本地开发**：直连 infra dev 实例，或另起 `compose.infra.dev.yml`（**非交付物**，仅个人开发辅助，不进主 compose、不进 CI）。
+- **归属**：本平台工程代码仅含 backend / frontend / sdk / docs；sdk 为库随 agent 侧集成，不单独部署。
 
 ---
 
@@ -666,7 +681,8 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | SDK 影响 agent 业务 | 高 | 异步批量 + 降级丢弃 + 本地磁盘兜底 + 熔断；SDK 自监控 |
-| ES 单节点故障 | 中 | 事件可丢（观测不阻塞业务）；offset 回溯补数据；P2 评估多副本 |
+| 公共 ES 租户故障（v3.5.2 起 ES 归公共 infra，非平台自管单节点） | 中 | 事件可丢（观测不阻塞业务）；offset 回溯补数据；副本/容量由 infra 承担，P2 复评租户 SLA |
+| 公共 infra 共享 / 多租户耦合（v3.5.2 新增） | 中 | 缓解见 §14 部署边界：`{env}.` 前缀隔离 + Kafka topic ACL + infra 网络策略（仅 backend 可达三依赖端口）；平台无中间件管理权、凭证最小化（申请落权）；各依赖故障降级已登记（本表 ES/Kafka/MySQL 相关行）；上线前与 infra 敲定网关/SSO 与租户隔离边界（§17 #14/#15） |
 | 去重误判/漏判 | 中 | 归一化 + 聚类窗口 + per-trace 归并分层优先 + 人工 ignore 兜底 + 审计 |
 | L3 兜底劣化不可见（request status=ok） | 中（二期） | 二期缓解：看板 quality 出口 + trace 按 quality 过滤（§9.1/9.3）；一期无此数据（quality 不采集），劣化由 llm_call 失败指标 + trace 子节点红显承担（§9.1/§16 静默降级行） |
 | 回归假绿（catch 硬错转兜底话术 / no_fallback 无达标线） | 高（offline） | error 用例补 no_fallback 断言（R6，**v1**）：复验判回复未落入兜底话术——dict_config.fallback_utterance 词表规则匹配（不经 LLM judge，§10.3/§11 #4）；**v1 残余承认（v3.5.1）：词表规则匹配对漏词/措辞变体/动态拼接前缀/多语言模板改写仍假绿（如实存在）**——缓解：词表 per-agent 可配（admin-only + 审计；新增兜底话术即补词表，§13.0 checklist #10）+ 空表/未配置 **fail-closed**（判 inconclusive、error draft 结构自检不过，不静默 pass，§11 #4/#5）；二期 quality 判分再走 judge subtype 分叉根治 |
@@ -680,7 +696,7 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | ES 容量/性能论证缺失（评审） | 中 | Step 3 灰度实测后定容量档；事件/日志 index 分离 + size rollover；指标 7d 走小时级 rollup（**v1，决策 R7**，§17 #8/§7.1/§9.2）；单 trace 详情日志分页懒加载（§17 #1/§8） |
 | 静默降级盲区 / 降级型异常漏采（LLM 失败被吞且未插桩 quality；v3.5.1 合并原"降级型异常漏采"重复行） | 中（v1 如实存在，二期收敛） | v3.5.0 一期不插桩 quality → LLM 失败被兜底、request 仍 ok 的现场不进回流（L3 二期），盲区一期如实存在（登记接受）；基础可见性 = llm_call 失败指标 + trace 红显 + **看板『LLM 调用失败』下钻段**（§9.1/§9.3/§12.1）——**前提成文（v3.5.1）**：LLM 调用最终失败无论上层是否 catch 转兜底，`llm_call` 一律标 `status=error`（打点包住裸调用、异常先记后传，§4.2/§5.1；验收见 §13.0 checklist #4/Step 3）；**二期**兜底插桩（§13.1 #5）+ agent 自监控/看板告警收敛（§10.1） |
 | 回归用例携 PII 进 offline（评审；回归 run/case 独立保留档下留存更长，v3.4.5） | 中 | 回流前 input 内容最小化（v1 error 型无会话快照；会话快照最小化约束属二期 C2）+ 正文同级约束（§4.5/§4.6）；offline 侧 case/run 数据面 PII 处置策略（含 judge 判分不扩散原始输入，入 offline 方案 §11）；保留档不豁免脱敏底线 |
-| 关键字全文检索打满单节点拖垮看板/链路（评审） | 中 | 检索限 7d + 超时 + 结果上限 + 慢查询熔断/限流（§8/§17 #1）——input/output 与指标同住事件 index（无独立文本 index，基线为事件/日志分 index），隔离靠限流/熔断而非索引拆分 |
+| 关键字全文检索打满租户档节点拖垮看板/链路（评审） | 中 | 检索限 7d + 超时 + 结果上限 + 慢查询熔断/限流（§8/§17 #1）——input/output 与指标同住事件 index（无独立文本 index，基线为事件/日志分 index），隔离靠限流/熔断而非索引拆分 |
 | SDK「绝不影响业务」承诺前提未成文（评审） | 高 | 有界队列 + 写满**丢弃并计数**（非无限阻塞）+ 本地盘路径可配持久卷（容器重启不丢）+ 降级自监控（§5.1） |
 | ES 写失败丢弃导致维度 3 漏判（评审） | 中 | 分析源 = 消费同批事件（§6.1 step4），不依赖 ES 回读；丢弃/失败计数进自监控 |
 | error_cluster / 建 case 并发与重试非幂等（评审） | 中 | §7.2 去重唯一索引 + link 幂等键 + 处理位点（§6.2）；回查不因 cluster 归档跳过在途 case（防 case pass 而 cluster 永不 fixed）；仅人工 ignore（link 已 superseded）的 cluster 停回查 |
@@ -712,7 +728,9 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | 11 | 疑似漏标告警处置 | **admin 复核 + 自动补标观察窗**（已定，v3.4.5）：窗口内观测到 llm_call 连续达阈值 → 自动置 llm=true 不再疑似；仅存疑进 admin（§10.1） | 该 agent 的 viewer 确认 + admin 复核（弃：R2 无 per-agent viewer 承载归因步，漏标历史可在 trace 详情自查） |
 | 12 | offline 回归 run 保留 | **回归 run 独立保留档**（已定，v3.4.5）：pinned/豁免 cleanup_rules——cleanup 删 run 不删 case（TestCase 从不被批量清理，原"回归用例保留"描述失准已改写为 run 保留）；确需清理超老回归 run 前先归档其 pass_fail 终态快照，回查仍有判单错依据 | 随常规清理（弃：回查历史被清，R5 闭环断） |
 | 13 | low_confidence 判据参数与试点范围**【v3.5.0：收缩为二期规划，v1 不实装】** | 平台客观判定（已定，v3.4.6，§4.4）：θ 默认 0.5 per-agent 可配；试点范围 gq/cs/sp 取数类接口、sp 限定弱命中档、score 排除报价纯公式维度；待定残留：θ 具体取值、弃留墙 T3 阈值与抽样复核节奏、judge 放行开关何时从人工 gate 切入——均留**二期** offline 试点期用真实数据校准后落定 | 全 agent 一刀切 θ（弃：接口证据形态差异大） |
-| — | 状态总览 | #1~#13 **全部已定**（#8 rollup/#9 ACL 于 v3.4.4 裁定；#11/#12 于 v3.4.5 裁定；**#10 于 v3.4.6 随 QPS 全站纵览落定为全站跨 agent 纵览**；#13 于 v3.4.6 增补——判据已定、参数待二期离线试点校准）；#1~#7 更早轮已定。**v3.5.0：仅 #13 滑入二期规划（v1 无 low_confidence 判定），#1~#12 对 v1 全部有效**。**v3.5.1：会话 N 轮摘要收敛 v1 不采集（C1）后，#3（会话复现上下文）一并滑入二期规划（C2 会话型回归），#1~#12 中除 #3 外对 v1 有效** | — |
+| 14 | 公共 API 网关拓扑与 SSO 透传（v3.5.2 部署边界派生） | 默认最简：公网网关终止 TLS + 域名（`{env}.` 参数化）；平台内部自持 JWT（登录取代网关侧 SSO）；backend 仅接受网关转发来源；offline↔online 平台间走内网、不经公网网关 | 若 infra 强制前置 SSO → 需 infra 提供**带签名**的用户身份透传头、backend 验签（防伪造）；P0 上线前与 infra 敲定 |
+| 15 | 共享集群租户命名与环境前缀（v3.5.2 部署边界派生） | `{env}.` 前缀由部署参数注入：`{env}.obs` 库 / `{env}.obs-*` index / `{env}.obs.*` topic / consumer group；无前缀 = 独立集群默认 | 上线前定 env 值域并与 infra 登记命名一致 |
+| — | 状态总览 | #1~#15 **全部已定**（#8 rollup/#9 ACL 于 v3.4.4 裁定；#11/#12 于 v3.4.5 裁定；**#10 于 v3.4.6 随 QPS 全站纵览落定为全站跨 agent 纵览**；#13 于 v3.4.6 增补——判据已定、参数待二期离线试点校准）；#1~#7 更早轮已定。**v3.5.0：仅 #13 滑入二期规划（v1 无 low_confidence 判定），#1~#12 对 v1 全部有效**。**v3.5.1：会话 N 轮摘要收敛 v1 不采集（C1）后，#3（会话复现上下文）一并滑入二期规划（C2 会话型回归），#1~#12 中除 #3 外对 v1 有效**。**v3.5.2：新增 #14/#15（部署边界派生，默认已给、细节 P0 上线前与 infra 敲定），#1~#13 的 v1 有效性判定不变** | — |
 
 ---
 
@@ -735,5 +753,6 @@ P0→P1→P2 顺序推进，每阶段独立交付；agent 整改（P1）与平�
 | v3.4.6 | **低置信客观打标 + pull 传输 + offline 闭环整链脑暴收敛定稿**：①低置信判定**去 LLM 自评、改平台客观推导**（§2 D8/§4.4/§10.1/§13.0：LLM 无自评字段可取、幻觉时最自信，否决 agent 自报——`record_quality(level=low_confidence)` 废弃，SDK 只报 fallback；取数节点（retrieve/tool_call/query）存在且 `retrieve_hit` 空/弱（hit_count=0 / top_score<θ，θ 默认 0.5 per-agent 可配）→ 回复未命中拒答/存疑词表 → 判 low_confidence；`空/缺失节点 ≠ 空命中`）；②**T1/T2/T3 信号分级**（§4.4：T2 取数证据=主判据；T1 llm_call 被吞无 quality → fallback-candidate 观察统计；T3 词表/自报仅送**弃留墙 watchwall** 不直接回流）；③**统一 case payload 信封（D19）**：信封元数据 + 通用 evidence 区 + 类型化 assert 区，新异常类型 = 加 case_type + assert 子结构 + offline 注册判定器，信封结构/链路/去重/状态机不动（§10.3）；④**pull 传输（D20，脑暴定稿）**：online 组装 payload 落库（offline_status=assembled）、不 push、offline 不直连 ES——offline 定时调 online pull-API 拉取建 draft（§10.3/§11 #5/#9/§12 平台间行）；⑤low_confidence 去重改**证据签名**（agent+interface+取数证据+断言态为主键，input_hash 并入，§2 D10/§10.2）——同"空/弱取数仍硬答"不问不同答归并同一证据问题；⑥**试点范围**：gq/cs/sp 取数类接口（§4.4/§13.1），sp 核实代码后**纳入但限定弱命中档**（空命中已被 `_NOT_FOUND_ANSWER` 固定拒答堵死；tool_call 已带 source_count/max_score/confidence_band/hint → SDK 归一映射 retrieve_hit；score 排除报价纯公式 `_calc_price_formula`）；无检索/纯直答接口不产候选（显示状态 + 弃留墙补）；⑦online 保留"观察事实"复发反馈 + **回查守卫**（§10.5：terminal-read-only + fix_version 校验，防复发错改终态/越版本干扰）；⑧§11 offline 补强补 **pending-fix 待修复集 / judge 放行开关**（激活/放出可配置人工 gate ↔ judge 单独放行，试点期默认人工）列 Task #4 输入；§16 补 low_confidence 系统性误判 + T1 统计噪声两风险行；§17 增 #13 low_confidence 判据参数待离线试点校准。SDK/打点补 `retrieve_hit` 契约（§4.1 schema/§4.2 节点表/§13.0 checklist #4/#5/Step 0 #6/§13.1 #5）。**指标看板加全站跨 agent QPS 趋势纵览**（§9.2 查询 agent 缺省=全站/§9.3 看板首层/§12.1 指标看板行；§17 #10 随此落定为全站纵览） |
 | v3.5.0 | **error-only 一期定稿（v3.4.6 脑暴稿范围收缩）**：一期只做 L1/L2 error 回流闭环（§2 D7 回流分层收窄 L1/L2，L3 二期）；**agent 一期不接 quality 观测插桩**——不 `record_quality` / `record_retrieve` / `record_session_state`（§5.1/§13.0 Step 0 #5/#6、Step 1 打点、checklist #5、§13.1 #5），兜底劣化基础可见性由 llm_call 失败指标 + trace 子节点红显承担（§9.1/§16）；v3.4.6 的 L3 机制（T1/T2/T3、弃留墙、词表、证据签名去重、low_confidence 客观判定、quality offline 人工确认、judge 放行开关、试点范围、F-1）**原位降级为【二期规划，v1 不实装】**（§4.4/§10.1/§10.2/§10.3/§12.1/§13/§16/§17 #13），文本不物理搬移以保交叉引用，schema `quality`/`retrieve_hit` 字段与 envelope `regression_quality` case_type 保留为二期占位；error 主干保留：pull 传输（D20）、统一信封 D19 一期只实现 `regression_error`（assert 区带 no_fallback）、R6 no_fallback 兜底断言（**一期 = dict_config.fallback_utterance 兜底话术词表规则匹配、不经 LLM judge**；二期才走 judge-based quality 判分）、全站 QPS 纵览（§9.2/§9.3/§17 #10）、claim/verify 生命周期、单错级回查守卫、指标 rollup（R7）、ES 双 index、error 结构自检激活 + invalidated = error 自检失败（quality rejected 属二期）；§15 阶段表 P0~P2 = v1 error-only 范围；§17 #13 low_confidence 参数滑入二期校准；Task #4 offline 配套方案范围锁定 v1 `regression_error` 子集 |
 | v3.5.1 | **v3.5.0 定稿后六方向独立复评（逻辑/数据流、安全、性能、异常容错、易用性、offline 对接）修入 + 3 项方向裁定**：①**no_fallback 词表信封快照下发**（5 方向命中）——fallback_utterance 词表 per-agent，组装时固化为 D19 assert 区 `no_fallback_config`（词表 + wordlist_version）随 payload 下发，offline 结构自检/verifier 判分一律以 payload 内快照为准（改词表不 retroactively 影响已激活 case、杜绝跨平台同步漂移）；空表/未配置 **fail-closed**（error draft 结构自检不过、判 inconclusive 而非静默 pass）；词表条目仅子串/关键词命中、不按正则执行（防注入/灾难回溯）；变更 admin-only 留审计（§4.4/§10.3/§11 #4/#5/§12.1 配置管理）；pull-API 契约补 `case_type` 白名单（v1 仅 regression_error）+ schema_version、非白名单返回空集、evidence 二期字段 v1 恒 null 声明（§12 平台间行）；②**invalidated/rejected 重推 → offline 侧重扫自愈**（4 方向命中）——error 结构自检失败 = rejected error draft 保留进可重试集合、配置变更后周期重扫重新结构自检、通过即 active 并回写 online（复用 payload_id 幂等）；online 现场缺时经 §12.1 聚类详情 admin"重新组装/重推"复位 assembled 供 pull（记 conversion_record）；§12.1 聚类详情补 case 级人工 invalidate（仅限未激活 assembled/draft，active 后废弃走 superseded+reopen 防 offline/online 分叉）+ invalidated/rejected 重推状态展示（offline 重扫中 / admin 重推入口）；invalidated 补"仍在观察、窗口内不自动重生成、可重推、长期停留找平台"文案（§10.2/§10.3/§10.5/§11 #5/§12.1）；③**error_cluster 最小快照扩存 input 实文**（脱敏+截断 ≤8K，性能方向）——组装取数源钉死为快照实文、不依赖 ES 回读，快照缺 input 实文的残现场按 §10.2 只计数不组装（§7.2/§10.3）；入 MySQL 不放大 PII 留存（脱敏口径与正文同级）。无争议修：**会话 N 轮摘要收敛二期 v1 不采集**（§4.1/§7.1/§10.3 表/§12.1 配置管理二期灰置/§17 #3 + 状态总览，消除安全 F1 三处标期矛盾）；**needs_review 收敛 v1 边缘触发**（仅 claim 回归 infra-error；§10.4/§12.1/§15 P2/§16）；**降级劣化基础可见性补看板消费路径**——『LLM 调用失败』下钻段（LLM 级失败率 → 受影响 trace 列表，request ok + llm_call error/timeout，§9.1/§9.3/§12.1）+ **埋点前提成文**（LLM 最终失败无论上层是否 catch 一律 llm_call 标 error、打点包住裸调用异常先记后传；§4.2/§13.0 checklist #4 验收用例）；**§16 盲区重复行合并**（降级型异常漏采并入静默降级盲区行，二期缓解不再混排进 v1 缓解列）；**回归假绿行补词表残余承认 + fail-closed**（漏词/措辞变体/动态前缀/多语言改写仍假绿如实存在；覆盖度入 §13.0 checklist #10 维度 3 开放验收）；**§4.2 L2 OR 例外口径对齐**（接口字典 llm=true 亦入回流候选，与 §4.3/§10.1 一致）；§11 quality 判分回写 bullet 修 error-only pass_fail 合成语义（executor 技术判定 ∧ verifier no_fallback）；§3 架构图分析 worker 标 L1/L2 分层 v1、§10 标题标 L3 二期；invalidated 人工适用范围约束（仅未激活）+ pending-fix 展示口径（online 本地镜像推导标注近似）；Step 1.1 不采集字段改"省略该键"（省 `_source` 空键冗余）。**待办不变：Task #4 offline 配套方案范围锁定 v1 error-only（regression_error 子集 + R6 no_fallback 词表断言），细节（词表下发通道、拉取积压限速、重扫自愈调度等）入该方案** |
+| v3.5.2 | **同步部署边界（部署约束定稿，方案层同步、无技术决策变更）**：交付物收窄为 backend + frontend 两个 Docker 服务（§14 目录 docker-compose 注释改"仅编排前后端、中间件走公共 infra、连接串 .env 注入"并新增**部署边界**小节；§3 bullet 重写、架构图 Kafka 框尾注与 online 框标注同步、图下加"ES/Kafka 框为逻辑依赖示意"图注）；MySQL / ES / Kafka 改**公共 infra 租户**接入（§7.1 集群行"独立部署"→租户接入、容量 / 指标行"单节点"→租户分配档、表后补索引治理归属注；§5.2 补 broker 归属——topic/ACL/group 申请落权、平台无 broker 建删权；§12 存储访问改 infra 网络策略 + 容器不映射承接、网关为唯一对外入口）；D16 补"ES 部署 = 公共 infra 租户"注；命名 `{env}.` 前缀参数化（§14 部署边界 / §17 #15）；公共 API 网关默认拓扑 = 终止 TLS + 内部自持 JWT、offline↔online 平台间不走公网网关，SSO 透传待与 infra 敲定（§12/§17 #14）；§16 增"公共 infra 共享 / 多租户耦合"风险行、ES 单节点行改租户口径；§17 增 #14/#15、状态总览更新 #1~#15。承接 solution_detail.md v1.1（§1.1 部署边界 / §13.2-13.3 公共 infra 接入 / §12.2 O-6/O-7），本行不改技术决策 |
 
 > 待办（Task #4）：online 方案定稿后，单独推进 offline 配套改造方案（§11 依赖清单为输入），独立方案文档 + 独立评审——**范围锁定 v1 error-only（case_type=`regression_error` 子集 + R6 no_fallback 兜底话术词表断言），不含 quality 判分通道**。
