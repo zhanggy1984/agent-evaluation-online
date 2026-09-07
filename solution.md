@@ -1,6 +1,6 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.5.9（error-only 一期定稿；同步部署边界：仅 backend+frontend Docker、依赖走公共 infra 与公共 API 网关；Task #4 B 包 needs_review v1 源 = error-run 判定产物 + reentry 版本门控语义同步 + v3.5.4 R5-R7 auto-fixed 判据重构权威同步 + v3.5.5 R-1 claim_k / R-2 claimed-case 级纯净判据权威同步 + v3.5.6 R-3~R-10 修订包语义同步 + v3.5.7 R-18/R-19 高危 2 条语义同步 + v3.5.8 R-13~R-17 B 类 5 条语义同步 + v3.5.9 R-20~R-24 C/低危 5 条语义同步，对应 solution_detail v1.9 / offline error-backflow-phase2.md v0.7.2）
+> 版本：v3.5.9（error-only 一期定稿；同步部署边界：仅 backend+frontend Docker、依赖走公共 infra 与公共 API 网关；Task #4 B 包 needs_review v1 源 = error-run 判定产物 + reentry 版本门控语义同步 + v3.5.4 R5-R7 auto-fixed 判据重构权威同步 + v3.5.5 R-1 claim_k / R-2 claimed-case 级纯净判据权威同步 + v3.5.6 R-3~R-10 修订包语义同步 + v3.5.7 R-18/R-19 高危 2 条语义同步 + v3.5.8 R-13~R-17 B 类 5 条语义同步 + v3.5.9 R-20~R-24 C/低危 5 条语义同步，对应 solution_detail v1.10（v1.10 = v1.9 语义 + §14.5 X 系列集成异常/边界用例登记，无语义变更）/ offline error-backflow-phase2.md v0.7.2）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。

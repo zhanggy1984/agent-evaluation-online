@@ -13,6 +13,7 @@
 > 修订记录：2026-09-07 **v1.8（R-13~R-17 H7 批 B 类 5 条逐条评审拍板落字，Task #4-③）**——R-13 input_truncated 判定位窗口化：`input_truncated` 列语义 = **当前判定态**（同键窗口内新现 trace 判定态到达开簇/回填时刷新、单 trace 即刷 ≤8K 清 0；已 closed cluster 不刷新不翻案，§5.1④/§6.2/§7.6 v1.8 ①），截断历史留已产出 needs_review 产物 + 详情警示不抹；R-14 unclean_run 载体口径归一 + 挂起标注：状态机 claim 迁移 reason 列收窄剔除 unclean_run =「只经 batch 载体处置、cluster 不入 needs_review 态」，批引 claim cluster 详情/列表**实时派生「被未决 unclean_run 批 Bx 挂起」标注**（join link_refs 免加列），TTL 不豁免沿用既有兜底（§7.6 状态机表/§7.6 v1.8 ②/§9.x）；R-15 双通道优先级 = **input_truncated 优先**：同 run 双条件 cluster 走截断单条、不并入 unclean_run 批（批 link_refs 排除截断 cluster），reason=input_truncated + note 附环境级 na（§7.6 v1.8 ③/§5.1⑦b）；R-16 缺行诊断**自动消费 excluded 读面**：recheck 判缺行自动 GET runs 比 case_id ∈ excluded_case_ids → 自动标「窗口外欠测」，∉ 维持人工兜底（§7.6 v1.6 ① v1.8 ④/§8.7；offline 零新机制，字段位置 Phase B 核对）；R-17 K 序列**版本锚 = versions 读面**：候选版本序列 = GET versions ≥ fix_version 全版本序（window_days 覆盖 TTL 14d），versions 有版无 error run → 缺行中断（杜绝中间版丢 run 时 v1+v3 假连续 false-fixed），迟到补建终态到达补判推进（§7.6 v1.8 ⑤/§8.7 versions 用途升级 = K 判据序列源）。Phase B 立项：R-13 §6.2 同簇刷新复制、R-16 excluded_case_ids 字段位置核对。对 solution.md v3.5.8。双端均未 commit。
 > 修订记录：2026-09-07 **v1.9（R-20~R-24 H7 批 C/低危 5 条逐条评审拍板落字，Task #4-③）**——**R-20**（offline，本稿仅语义注 + 立项登记）：R-12 core 空答 fail 不动；pre-scan 显式立项为 Phase B code_detail 实施门禁（owner = offline 实施，产物 = pre-scan 报告），复现 run 空答 fail 语义定性 = **leakage 空话术复发证据**（agent 无有效产出、与词表命中 fail 同属未修复、证据形态不同），「空答不落 na、落 verifier fail」保持。**R-21** root-late 补判通道（§4.3④/§4.4/§5.1⑩/§6.1/§6.2）：judged=1 后 root 迟到（root_ok 0→1）且 root_status∈{error,timeout} → 不重跑整 trace、step4 仅补一次 root 级候选（root_error_type 走 L1/L2 值域筛）+ `root_late_complement` 幂等 CAS 标记（§4.4/§5.1⑩）。**R-22** 收尾回填 na 统一 error_type=`scheduler_unexecuted`（scanner 回收/orchestrator cancel/run 级超时收尾三路径同源；「na case 必带 error_type」不变量全覆盖收尾路径；§7.6 v1.9 ①/§8.7）。**R-23** timeout 三层语义分界 + 兜底边界闭合注（case 级 na 源 / run 终态非直接源 = B-3 claim TTL 兜底 / 收尾回填环境级污染→unclean_run 批；§7.6 v1.9 ②）。**R-24** requeue guard 状态域精确化 = `cluster.status ∈ {open, claim, needs_review}` + 锚点保护（不动 fix_version/claim_k/TTL）+ verify 兜底 = 仅 pending invalidated link（§7.4/§9.4/§14 E-29）。对 solution.md v3.5.9；依据 offline `error-backflow-phase2.md` v0.7.2。R-20/R-21 code 变更单独立项 Phase B/实现清单。双端已 commit，收口见下「commit 收口」行。
 > 修订记录：2026-09-07 **commit 收口（双端基线确认）**——online main 0b4662f + e016c45 / offline dev dcf4680 + e85fa2e：solution/solution_detail/task + error-backflow-phase1/phase2/code_detail + 平台本体 docs 各就各位。v1.1~v1.8 历史行「双端均未 commit」为各版当时实态（历史快照保留）；后续修订以本行为 commit 基线。
+> 修订记录：2026-09-07 **v1.10（集成异常与边界用例登记层增补）**——§14 新增 §14.5「集成异常与边界用例（task.md 阶段 4 T-4.13/T-4.14 编号化，X 系列）」X-1~X-13：把 `task.md` T-4.13（异常 6 组）/ T-4.14（边界 7 组）追加场景编号化为验收用例（埋点前提/检索注入转义/平台间契约/大对象/时间/窗口/时序/数量级/并发词表/保留期边界死角），销 task.md L124/L160「须回填 detail §14」待办，验收以 X 编号为权威口径。纯用例登记层增补、无语义变更：solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动。
 
 ---
 
@@ -1407,6 +1408,26 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 - 检索/看板：慢查询熔断/限流 + 单 trace 日志懒加载分页（§8.2 大 trace 防护）。
 - **O-1 护栏已裁定（§12.2，含数值判据）**：agent 缺省=全站 1h/24h 实时 agg 强制结果缓存 `metric_agg_cache_ttl_s=60` + agg 超时 `metric_agg_timeout_ms=3000`；全站 24h agg P95 ≤5s；trace 检索超时 `trace_query_timeout_ms=3000`、命中 ≤200 上限。
 - **写侧/后台判据**：判定态表单行 upsert P95 ≤10ms；rollup 每小时任务完成 ≤2min；judge_scan/cluster/assemble/claim_ttl/recheck 各时间驱动 job 单飞无重复执行（§1.3）；requeue 防抖 ≥5min 生效。
+
+### 14.5 集成异常与边界用例（task.md 阶段 4 T-4.13/T-4.14 编号化，X 系列）
+
+> 本小节把 `task.md` 阶段 4 的 T-4.13（异常 6 组 ①~⑥）/ T-4.14（边界 7 组 ①~⑦）**追加补充场景编号化为验收用例**（X-1~X-13），防用例口径漂移；与 §14.1（S 冒烟）/§14.2（E 回流端到端）语义区分。T-4.13/T-4.14 为 X 系列的来源容器，验收以本小节 X 编号为权威口径。期望列尾锚本文件内部章节（§0.2 规约，无前缀 = 本文件）+ 关联 S/E 用例复验锚。
+
+| # | 场景 | 期望 |
+|---|---|---|
+| X-1 | 消费侧 schema 异常 | 缺必填字段/字段类型错/多余未知字段/整体 null 事件 → S-2 拒绝路径集成复验（丢弃 + selfmonitor 计数）；topic 与 agent 不匹配、白名单外 agent 事件拒收（§4.2） |
+| X-2 | 脱敏死角 | 脱敏键不存在/值已是掩码形态/超长值/嵌套异常层级 → 不炸、不二次脱敏、可追踪（§4.5） |
+| X-3 | 埋点前提 | 裸 LLM 调用失败被业务 catch 转兜底返回 200 → `request ok + llm_call status=error` 先记后传、trace 子节点红显、失败率计数不丢（§2.4/§4.2 前提验收；S-4 真实 agent 复验在本环境的补强） |
+| X-4 | 检索注入与转义 | 关键字含引号/通配符/保留字符/中文分词边界词 → 查询不报错、不误命、不返回错误 scope；search_after 末页后再翻稳定返回空（§8.2 检索） |
+| X-5 | 平台间契约异常 | pull-API 收到 case_type 非白名单 → 返回空集；schema_version 不匹配 → 拒单并计数；回写字段非法/状态越界 → 幂等拒绝不污染状态机（§7.3/§7.4） |
+| X-6 | 大对象边界 | payload 超 Kafka 上限、evidence 实文恰 8K/超 8K 截断、缺 input 残现场只计数（E-13 集成复验）（§3/§6.2） |
+| X-7 | 时间边界 | 事件 ts 未来/1970/UTC 与本地时区交界 → 周 index 归属与 date_histogram 分桶正确；跨周切换落在前后两周的检索去重不重不漏（§2.1 周滚动） |
+| X-8 | 窗口边界 | error 同键恰 7d 聚类窗边缘（第 7 vs 8 天）→ count+1 vs generation 新开（E-4 补强）；指标 24h 实时 vs 24h+1s rollup 路由切换；rollup 迟到恰 6h 幂等重算/超 6h 不再重算/缺桶回退实时 + 页面标注/尾小时实时补齐（§5.3） |
+| X-9 | 判定时序边界 | judge_scan 到期瞬间补判、重复到期不重判（E-16 补强）（§4.3/§6.1） |
+| X-10 | 数量级边界 | trace 检索命中恰 200 与超 200 截断、末页后翻；单 trace 日志上万行首屏懒加载不拉爆（S-5 补强）（§8.2） |
+| X-11 | 并发/竞态边界 | 双实例同 offset 不重复建（E-12 复验）、CAS claim/requeue 与 offline pull 并发、requeue 防抖恰 ≥5min、ack 幂等重放与并发拉取交错（E-15 复验）（§1.3/§7.4） |
+| X-12 | 词表边界死角 | 空表/极短表 fail-closed（E-5 复验）；动态前缀/拼接/大小写/换行/空白差异/超长词/重复词在词表残余承认范围内行为可观测（solution §16 登记口径，不要求全拦、要求假绿时可抽查发现） |
+| X-13 | 保留期边界 | ILM 30 天删除后检索与看板缺口标注行为（衔接 T-5.2）（§7.1） |
 
 ---
 
