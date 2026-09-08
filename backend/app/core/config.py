@@ -76,6 +76,28 @@ class Settings(BaseSettings):
     def consumer_group(self) -> str:
         return self.kafka_consumer_group or f"{self.resource_env}.obs.consumer"
 
+    # ---- Kafka topic / ES index 命名（{resource_env}. 前缀注入，detail §3.3/§5.2） ----
+    # topic 白名单正则 = ^(?:[a-z0-9-]+\.)?obs\.(?:agent\.[a-z0-9-]+|selfmonitor)$（§13.2）
+
+    def agent_topic(self, agent_name: str) -> str:
+        """agent 业务 topic：`{env}.obs.agent.<name>`，partition=1（detail §3.3）。"""
+        return f"{self.resource_env}.obs.agent.{agent_name}"
+
+    @property
+    def selfmonitor_topic(self) -> str:
+        """平台自监控信号 topic（detail §3.6：心跳/dropped 计数共用，与业务 topic 同 ACL）。"""
+        return f"{self.resource_env}.obs.selfmonitor"
+
+    @property
+    def event_index_prefix(self) -> str:
+        """事件 index 前缀（周滚动名 = 前缀 + yyyyWW，detail §5.2；WW 拼装落 ES 层）。"""
+        return f"{self.resource_env}.obs-event"
+
+    @property
+    def log_index_prefix(self) -> str:
+        """日志 index 前缀（周滚动名 = 前缀 + yyyyWW，detail §5.2）。"""
+        return f"{self.resource_env}.obs-log"
+
     @property
     def sqlalchemy_url(self) -> str:
         return (

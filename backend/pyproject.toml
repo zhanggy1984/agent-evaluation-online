@@ -19,7 +19,7 @@ dependencies = [
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.2,<3",
     # 事件存储 / MQ（detail §1.1：ES 8.x、Kafka）
-    "elasticsearch>=8.13,<9",        # AsyncElasticsearch
+    "elasticsearch[async]>=8.13,<9", # AsyncElasticsearch（[async] extra = aiohttp 传输层，缺则容器启动即崩，D6 集成暴露）
     "aiokafka>=0.11,<1",             # consumer 异步消费组（detail §1.6 建议；冲突回退 kafka-python）
     "kafka-python>=2.2,<3",          # SDK/测试直连
     # 平台间 + 安全

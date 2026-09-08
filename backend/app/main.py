@@ -2,7 +2,10 @@
 
 T-0.3 骨架：health + CORS + 错误 handler + 日志。路由（api/）、JWT 鉴权（core/auth，
 §13.1）、worker 拉起（consumer/worker，§4/§1.3）随阶段 1+ 逐步挂入，不一次堆完。
+T-1.2 D5：app_env != test 时 lifespan 拉起消费主循环（consumer/main.py，§4.1 step1~6）。
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,7 +21,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     setup_logging()
 
-    app = FastAPI(title="agent-evaluation-online", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # 消费主循环（§4.1）只在非 test 环境拉起：conftest 骨架单测/TestClient 不起消费链
+        consumer = None
+        if settings.app_env != "test":
+            from app.consumer.main import ConsumerApp
+
+            consumer = ConsumerApp(settings)
+            await consumer.start()
+        yield
+        if consumer is not None:
+            await consumer.stop()
+
+    app = FastAPI(title="agent-evaluation-online", version="0.1.0", lifespan=lifespan)
 
     if settings.cors_origin_list:
         app.add_middleware(
