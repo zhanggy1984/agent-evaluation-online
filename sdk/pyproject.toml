@@ -1,0 +1,33 @@
+# obs-sdk（agent 观测上报库，T-1.5 落地；契约 = solution_detail §11.1 / §2）
+# 与 backend 消费端约定：产出同构 JSON 事件（consumer/schema.py EventModel，schema_version=1.0），
+# 字段必填语义由本包构造函数保证（护栏在 _events.py；真正兜底校验在消费端 validate，S-2 丢弃计数）。
+# 依赖最小化（kafka-python + 标准库 + structlog 可选）——agent 是外部仓，不得依赖 backend.app。
+[project]
+name = "obs-sdk"
+version = "0.1.0"
+description = "agent 观测上报 SDK（detail §11.1 v1 API；内存有界队列 → kafka-python 批量，可靠降级 §3.2）"
+requires-python = ">=3.11"
+dependencies = [
+    "kafka-python>=2.2,<3",   # 上报传输（同 backend 消费端依赖族；dev PLAINTEXT / 生产 SASL）
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.6,<1",
+]
+# structlog 为可选集成（§11.3 sp）：agent 仓自带 structlog 时插 processor，不强制本包依赖
+
+[tool.setuptools.packages.find]
+include = ["obs_sdk*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+lint.select = ["E", "W", "F", "I"]
+[tool.ruff.lint.isort]
+known-first-party = ["obs_sdk"]
