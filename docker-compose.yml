@@ -1,0 +1,67 @@
+# ============================================================
+# agent-evaluation-online — 主编排（交付物，仅 backend + frontend，不含任何中间件）
+#
+# 部署边界（solution §14 / detail §1.1、§1.6）：MySQL/ES/Kafka 一律连共享 infra
+# （D:/study/aiprojcet/infra，external network shared-infra_shared-infra）；
+# 容器内经网络用服务名（mysql/elasticsearch/kafka），宿主本地开发用 .env 直连端口。
+# 连接串/账号/凭证经 .env 注入（不入镜像、不入仓库）。
+#
+# 启动：docker compose up -d --build
+# 访问：http://localhost:${FRONT_HOST_PORT:-8080}（前端 nginx → backend，唯一对外入口）
+# ============================================================
+
+name: agent-evaluation-online
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    container_name: obs-backend
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      RESOURCE_ENV: ${RESOURCE_ENV:-dev}
+      # 容器内经共享 infra 网络用服务名（与宿主 .env 直连端口解耦）
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: ${DB_USER:?db_user 必须设置}
+      DB_NAME: ${DB_NAME:-}
+      DB_PASSWORD: ${DB_PASSWORD:?db_password 必须设置}
+      # alembic DDL 专用账号（成对时用，缺省回退 DB_USER）
+      DB_MIGRATE_USER: ${DB_MIGRATE_USER:-}
+      DB_MIGRATE_PASSWORD: ${DB_MIGRATE_PASSWORD:-}
+      ES_URL: ${ES_URL_INTERNAL:-http://elasticsearch:9200}
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}
+      JWT_SECRET: ${JWT_SECRET:?jwt_secret 必须设置（≥256bit）}
+      FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    # 部署边界：backend 不暴露宿主端口（对外唯一入口 = 前端 nginx → backend）。
+    # 需要宿主直连调试时临时加：ports: ["127.0.0.1:8000:8000"]（用后移除）。
+    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      # 开发热挂载：改代码后 restart 生效（无需 rebuild）
+      - ./backend:/app
+    mem_limit: 1024m
+    cpus: "1.0"
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+  frontend:
+    build: ./frontend
+    container_name: obs-frontend
+    ports:
+      - "${FRONT_HOST_PORT:-8080}:80"
+    depends_on:
+      - backend
+    mem_limit: 128m
+    cpus: "0.25"
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
+networks:
+  shared-infra:
+    external: true
+    name: shared-infra_shared-infra

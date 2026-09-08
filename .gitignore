@@ -1,0 +1,35 @@
+# ---- 密钥与环境变量（严禁提交；连接串/凭证仅 .env） ----
+.env
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# ---- Node / 前端构建 ----
+node_modules/
+dist/
+frontend/dist/
+
+# ---- 运行时数据 ----
+backend/exports/
+backend/backups/
+
+# ---- 一次性验收/探针脚本（含测试凭据，不进仓库；与 offline 仓同纪律） ----
+backend/verify_*.py
+backend/run_*.py
+backend/trigger_*.py
+backend/expand_*.py
+backend/fix_*.py
+backend/gen_*.py
+backend/gold_*.py
+backend/monitor_*.py
+acceptance-*.md
+
+# ---- 本地工具痕迹 ----
+.claude/
+.codegraph/
+*.log

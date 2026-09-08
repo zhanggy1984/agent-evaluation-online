@@ -1,0 +1,58 @@
+# backend 依赖声明（顶层）。与 offline 仓同族惯例：FastAPI + SQLAlchemy 2.x async + Alembic + pydantic v2。
+# 技术栈依据 solution_detail §1.1；目录结构依据 §1.2（可在首 commit 内调整）。
+# 锁依赖可选用 pip-compile（offline 惯例 requirements.lock）；当前骨架直接装 pyproject 依赖。
+[project]
+name = "agent-evaluation-online-backend"
+version = "0.1.0"
+description = "agent-evaluation-online 线上观测平台 backend（error-only v1）"
+requires-python = ">=3.11"
+dependencies = [
+    # web / ASGI
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    # 数据：MySQL（async）+ ORM + 迁移
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "aiomysql>=0.2,<1",
+    "alembic>=1.13,<2",
+    "greenlet>=3.0,<4",
+    # 配置 / 校验
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.2,<3",
+    # 事件存储 / MQ（detail §1.1：ES 8.x、Kafka）
+    "elasticsearch>=8.13,<9",        # AsyncElasticsearch
+    "aiokafka>=0.11,<1",             # consumer 异步消费组（detail §1.6 建议；冲突回退 kafka-python）
+    "kafka-python>=2.2,<3",          # SDK/测试直连
+    # 平台间 + 安全
+    "httpx>=0.27,<1",                # 平台间 pull/回写（§8.7）
+    "cryptography>=42,<44",          # agent_credential 加密（§5.1⑨）
+    "PyJWT>=2.8,<3",                 # JWT（§13.1）
+    "bcrypt>=4.1,<5",                # 口令散列（§13.1）
+    "python-multipart>=0.0.18,<1",   # 表单（若需要）
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.6,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+# tests 直接 import app（backend/ 加 sys.path，pytest>=7 pythonpath）
+pythonpath = ["."]
+# 沿用 offline 惯例：async 引擎连接池绑定单一 event loop（session 级），
+# 新增 async 测试必须自管 session/事务，严禁跨测试共享连接（offline backend/pytest.ini 同注）。
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# 默认规则集外，开启常用正确性/格式集；按需随代码演进调整
+lint.select = ["E", "W", "F", "I"]
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

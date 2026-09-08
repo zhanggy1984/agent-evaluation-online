@@ -1,0 +1,100 @@
+# ============================================================
+# compose.infra.dev.yml — 非交付物（不进主 compose、不进 CI）
+#
+# 用途（solution §14 / detail §1.6）：共享 infra dev 实例暂不可用时的本地过渡兜底，
+# 或故障注入场景。主线 dev 底座 = 本地共享 infra（D:/study/aiprojcet/infra），本文件不作主线
+# （防双底座漂移）。镜像/版本与 infra 仓保持一致（ES 镜像以 infra compose 为准）。
+# ============================================================
+
+name: agent-evaluation-online-dev
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: obs-dev-mysql
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-dev.obs}
+      MYSQL_USER: ${DB_USER:-obs_backend}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?db_password 必须设置}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    ports:
+      - "${DEV_MYSQL_PORT:-3306}:3306"
+    networks:
+      - dev-local
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: obs-dev-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+    ports:
+      - "${DEV_ES_PORT:-9200}:9200"
+    networks:
+      - dev-local
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: obs-dev-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "${DEV_KAFKA_PORT:-39092}:9092"
+    networks:
+      - dev-local
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    container_name: obs-dev-backend
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      RESOURCE_ENV: ${RESOURCE_ENV:-dev}
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: ${DB_USER:-obs_backend}
+      DB_PASSWORD: ${DB_PASSWORD:?db_password 必须设置}
+      ES_URL: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:?jwt_secret 必须设置}
+      FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      - ./backend:/app
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - mysql
+      - elasticsearch
+      - kafka
+    networks:
+      - dev-local
+
+  frontend:
+    build: ./frontend
+    container_name: obs-dev-frontend
+    ports:
+      - "${FRONT_HOST_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - dev-local
+
+networks:
+  dev-local:
+    driver: bridge

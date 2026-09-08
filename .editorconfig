@@ -1,0 +1,16 @@
+# detail §1.5 命名与口径约定 → 编辑器统一（含文件级规约；git 归约见 CONTRIBUTING）
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
