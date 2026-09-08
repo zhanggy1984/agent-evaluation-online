@@ -27,6 +27,8 @@ backend/fix_*.py
 backend/gen_*.py
 backend/gold_*.py
 backend/monitor_*.py
+backend/metrics_s5_*.py
+backend/s5out.txt
 acceptance-*.md
 
 # ---- 本地工具痕迹 ----

@@ -48,6 +48,40 @@ services:
     networks:
       - shared-infra
 
+  # worker：独立进程跑后台 jobs（T-2.1 judge_scan 60s + T-2.3 rollup 整点），同镜像同 env。
+  # 不跑 alembic（backend 迁完建表，worker 启动守卫等 agent 表就绪）；命令 = python -m app.worker。
+  worker:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile
+    container_name: obs-worker
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      RESOURCE_ENV: ${RESOURCE_ENV:-dev}
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: ${DB_USER:?db_user 必须设置}
+      DB_NAME: ${DB_NAME:-}
+      DB_PASSWORD: ${DB_PASSWORD:?db_password 必须设置}
+      DB_MIGRATE_USER: ${DB_MIGRATE_USER:-}
+      DB_MIGRATE_PASSWORD: ${DB_MIGRATE_PASSWORD:-}
+      ES_URL: ${ES_URL_INTERNAL:-http://elasticsearch:9200}
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}
+      JWT_SECRET: ${JWT_SECRET:?jwt_secret 必须设置（≥256bit）}
+      FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    command: sh -c "python -m app.worker"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+    mem_limit: 512m
+    cpus: "0.5"
+    restart: unless-stopped
+    networks:
+      - shared-infra
+
   frontend:
     build: ./frontend
     container_name: obs-frontend

@@ -7,9 +7,10 @@
   （judged=1 后重复到期不重判，聚类消费后置 processed）。D3 只做累积 + 幂等位。
 - 多实例安全：同 trace 单 partition 串行（§3.3 partition=1），无并发写同行；
   offset 重放由 uk_trace 唯一行吸收（不重复建行）+ judged 位吸收（不重复判定）。
-- R-21 root-late（v1.9）：judged=1 后迟到的 root（root_ok 0→1）且 root_status
-  ∈{error,timeout} → CAS `root_late_complement` 0→1 置位 + 返回触发信号；不重跑整 trace
-  （补判候选执行归 classify，§6.1，T-3.6 实现——本步只落幂等柱与触发点）。
+- R-21 root-late（v1.12 判定就位）：judged=1 后迟到的 root（root_ok 0→1）且 root_status
+  ∈{error,timeout} → CAS `root_late_complement` 0→1 置位 + 返回触发信号；主循环在**同一
+  事务**调 root_late_complement 做单事件补判（analyzer.classify，写 judgement_json.root_late；
+  不改 judged、不重跑整 trace、不推翻已判 candidates）。聚类归并 = T-3.6 消费该字段。
 - ttl_until = 最后触发行事件的 ts + 完成窗口 + 宽限（【实现约定】60s + 300s，§4.3/§6.1，
   参数由 dict_config 运行时键注入，D5 启动加载）。
 """
@@ -19,9 +20,19 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analyzer.classify import (
+    AgentContext,
+    TraceFacts,
+    root_late_decision,
+    root_late_payload,
+)
 from app.consumer.schema import EventModel
 from app.core.input_hash import compute_input_hash, snapshot_input
+from app.models.agent import Agent, Interface
+from app.models.config import DictConfig
 from app.models.error_flow import TraceJudgeState
+
+_BACKFLOW_KEY = "backflow_enabled"  # per-agent dict_config 回流总开关键（§10.1）
 
 
 @dataclass
@@ -128,6 +139,12 @@ def merge_trace_state(
             # 已判定（judged=1）后迟到的子节点：累积已冻结（判定期快照已成型，§4.4 judged 位
             # 防重放）→ 不改动不写行不续窗；迟到 root 由 is_root 的 R-21 CAS 单独处理。
             return state, StateEffects()
+        # 缺口 A（v1.12）回填：残 trace（root 未达）首个落行子节点把 request interface 补上。
+        # 同 trace 顶层 interface 同值（§2.1 interface 为请求级字段）；root 先到则已被 is_root
+        # 分支写死。L2「接口字典 llm=true」判定与后续 cluster 键（agent+interface+…）依赖行级
+        # interface，缺行则残 trace 无对象可查。
+        if state["interface"] is None and event.interface:
+            state["interface"] = event.interface
         # 子节点累积：llm_fact_ok（llm_call 动态事实，§6.1 step2）/ error 汇入 err_summary
         if is_llm:
             state["llm_fact_ok"] = 1
@@ -220,3 +237,54 @@ def _row_to_dict(row: TraceJudgeState) -> dict:
         "root_late_complement": row.root_late_complement,
         "ttl_until": row.ttl_until,
     }
+
+
+async def root_late_complement(session: AsyncSession, event: EventModel) -> None:
+    """R-21 补判执行（apply_event CAS 置位后、同一事务 commit 前由主循环调用）。
+
+    只把迟到 root 的 error_type 过一次值域表（analyzer.classify.root_late_decision）并写
+    `judgement_json.root_late`；不改 judged、不重跑整 trace、不推翻已判 candidates。
+    root_late 对象 = T-3.6 聚类归并取数源。幂等：`root_late_complement` 位=1 才进
+    （重放时 apply_event 的 CAS 返回 False 不触发本函数，不会重复写）。
+    """
+    row = await _get_row(session, event)
+    if row is None or not (bool(row.judged) and bool(row.root_late_complement)):
+        return
+    agent_row = await session.scalar(select(Agent).where(Agent.name == event.agent))
+    backflow_enabled = True  # per-agent dict_config 缺键回退开启
+    interface_llm: bool | None = None
+    if agent_row is not None:
+        flag = await session.scalar(
+            select(DictConfig.config_value).where(
+                DictConfig.agent_id == agent_row.id,
+                DictConfig.config_key == _BACKFLOW_KEY,
+            )
+        )
+        if flag is not None:
+            backflow_enabled = bool(flag)
+        hit = await session.scalar(
+            select(Interface.id).where(
+                Interface.agent_id == agent_row.id,
+                Interface.interface == event.interface,
+                Interface.llm == 1,
+            )
+        )
+        interface_llm = hit is not None
+    facts = TraceFacts(
+        root_ok=True,
+        root_status=row.root_status,
+        root_error_type=row.root_error_type,
+        interface=row.interface,
+        llm_fact_ok=bool(row.llm_fact_ok),
+    )
+    ctx = AgentContext(
+        agent_exists=agent_row is not None,
+        backflow_allow=bool(agent_row.backflow_allow) if agent_row else False,
+        agent_enabled=bool(agent_row.enable) if agent_row else False,
+        backflow_enabled=backflow_enabled,
+        interface_llm=interface_llm,
+    )
+    result = root_late_decision(facts, ctx)
+    jj = dict(row.judgement_json) if isinstance(row.judgement_json, dict) else {}
+    jj["root_late"] = root_late_payload(result, row.root_status)
+    row.judgement_json = jj

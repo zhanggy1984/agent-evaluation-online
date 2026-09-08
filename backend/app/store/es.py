@@ -192,3 +192,291 @@ def _hits_result(resp) -> dict:
     total = resp["hits"]["total"]
     total_value = total["value"] if isinstance(total, dict) else int(total)
     return {"hits": [h["_source"] for h in resp["hits"]["hits"]], "total": int(total_value)}
+
+
+# ============================================================================
+# metrics 实时聚合层（detail §8.4 + §14.4 护栏，T-2.2）
+# 只读 request/llm_call 事件（overview 以 node=request 锚点；log index 与指标无关，仅查 event index）。
+# 护栏：agg request_timeout 由调用方传秒（metric_agg_timeout_ms dict 键 / 3000ms，seed 默认）；
+# anomalies/llm-failures 是列表（非聚合）永远读实时事件 index（rollup 丢 trace 身份）。
+# 7d 时段已完成小时走 rollup（T-2.3 metrics_rollup 读助手），本层只管实时聚合面。
+# ============================================================================
+
+
+def event_index_patterns(settings) -> list[str]:
+    """指标检索 index 集 = 事件前缀周滚动全量（指标只取事件，不查 log index）。"""
+    return [f"{settings.event_index_prefix}-*"]
+
+
+def _base_metrics_query(
+    agent: str | None,
+    start_ts: int,
+    end_ts: int,
+    node: str | None = None,
+    statuses: list[str] | None = None,
+) -> dict:
+    """指标查询公共 bool：时间窗 + 排心跳（filter），可选 node/agent/status∈ 追加。
+
+    各 body 的 node/agent/status 约束一律放 filter——指标只做过滤不做评分，语义与 must 一致。
+    """
+    filters: list[dict] = [{"range": {"ts": {"gte": start_ts, "lte": end_ts}}}]
+    if node:
+        filters.append({"term": {"node": node}})
+    if agent:
+        filters.append({"term": {"agent": agent}})
+    if statuses:
+        filters.append({"bool": {"should": [{"term": {"status": s}} for s in statuses]}})
+    return {"bool": {"filter": filters, "must_not": [_NODE_HEARTBEAT]}}
+
+
+def build_metrics_overview_body(
+    *, agent: str | None, start_ts: int, end_ts: int, interval: str
+) -> dict:
+    """GET /metrics/overview 实时 body（request 锚）：pct[50/95/99] + err/to 计数 + 时序子聚合。
+
+    顶层 percentiles 在 request 锚全量 duration_ms（含 error/timeout，§8.4 口径钉死）；
+    series 每桶只挂 err/to 两个 filter 计数（buckets 内不放 percentiles——成本高）。
+    """
+    return {
+        "query": _base_metrics_query(agent, start_ts, end_ts, node="request"),
+        "size": 0,
+        "track_total_hits": True,
+        "aggs": {
+            "pct": {"percentiles": {"field": "duration_ms", "percents": [50, 95, 99]}},
+            "err": {"filter": {"term": {"status": "error"}}},
+            "to": {"filter": {"term": {"status": "timeout"}}},
+            "series": {
+                "date_histogram": {"field": "ts", "fixed_interval": interval},
+                "aggs": {
+                    "err": {"filter": {"term": {"status": "error"}}},
+                    "to": {"filter": {"term": {"status": "timeout"}}},
+                },
+            },
+        },
+    }
+
+
+def build_metrics_interfaces_body(
+    *, agent: str | None, start_ts: int, end_ts: int
+) -> dict:
+    """GET /metrics/interfaces 实时 body：单查询双 filter agg（请求级 + LLM 级双 tab）。
+
+    外层 query 只做时间窗 + 排心跳（node 各自在 req/llm filter agg 内锚），一次 ES 往返
+    出双 tab——req filter agg 的 doc_count 即请求总数，llm 同。agent 过滤走外层（两 tab 共用）。
+    """
+    return {
+        "query": _base_metrics_query(agent, start_ts, end_ts),
+        "size": 0,
+        "aggs": {
+            "req": {
+                "filter": {"term": {"node": "request"}},
+                "aggs": {
+                    "by_iface": {
+                        "terms": {"field": "interface", "size": 50},
+                        "aggs": {
+                            "pct": {"percentiles": {
+                                "field": "duration_ms", "percents": [50, 95, 99]}},
+                            "err": {"filter": {"term": {"status": "error"}}},
+                            "to": {"filter": {"term": {"status": "timeout"}}},
+                        },
+                    }
+                },
+            },
+            "llm": {
+                "filter": {"term": {"node": "llm_call"}},
+                "aggs": {
+                    "by_iface": {
+                        "terms": {"field": "interface", "size": 50},
+                        "aggs": {
+                            "fail": {"filter": {"bool": {"should": [
+                                {"term": {"status": "error"}},
+                                {"term": {"status": "timeout"}},
+                            ]}}},
+                            "by_model": {
+                                "terms": {"field": "model", "size": 20},
+                                "aggs": {
+                                    "fail": {"filter": {"bool": {"should": [
+                                        {"term": {"status": "error"}},
+                                        {"term": {"status": "timeout"}},
+                                    ]}}},
+                                    # tokens 在嵌套 usage.* 下（consumer/es.py::_MAPPING，勿用顶层）
+                                    "pt": {"sum": {"field": "usage.prompt_tokens"}},
+                                    "ct": {"sum": {"field": "usage.completion_tokens"}},
+                                },
+                            },
+                        },
+                    }
+                },
+            },
+        },
+    }
+
+
+def build_anomalies_body(
+    *, agent: str | None, start_ts: int, end_ts: int, size: int
+) -> dict:
+    """GET /metrics/anomalies body：request 红显（error/timeout）列表，ts desc。"""
+    return {
+        "query": _base_metrics_query(
+            agent, start_ts, end_ts, node="request", statuses=["error", "timeout"]),
+        "size": size,
+        "sort": [{"ts": {"order": "desc", "format": "epoch_millis"}}],
+    }
+
+
+def build_llm_failures_body(
+    *, agent: str | None, start_ts: int, end_ts: int, size: int
+) -> dict:
+    """GET /metrics/llm-failures Q1 body：llm_call 红显按 trace 折叠，取每 trace 最新失败。
+
+    折叠键 = trace_key；命中行为 llm_call 失败现场（携带 interface/model/error），
+    Q2（同 trace request 状态查）由 API 层另发，本函数只出 Q1。
+    """
+    return {
+        "query": _base_metrics_query(
+            agent, start_ts, end_ts, node="llm_call", statuses=["error", "timeout"]),
+        "collapse": {"field": "trace_key"},
+        "sort": [{"ts": {"order": "desc", "format": "epoch_millis"}}],
+        "size": size,
+    }
+
+
+def build_request_statuses_body(trace_ids: list[str]) -> dict:
+    """GET llm-failures Q2 body：一批 trace 的 request 节点行（terms≤100 护栏）。"""
+    return {
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"node": "request"}},
+                    {"terms": {"trace_key": trace_ids[:100]}},
+                ],
+                "must_not": [_NODE_HEARTBEAT],
+            }
+        },
+        "size": 200,
+        "_source": ["trace_key", "status"],
+    }
+
+
+def _parse_percentiles(bucket: dict, key: str = "pct") -> dict[str, float | None]:
+    """percentiles agg bucket → {50: v, 95: v, 99: v}（ES 响应键带小数 .0，逐键回读）。"""
+    out: dict[str, float | None] = {"50": None, "95": None, "99": None}
+    vals = (bucket.get(key) or {}).get("values") or {}
+    for pct in ("50.0", "95.0", "99.0"):
+        v = vals.get(pct)
+        if v is not None:
+            out[pct[:-2]] = float(v)
+    return out
+
+
+def _series_rows(buckets: list[dict]) -> list[dict]:
+    """date_histogram buckets → [{ts(epoch ms), count, error, timeout}]（空桶剔除）。"""
+    rows = []
+    for b in buckets:
+        ts = int(b.get("key") or 0)
+        if not ts:
+            continue
+        rows.append({
+            "ts": ts,
+            "count": int(b.get("doc_count") or 0),
+            "error": int((b.get("err") or {}).get("doc_count") or 0),
+            "timeout": int((b.get("to") or {}).get("doc_count") or 0),
+        })
+    return rows
+
+
+async def run_metrics_overview(
+    client, *, settings, request_timeout_s: float, **kw
+) -> dict:
+    """overview 实时查询 → {total, p50, p95, p99, error, timeout, series[]}。"""
+    body = build_metrics_overview_body(**kw)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    total = resp["hits"]["total"]
+    total_value = total["value"] if isinstance(total, dict) else int(total)
+    aggs = resp.get("aggregations") or {}
+    pcts = _parse_percentiles(aggs)
+    return {
+        "total": int(total_value),
+        "p50": pcts["50"],
+        "p95": pcts["95"],
+        "p99": pcts["99"],
+        "error": int((aggs.get("err") or {}).get("doc_count") or 0),
+        "timeout": int((aggs.get("to") or {}).get("doc_count") or 0),
+        "series": _series_rows((aggs.get("series") or {}).get("buckets") or []),
+    }
+
+
+async def run_metrics_interfaces(
+    client, *, settings, request_timeout_s: float, **kw
+) -> dict:
+    """interfaces 实时查询 → {request: [ReqIfaceRow], llm: [LlmIfaceRow]}（解析钉定形状）。"""
+    body = build_metrics_interfaces_body(**kw)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    aggs = resp.get("aggregations") or {}
+    request_rows: list[dict] = []
+    for b in (aggs.get("req") or {}).get("by_iface", {}).get("buckets") or []:
+        pcts = _parse_percentiles(b)
+        request_rows.append({
+            "interface": b.get("key"),
+            "total": int(b.get("doc_count") or 0),
+            "error": int((b.get("err") or {}).get("doc_count") or 0),
+            "timeout": int((b.get("to") or {}).get("doc_count") or 0),
+            "p50": pcts["50"], "p95": pcts["95"], "p99": pcts["99"],
+        })
+    llm_rows: list[dict] = []
+    for b in (aggs.get("llm") or {}).get("by_iface", {}).get("buckets") or []:
+        llm_rows.append({
+            "interface": b.get("key"),
+            "total": int(b.get("doc_count") or 0),
+            "error": int((b.get("fail") or {}).get("doc_count") or 0),
+            "models": [
+                {
+                    "model": m.get("key"),
+                    "total": int(m.get("doc_count") or 0),
+                    "error": int((m.get("fail") or {}).get("doc_count") or 0),
+                    "prompt_tokens": int((m.get("pt") or {}).get("value") or 0),
+                    "completion_tokens": int((m.get("ct") or {}).get("value") or 0),
+                }
+                for m in (b.get("by_model") or {}).get("buckets") or []
+            ],
+        })
+    return {"request": request_rows, "llm": llm_rows}
+
+
+async def fetch_anomalies(
+    client, *, settings, request_timeout_s: float, size: int = 100, **kw
+) -> dict:
+    """anomalies 实时列表（request 红显，ts desc）。"""
+    body = build_anomalies_body(size=size, **kw)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    return _hits_result(resp)
+
+
+async def fetch_llm_failures(
+    client, *, settings, request_timeout_s: float, size: int = 100, **kw
+) -> dict:
+    """llm-failures Q1（按 trace 折叠的最新 llm_call 失败现场）。"""
+    body = build_llm_failures_body(size=size, **kw)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    return _hits_result(resp)
+
+
+async def fetch_request_statuses(client, *, settings, request_timeout_s: float,
+                                 trace_keys: list[str]) -> dict[str, str]:
+    """llm-failures Q2：trace_key → request 节点 status（无该 trace request 则缺失）。"""
+    if not trace_keys:
+        return {}
+    body = build_request_statuses_body(trace_keys)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    return {h["_source"].get("trace_key"): h["_source"].get("status")
+            for h in resp["hits"]["hits"] if h["_source"].get("trace_key")}

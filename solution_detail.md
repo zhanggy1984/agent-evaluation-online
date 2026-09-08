@@ -15,6 +15,7 @@
 > 修订记录：2026-09-07 **commit 收口（双端基线确认）**——online main 0b4662f + e016c45 / offline dev dcf4680 + e85fa2e：solution/solution_detail/task + error-backflow-phase1/phase2/code_detail + 平台本体 docs 各就各位。v1.1~v1.8 历史行「双端均未 commit」为各版当时实态（历史快照保留）；后续修订以本行为 commit 基线。
 > 修订记录：2026-09-07 **v1.10（集成异常与边界用例登记层增补）**——§14 新增 §14.5「集成异常与边界用例（task.md 阶段 4 T-4.13/T-4.14 编号化，X 系列）」X-1~X-13：把 `task.md` T-4.13（异常 6 组）/ T-4.14（边界 7 组）追加场景编号化为验收用例（埋点前提/检索注入转义/平台间契约/大对象/时间/窗口/时序/数量级/并发词表/保留期边界死角），销 task.md L124/L160「须回填 detail §14」待办，验收以 X 编号为权威口径。纯用例登记层增补、无语义变更：solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动。
 > 修订记录：2026-09-08 **v1.11（阶段 1 尾项实现收口 + 前端栈裁定落字 + 查询实测修正，= task.md 阶段 1 T-1.3/T-1.4/T-1.6 + auth 隐式前置）**——本批实现约定与 S-1/S-5 验证发现：① **前端栈裁定 Vue3 + Vite**（本版 §9 全章 React 措辞随改；solution.md 六处同步就地修补、不升版——H7 A 类「直接修补不升版本」先例，语义基线不动）；② **Authorization 承载与 token 存储落定**（原文档缺口）：`Authorization: Bearer` 头 + access/refresh 双 token 存 localStorage（`obs_access`/`obs_refresh`），401 single-flight refresh-on-401；**登录成功落点先指 `/traces`**（§9.1 注，dashboard 属阶段 2 就位后改回）；③ **auth 最小闭环边界显式化**：5 次/15min 失败锁定 = 进程内计数（uvicorn `--workers 1` 单实例，重启清零可接受），**无 token-version 列迁移**——user_version 即时吊销属 §8.6 阶段 3 面，UserSession revoked + status 检查 + access 15min 短效已覆盖最小面；④ **trace 列表去重总数 = `cardinality(trace_key)` agg**（S-5 实测：ES collapse 不改 hits.total = 折叠前文档数，去重口径须独立 agg；折叠键须 concrete keyword 字段——collapse 不支持 runtime 字段，实测 400，见 es.py `build_trace_list_body`）；⑤ **详情排序 = seq asc 结构序**（S-1 实测：SDK 在中间件 finally 才 emit request 事件、其 ts 恒为全 trace 最大 → ts asc 让根锚点沉底子树散乱，改 seq 创建序即拓扑序，见 es.py `build_trace_events_body`）；⑥ **正文保护维持**（body_search=false 置空 input/output/log_message、检索面收窄 error_msg/error_type，前端零渲染兜底两层）；红显 = status∈{error,timeout}、llm_call 高亮 = node=="llm_call" 语义不变（CSS 顺序修正：red 定义于 llm 之后保证重叠时红胜）；⑦ **部署实测两坑**：nginx 反代目标须 container_name `obs-backend`（dev 共享 external network 上 `backend` alias 被 5 仓轮询占用 → 实测 /api 404）；`backend/.env` 会被 docker compose 按运行 CWD 加载并覆盖仓根 `.env`（DB_PASSWORD 错源 → Access denied），容器重建须 `--force-recreate` 才吃新 env。solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动。
+> 修订记录：2026-09-08 **v1.12（阶段 2 平台轨 T-2.1~T-2.4 收口 + 指标链路实现钉定，= task.md 阶段 2 平台轨子集）**——本批实现约定与验证发现：① **L1/L2 分层判定落地**（§6.1 `analyzer/classify.py` 纯函数：白名单门 + llm_fact_ok 重算（列==1 或 entries 有 error_type∈LLM_ERR_TYPES）+ L1/L2/OR 门控 + 残 trace 子节点照判 + `root_late_decision` 单事件值域筛）；judge_scan_job 落独立 worker 进程 **asyncio 自管循环**（judge_scan 1min + rollup 整点对齐，仿 consumer `_heartbeat_loop`，非 APScheduler）；`judgement_json` 落库形状钉死 `{version,decided_at,layer,gate,llm_fact_ok,root,candidate_error_sets,root_late}`、`root_late` = `{status,error_type,layer,hit,at}`（R-21 root-late 补判通道输出 = 消费 step4 同事务 CAS 落库，judged 不推翻；§4.3④，T-3.6 直接消费不改）；残 trace 子节点分支 interface 回填（state.py 非 root 分支，§4.3，残 trace 首个 error 子节点回填支撑 L2 字典查询）；② **metrics 四端点落地**（§8.3 `app/api/metrics.py`，响应字段形状本版 §8.3 增补钉定）——overview/interfaces/anomalies/llm-failures 全 ViewerUser，window∈{1h,24h,7d}，1h/24h 实时 date_histogram、7d 走 §5.3 混合路由；参数非法 / agg 超时 / ES 不可用 → `ERR_METRICS_0001`(400)（**复数前缀确认**，§8.9）；**O-1 护栏落地 = 进程内无锁缓存** key=`endpoint|agent('*' 全站)|window`、TTL=`metric_agg_cache_ttl_s`=60、agg request_timeout=`metric_agg_timeout_ms`=3000，缓存命中跳过 ES（§8.3/§12.2 O-1 行）；③ **7d 小时级 rollup 落地**（§5.3）——单 index `{env}.obs-metrics-rollup`（非周滚动）+ mapping dynamic:false + **doc_type group/meta 分列**（meta doc 记源计数）+ 确定性 `_id = sha256("rollup|agent|interface|node|model|hour")` 整小时重算覆写幂等 + `rollup-meta|{hour}` 廉价迟到探测（下轮 count(size:0) 比对 meta、仅差异小时重算，避免每轮重扫 6h）+ sketch 序列化 JSON-base64；④ **O-4 裁定变更：PyPI `tdigest` → 自研纯 Python t-digest**（`app/store/tdigest.py`——PyPI 包 C 依赖在无 MSVC Windows 源码编译失败、本环境索引无纯 Python 替包，用户确认自研；只喂去重带权样本 + 超 K 单遍压缩 + 确定性，跨小时合并误差实证 <1%，§12.2 O-4 行更新）；⑤ **7d mixed 读取口径实现钉定（用户拍板，§5.3 回填）**：卡片 p50/p95/p99 = **仅 merge rollup 已覆盖整点小时** request-node sketch（跨源分位不可精确合成）；**total/error/timeout 计数与 series 保持实时整窗**（精确超集、不与 rollup 计数掺——rollup 计数与源一致由 meta 探测保证）；interfaces 行级分位保持实时 agg（覆盖小时样本不足支撑行级 covered-only 近似）；rollup index 缺失 / ES 查询异常 → 降级整窗实时（covered=[] → source=realtime）；响应 `source∈{rollup,realtime,mixed}` + `fallback_hours`（窗内未覆盖整点小时），7d mixed 时前端横幅「部分时段回退实时口径（N 个整点小时无 rollup 覆盖）」；⑥ **T-2.4 dashboard 前端落地**（Vue3 `/dashboard` + 手写 SVG `TimeSeriesChart` 折线（不引图表库）+ 空态 4 型 + 概览卡/接口双 tab/异常聚焦/LLM 调用失败下钻 → trace 详情）；登录落点 `/traces` → `/dashboard`（§9.1 v1.11 注兑现）；⑦ 验证：backend 单测 **237 passed** + lint 零告警；demo 数据（gen_metrics_demo.py）+ rollup 写侧 one-shot 重建 6 已完成小时、group 计数与 meta source_count 对齐；**真实 rollup data 上 7d mixed 分位 vs ES 实时重算偏差 p50 0.35% / p95 0.04% / p99 0.17%（<1% 达标）**；S-5 curl 四端点 × 1h/24h/7d + agent/interfaces 过滤 + window 非法 400 全绿；S-1 浏览器 e2e（dashboard 空态/卡片数值/7d mixed 横幅/interfaces 双 tab/异常下钻 trace 详情）全绿。solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动；task.md 阶段 2 平台轨子集出口达成（收口注随落，T-2.5 真实 agent 联调 defer agent 整改轨，平台侧条件已就绪）。**实现修订（挑战 3 双缺陷修复，2026-09-08 追加本版行）**：⑦（原⑤）7d 覆盖基准改 = **rollup 小时级 meta doc**（新 store 助手 `fetch_rollup_covered_hours`；rollup_job 对处理过小时恒写 meta、含零流量 → 空小时算已覆盖、非缺口，不再被当缺口永久实时回补）；`fallback_hours` 只列**已闭合**小时缺口——当前进行中小时由 rollup 设计上不预聚合、实时回补，**不计缺口** → 全部已闭合小时覆盖时 `source="rollup"` 可达（三态落实非死码）、无任何覆盖 = `source="realtime"` 且 `fallback_hours=[]`（§5.3 读取口径块已按此改写）。对应单测：metrics 19→21 passed + backend 全量 **238 passed**。
 
 ---
 
@@ -758,23 +759,35 @@ CREATE TABLE `trace_judge_state` (
 | 时间窗 | 数据源 | 说明 |
 |---|---|---|
 | 1h / 24h | ES 实时 agg | `date_histogram × percentiles(duration_ms)[p50/95/99] × filter(status=error/timeout)`；request/llm_call 双锚点分别 agg |
-| 7d（>24h） | `obs-metrics-rollup` | 小时桶预聚合 + **尾小时实时补齐**（趋势不截断） |
+| 7d（>24h） | `{env}.obs-metrics-rollup` | 小时桶预聚合 + **尾小时实时补齐**（趋势不截断） |
 
-**rollup index `obs-metrics-rollup`**（每小时 job 写，doc 维度 agent×interface×node×hour）：
+**rollup index `{env}.obs-metrics-rollup`**（单 index 非周滚动，小时粒度总量可控；worker 每小时 job 写，doc 维度 agent×interface×node×hour；mapping `dynamic:false` + 白名单，实现定稿 v1.12）：
 
 | 字段 | 含义 |
 |---|---|
-| agent / interface / node（request·llm_call）/ model(null for request) | 分桶键 |
-| hour | 小时（`yyyy-MM-ddTHH:00`） |
-| total / error / timeout | status 互斥计数桶（usage 只在 llm_call 桶） |
+| agent / interface / node（request·llm_call）/ model（request 级为空串） | 分桶键 |
+| hour / ts | 小时（`yyyy-MM-ddTHH:00`，UTC，keyword）/ 小时起点 epoch_millis（hour/ts 双写：hour 供 keyword 归并、ts 供 date_histogram） |
+| doc_type | `group`=组 doc / `meta`=小时 meta doc（检索判别；meta doc 记该小时源计数供廉价迟到探测） |
+| schema_version | sketch 版式版本（=1，消费侧判新旧） |
+| total / error / timeout | status 互斥计数桶（usage 只在 llm_call 桶；llm 失败率口径 = (error+timeout)/total） |
 | prompt_tokens / completion_tokens | llm_call 桶 token 汇总 |
-| sketch | **t-digest 可合并分位草图**（序列化 base64 存 keyword）——跨小时可合并出 7d 单值 p50/95/99 |
+| sketch | **t-digest 可合并分位草图**（自研 JSON-base64 存 keyword，`{v:1, c:[[mean,weight],…]}`）——跨小时可合并出 7d 单值 p50/95/99 |
+| updated_ts | 写入时刻（date） |
 
-**job 机制（rollup_job.py，APScheduler 同族每小时运行）**：
+**确定性 `_id`** = `sha256("rollup|agent|interface|node|model|hour")`：整小时重算同 `_id` 覆写 = 幂等不双计（迟到重算同小时天然收敛）；小时级 meta doc `_id = "rollup-meta|{hour}"`。
+
+**job 机制（worker 进程内 asyncio 自管循环，非 APScheduler——阶段 2 实现裁定，见修订记录 v1.12）**：
 1. **首启回填**：历史已完成小时。
-2. **迟到事件幂等重算**：事件晚到 ≤6h（`K` 默认 6）内重算对应小时桶（读-重算-原子替换，重叠不双计）；超窗迟到只进实时 agg，rollup 该小时明示缺口。
+2. **迟到事件幂等重算**：事件晚到 ≤6h（`K` 默认 6）内重算对应小时桶——下轮对尾窗先发廉价 `count(size:0)` 比对 `rollup-meta|{hour}` 源计数、仅差异小时全量重算（确定性 `_id` 覆写、重叠不双计）；超窗迟到只进实时 agg，rollup 该小时明示缺口。
 3. **失败降级**：记最近成功时间；7d 查询命中缺失/过期小时桶 → 该小时回退 ES 实时 agg + 页面标注"回退实时口径" + 自监控告警（对应 §16 rollup 行）。
 4. **尾小时口径**：最后未完成小时不预聚合 → 实时 agg 补齐拼最后一段。
+
+**7d 读取口径（实现钉定，用户拍板 v1.12；metrics API 复用 store 读助手）**：`source ∈ {rollup, realtime, mixed}`。
+- **覆盖基准 = rollup 小时级 meta doc**（非 request 组 doc）：rollup_job 对处理过的小时**恒写 meta**（含"处理过但零流量"小时）→ 空小时算已覆盖、不算缺口（实现修订见修订记录 v1.12 行）。
+- **卡片 p50/p95/p99** = 仅 merge **已覆盖整点小时**的 request-node sketch（跨源分位不可精确合成；未覆盖小时与进行中小时不进分位 merge）。
+- **total/error/timeout 计数与 series** = 保持**实时整窗**（精确超集、不回退、不与 rollup 计数掺——rollup 计数与源一致由 meta 探测保证）。
+- **interfaces 行级分位** = 保持实时 agg（覆盖小时样本不足以支撑行级 covered-only 近似）。
+- **source/fallback 派生**：`fallback_hours` 只列**已闭合**小时中无 rollup 覆盖的缺口——当前进行中小时由 rollup 设计上不预聚合（尾小时实时回补），**不计缺口** → 全部已闭合小时覆盖 = `source=rollup`、有缺桶 = `mixed`（响应带 `fallback_hours`）、无任何覆盖（index 缺失 / ES 异常 / worker 从未跑 = covered 空）= 整窗实时 `source=realtime` 且 `fallback_hours=[]`。前端对 mixed 标「部分时段回退实时口径」。
 
 ---
 
@@ -1048,6 +1061,13 @@ CREATE TABLE `trace_judge_state` (
 
 > **metrics 四端点默认护栏（O-1 已裁定，§10.1/§12.2）**：`agent` 缺省=全站 1h/24h 实时 agg **强制结果缓存** `metric_agg_cache_ttl_s=60` + agg 查询超时 `metric_agg_timeout_ms=3000`；`window=24h` 全站档另提供「按 agent 维度」下钻缩小扫描面；缺桶回退实时口径时响应带标记（§5.3）。overview/interfaces/anomalies/llm-failures 同套。
 
+> **metrics 四端点响应形状（实现钉定 v1.12，与 §9.2 前端消费逐字段对齐）**：
+> - `GET /overview` → `{window, agent?, source(rollup|realtime|mixed), fallback_hours[], cards{qps,p50,p95,p99,total,error,timeout,error_rate,timeout_rate}, series[{ts,count,qps,error_rate,timeout_rate}]}`。卡片 p50/95/99 = request 锚全量 duration_ms（含 error/timeout）；失败率=error÷total、超时率=timeout÷total；7d 卡片分位仅并 rollup 覆盖小时（§5.3，尾小时省略）。
+> - `GET /interfaces` → `{window, agent?, source, fallback_hours[], request[{interface,total,error,timeout,p50,p95,p99}], llm[{interface,total,error,llm_failure_rate,models[{model,total,error,prompt_tokens,completion_tokens}]}]}`。支持 `interface=` 过滤；LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数；7d 行级分位保持实时（§5.3）。
+> - `GET /anomalies` → `{window, agent?, items[{agent,trace_id,interface,status,error_type,error_msg,ts,duration_ms}]}`——request 级 error/timeout 排序列表（sort ts desc、size ≤100，联动 trace 详情）；不进 `request ok + llm_call error`（归 llm-failures）。
+> - `GET /llm-failures` → `{window, agent?, items[{agent,trace_id,interface,request_status,llm_node_status,llm_error_type,llm_error_msg,model,ts}]}`——`request ok + 子节点 llm_call error/timeout` 兜底吸收现场，逐条前端标注「降级/兜底现场，v1 不回流、L3 二期接入」。
+> 以上四端点数据源按窗口路由 rollup/实时（§5.3）；anomalies/llm-failures 是列表非聚合，恒读原始事件 index（rollup 丢 trace 身份）。
+
 ### 8.4 回流-聚类/用例（backflow，§7.6 状态机）
 
 | Method & Path | 权限 | 说明 |
@@ -1141,7 +1161,7 @@ CREATE TABLE `trace_judge_state` (
 ### 9.1 全局约定
 
 - 路由/菜单树见 §1.2/§12.1（solution）；**viewer/admin 按角色渲染菜单，admin-only 路由前端隐藏 + 后端二次鉴权**。
-- 默认落点 = 指标看板 `/dashboard`（全站纵览 tab）——**v1.11 注**：dashboard 属阶段 2（T-2.4）未就位，阶段 1 登录后先落 `/traces`（链路查询列表），dashboard 落地后路由守卫改回 `/dashboard`。
+- 默认落点 = 指标看板 `/dashboard`（全站纵览 tab）——**v1.11 注（历史）**：dashboard 属阶段 2（T-2.4）未就位，阶段 1 登录后先落 `/traces`（链路查询列表）；**v1.12 兑现（阶段 2 平台轨收口）**：dashboard 已落地，登录成功落点 + `'/'` redirect + catch-all 路由守卫已改回 `/dashboard`（task.md 阶段 2 收口注）。
 - 空态与误读防呆（v3.5.1 易用性规则，实现为统一 `<EmptyState type=.../>` 组件）：
   - `needs_review` 状态筛选保留（error run 的 `na` 结果行可入列——case 级 infra 无法判定，reason 带 run_id+error_type，同批聚合，§7.6），**缺省为空属正常非功能缺失**。
   - 二期物（L3 质量出口 tab、弃留墙入口、trace quality 过滤/标记）**整条隐藏不可达、不灰置**；仅原始事件 JSON 不可避免暴露 `quality:null` 时行内提示「quality 观测为二期规划（v1 未采集），为空属预期，非采集故障」。
@@ -1307,7 +1327,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | O-1 | 全站 1h/24h 实时档无 agent 过滤的全量扫描护栏（性能评审 F-2） | **已裁定（v1.1）**：默认护栏 = agent 缺省「全站」档实时 agg 强制走结果缓存 `metric_agg_cache_ttl_s=60` + agg 查询超时 `metric_agg_timeout_ms=3000`（§8.3/§10.1/§14.4）；24h 档另提供「按 agent 维度」切换缩小扫描面 | P1 看板实现即落地，勿再拖（§12.2 不再视为开放） |
 | O-2 | `fix_version` 组装时序（组装先于 claim 时 link 不含 fix_version） | **已裁定（v1.1）**：组装（§6.3）不写 fix_version；claim 后回查锚定 `cluster.fix_version`（§7.6 recheck_job + §5.1 verify_run_record.bound_version）；requeue 重推复用 payload_id | 与 Task #4 对账仅剩 offline 侧 run 绑定版本解析 |
 | O-3 | 现行 link 唯一索引对「终态后再生成」的支持 | **已裁定（v1.1）**：改生成列 `cur_key`（仅 `verify_status='pending'` 占位），终态自动释放 → reopen / 回归 failed 后再 claim 可在同 cluster 生成新 link（新 payload_id，§5.1 注/§7.6） | — |
-| O-4 | 7d 小时级 rollup 的 t-digest 库选型（`tdigest` 包序列化格式） | 【实现约定】存 base64 | 引入前验证跨小时合并正确性（§14.4 用例） |
+| O-4 | 7d 小时级 rollup 的 t-digest 库选型 | **已落地（2026-09-08，裁定变更）**：自研纯 Python t-digest（`backend/app/store/tdigest.py`）——原拍板引 PyPI `tdigest`，其 C 依赖（accumulation-tree）在无 MSVC 的 Windows 上只能源码编译（pip 实测失败）、本环境索引无纯 Python 替包 → **改自研**（用户确认）。JSON-base64 序列化（`{v:1, c:[[mean,weight],…]}`），只喂去重带权样本 + 超 K 单遍压缩 + 确定性（同输入同输出、跨平台无外部依赖） | 跨小时合并 vs 全量重算 p95 误差 <1%（§14.4 rollup 用例）；真实 rollup data 实测偏差 p50 0.35% / p95 0.04% / p99 0.17% 达标 |
 | O-5 | agent 路由自动发现扫描器实现（仅 FastAPI/OpenAPI 可枚举 agent） | cc/cs 枚举方式待核实 | Step 2.2 时定 |
 | O-6 | 公共网关拓扑与 SSO 透传（部署约束派生新项） | 默认最简【实现约定】：公网 API 网关终止 TLS + 域名；平台内部自持 JWT（登录取代网关侧 SSO，§13.1）；backend 服务仅接受网关转发来源 | 若 infra 强制前置 SSO → 需 infra 提供**带签名**的用户身份透传头并在 backend 验签（防伪造）；P0 上线前与 infra 敲定 |
 | O-7 | 共享集群租户命名与环境前缀（部署约束派生新项） | 默认 `{env}.` 前缀由部署参数注入：`{env}.obs` 库 / `{env}.obs-*` index / `{env}.obs.*` topic / consumer group（§3.3/§5.2/§13.3）；无前缀=独立集群默认 | 上线前定 `env` 值域并与 infra 登记命名一致 |

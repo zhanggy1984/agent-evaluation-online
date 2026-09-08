@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 登录页：POST /auth/login（§8.1）。admin/viewer 均可入；登录后落 /traces。
+// 登录页：POST /auth/login（§8.1）。admin/viewer 均可入；登录后落 /dashboard（T-2.4 看板落点）。
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -21,7 +21,7 @@ async function submit(): Promise<void> {
   errorMsg.value = ''
   try {
     await login(username.value.trim(), password.value)
-    await router.push({ name: 'traces' })
+    await router.push({ name: 'dashboard' })
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : '登录失败'
   } finally {

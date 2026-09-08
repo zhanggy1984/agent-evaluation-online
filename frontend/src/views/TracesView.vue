@@ -90,6 +90,7 @@ onMounted(() => void doSearch(1))
     <header class="bar">
       <strong>obs 链路查询</strong>
       <span class="muted right">
+        <router-link class="nav" :to="{ name: 'dashboard' }">指标看板</router-link>
         {{ user ? `${user.username}（${user.role}）` : '' }}
         <button class="btn-ghost" type="button" @click="doLogout">退出</button>
       </span>

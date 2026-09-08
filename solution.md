@@ -303,7 +303,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 **rollup 运行机制（v3.4.5 补全，决策 R7 实现细化——第三轮性能/容错/逻辑三方向同源）**：
 
 - **存储形态**：`obs-metrics-rollup` 每小时 job 预聚合，分桶粒度 agent×interface×node（request/llm_call）×小时；每桶存 **status/usage 计数桶**（total/error/timeout 互斥计数、token 汇总，request/llm_call 锚点）+ **t-digest 可合并分位草图**（duration 值分布按小时存草图，跨小时可合并出 7d 单值 p50/95/99）——"按小时存已算 percentiles、跨小时不可再合并"是 7d 分位查询的关键盲区，草图化解；llm_call 桶按 model 维度分。
-- **调度/回填/迟到**：job 挂平台 worker（§14 周期任务，APScheduler 同族）；**首启回填**历史已完成小时；**迟到事件幂等重算**——事件晚到 ≤K 小时（默认 6h）内重算对应小时桶（重算与落库原子替换、重叠不双计），超窗迟到只进实时 agg、rollup 该小时明示缺口。
+- **调度/回填/迟到**：job 挂平台 worker（§14 周期任务，worker 进程内 **asyncio 自管循环**——judge_scan/rollup 周期调度，非 APScheduler，阶段 2 平台轨实现裁定，见 detail v1.12）；**首启回填**历史已完成小时；**迟到事件幂等重算**——事件晚到 ≤K 小时（默认 6h）内重算对应小时桶（重算与落库原子替换、重叠不双计），超窗迟到只进实时 agg、rollup 该小时明示缺口。
 - **失败降级**：job 记录最近成功时间；7d 查询命中缺失/过期小时桶 → 该小时回退 ES 实时 agg + 页面标注"回退实时口径"，自监控告警（§16）。
 - **尾小时口径**：7d 视图最后未完成小时不在 rollup → 实时 agg 补齐拼最后一段，趋势不截断。
 - **时间窗路由枚举（§9.2）**：≤24h → ES 实时 agg；7d（>24h）→ rollup + 尾小时实时补齐。

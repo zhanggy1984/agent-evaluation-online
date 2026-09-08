@@ -143,6 +143,38 @@ class TestResidualTrace:
         assert_counts(state, {"tool_timeout": 1})
         assert state["ttl_until"] == _ttl(CHILD_TS)
 
+    def test_error_child_backfills_interface(self):
+        # 缺口 A（v1.12）：残 trace 首个落行子节点把 request 级 interface 补上（root 未达时行级
+        # interface 不能留 None——L2「接口字典 llm=true」与 cluster 键依赖它）
+        state, _ = merge_trace_state(
+            None, child(node="tool_call", status="error", error_type="tool_timeout"),
+            window_s=WINDOW_S, grace_s=GRACE_S,
+        )
+        assert state["interface"] == "POST /api/chat/{id}"
+
+    def test_llm_call_child_backfills_interface(self):
+        # llm_call 子节点同样回填（残 trace 以 llm_call 起始的纯 LLM 失败场景）
+        state, _ = merge_trace_state(
+            None, child(node="llm_call", status="ok"),
+            window_s=WINDOW_S, grace_s=GRACE_S,
+        )
+        assert state["interface"] == "POST /api/chat/{id}"
+        assert state["llm_fact_ok"] == 1
+
+    def test_root_after_residual_overwrites_interface(self):
+        # root 权威覆盖子节点回填值（同 trace 顶层 interface 同值；root 到达即写死）
+        residual, _ = merge_trace_state(
+            None, child(node="tool_call", status="error", error_type="tool_timeout",
+                        interface="POST /v1/chat"),
+            window_s=WINDOW_S, grace_s=GRACE_S,
+        )
+        assert residual["interface"] == "POST /v1/chat"
+        full, _ = merge_trace_state(
+            residual, req(status="ok", interface="POST /v1/chat"),
+            window_s=WINDOW_S, grace_s=GRACE_S,
+        )
+        assert full["interface"] == "POST /v1/chat"
+
     def test_errors_aggregate_by_error_type(self):
         first, _ = merge_trace_state(
             None, child(node="tool_call", status="error", error_type="tool_timeout"),

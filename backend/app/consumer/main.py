@@ -3,14 +3,17 @@
 - **每 agent 一消费协程组**（§1.2 L101/§4.1 step1）：topic = `{env}.obs.agent.{name}`
   partition=1 → 同 trace 串行，天然满足 §4.3/§4.5 顺序依赖；一个 agent 卡死不拖垮其他。
 - 管线编排 = validate(step2) → agent/topic 一致性 → 脱敏复核(step3) → trace 累积态落库
-  (step4) → ES 分派(step5) → offset 后提交(step6)。判定不在消费链（judge_scan_job T-3.6）。
+  (step4) → ES 分派(step5) → offset 后提交(step6)。整 trace 批量判定不在消费链
+  （worker judge_scan_job：到期行批次判，T-2.1）；消费链只做累积 + R-21 单事件补判。
 - **step4 写失败铁律（§14.2）**：不提交 offset + 指数退避重试**直至成功**——丢弃并提交 =
   该 trace 永不回流且 offset 已推进不可找回。ES 失败走显式丢弃（§4.1 step5「不静默丢」；
   spool 归二期，ES 非判定源，分析/回流不依赖 ES）；超阈值只计数不阻塞判定主链。
 - **自监控（form A，§14.1 S-2「selfmonitor 可见」）**：进程内按 (agent, reason) 计数 +
   周期 60s 写 `node=heartbeat` 心跳 doc 到事件 index（健康卡 §8.5 聚合源）；同时消费
-  `obs.selfmonitor`（SDK 心跳，§3.6）透写入同一 index。已判定 trace 的 judged 冻结与
-  R-21 补判信号（D3）在此透传给 T-3.6，本阶段只累积不判。
+  `obs.selfmonitor`（SDK 心跳，§3.6）透写入同一 index。已判定 trace 的 judged 冻结防
+  重放；R-21 迟到 root：judge 后 root_ok 0→1 且 status∈{error,timeout} → apply_event
+  CAS 置位 `root_late_complement`，`_step4_db` **同事务**调 state.root_late_complement
+  单事件补判写 judgement_json.root_late（对象钉死 = T-3.6 聚类取数源）。
 """
 import asyncio
 import hashlib
@@ -25,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from app.consumer import es as es_layer
 from app.consumer.mask_recheck import find_sensitive_leak
 from app.consumer.schema import EventModel
-from app.consumer.state import apply_event
+from app.consumer.state import apply_event, root_late_complement
 from app.consumer.validate import DropCode, validate_event
 from app.core.config import Settings
 from app.core.log import get_logger
@@ -227,9 +230,13 @@ class ConsumerApp:
         while True:
             try:
                 async with AsyncSession(self._engine) as session:
-                    await apply_event(
+                    fx = await apply_event(
                         session, event, window_s=TRACE_WINDOW_S, grace_s=TRACE_GRACE_S
                     )
+                    if fx.root_late:
+                        # R-21 补判：apply_event 已 CAS 置位 root_late_complement=1，同一事务
+                        # 内读该行做单事件值域补判（写 judgement_json.root_late，不重跑整 trace）
+                        await root_late_complement(session, event)
                     await session.commit()
                 return
             except Exception as exc:  # DB 故障形态多样

@@ -8,6 +8,10 @@
 """
 from types import SimpleNamespace
 
+from app.models.agent import Agent
+from app.models.agent import Interface
+from app.models.config import DictConfig
+from app.models.error_flow import TraceJudgeState
 from app.models.user import User as _User
 from app.models.user import UserSession as _UserSession
 
@@ -52,17 +56,70 @@ def _eq_conds(whereclause):
 
 
 class FakeAsyncSession:
-    """行为最小集：execute(等值 select) / get / add / commit。
+    """行为最小集：execute/scalar(等值 select) / get / add / commit / flush。
 
-    rows 用 SimpleNamespace 而非 ORM 实例：端点只读属性 + 改 revoked_at，
+    rows 用 SimpleNamespace 而非 ORM 实例：端点只读属性 + 改标记位/JSON 字段，
     不需走 ORM 生命周期/类型转换。
+
+    entity 行注册两种方式：
+    - auth/trace 端点：users=/sessions= 专属 kwargs（模型白名单 _User/_UserSession）；
+    - 判定/扫描（analyzer/consumer/worker）：`registry={Model: [rows]}` 按 ORM 模型注入
+      Agent/Interface/DictConfig/TraceJudgeState 等。列级 select（select(Model.col)）
+      经 expr.table 反查模型 → 返回匹配行的该列属性。
     """
 
-    def __init__(self, *, users=(), sessions=()):
+    def __init__(self, *, users=(), sessions=(), registry=None):
         self.users = list(users)
         self.sessions = list(sessions)
+        self.registry: dict = dict(registry or {})
         self.added: list = []
         self.commits = 0
+
+    # ---- entity / 行解析 -------------------------------------------------
+
+    def _rows_for(self, entity):
+        if entity is _User:
+            return self.users
+        if entity is _UserSession:
+            return self.sessions
+        return self.registry.get(entity, [])
+
+    @staticmethod
+    def _resolve_entity(stmt):
+        """select 目标 → 模型类：整实体直取；列级 select 经 expr.table 反查。"""
+        desc = stmt.column_descriptions[0]
+        entity = desc.get("entity")
+        if entity is not None:
+            return entity
+        table = getattr(desc.get("expr"), "table", None)
+        if table is not None:
+            for model in (Agent, Interface, DictConfig, TraceJudgeState):
+                if model.__table__ is table:
+                    return model
+        return None
+
+    @staticmethod
+    def _return_value(stmt, row, entity):
+        """整实体 select 返回行；列级 select 返回该列属性（config_value/id…）。
+
+        判别看 expr：列级 select 的 expr 是 InstrumentedAttribute（带列名），整实体
+        select 是实体表达式——SQLAlchemy 2.0 两种 select 的 column_descriptions 都带
+        entity，不能以 entity 判别（探测定型：config_value 列 select entity=DictConfig）。
+        """
+        from sqlalchemy.orm.attributes import InstrumentedAttribute
+
+        desc = stmt.column_descriptions[0]
+        if isinstance(desc.get("expr"), InstrumentedAttribute):
+            return getattr(row, desc.get("name"), None)
+        return row
+
+    def _match(self, entity, conds):
+        for row in self._rows_for(entity):
+            if all(getattr(row, k, None) == v for k, v in conds.items()):
+                return row
+        return None
+
+    # ---- SQLAlchemy 异步会话面 -------------------------------------------
 
     async def get(self, model, pk):
         if model is _User:
@@ -72,19 +129,26 @@ class FakeAsyncSession:
         return None
 
     async def execute(self, stmt, params=None, execution_options=None):
-        desc = stmt.column_descriptions
-        entity = desc[0]["entity"] if desc else None
-        conds = _eq_conds(stmt.whereclause)
-        if entity is _User:
-            rows = self.users
-        elif entity is _UserSession:
-            rows = self.sessions
-        else:
+        entity = self._resolve_entity(stmt) if stmt is not None else None
+        if entity is None:
             return FakeResult(None)
-        for row in rows:
-            if all(getattr(row, k, None) == v for k, v in conds.items()):
-                return FakeResult(row)
-        return FakeResult(None)
+        conds = _eq_conds(stmt.whereclause)
+        row = self._match(entity, conds)
+        return FakeResult(row)
+
+    async def scalar(self, stmt, params=None):
+        """与 execute 同匹配逻辑，返回匹配行/该列属性（state/worker 用 session.scalar）。"""
+        entity = self._resolve_entity(stmt) if stmt is not None else None
+        if entity is None:
+            return None
+        conds = _eq_conds(stmt.whereclause)
+        row = self._match(entity, conds)
+        if row is None:
+            return None
+        return self._return_value(stmt, row, entity)
+
+    async def flush(self):
+        pass
 
     def add(self, obj):
         self.added.append(obj)
@@ -98,11 +162,15 @@ def ns(**kw):
 
 
 class FakeES:
-    """录调用的 ES 查询 client：search 返回 canned、options 记录 request_timeout。"""
+    """录调用的 ES 查询 client：search 返回 canned、options 记录 request_timeout。
 
-    def __init__(self, response=None, exc=None):
+    responses（可选）：多端点按序消费（如 llm-failures Q1→Q2 两次 search）；缺省单 response。
+    """
+
+    def __init__(self, response=None, exc=None, responses=None):
         self._resp = response
         self._exc = exc
+        self._queue = list(responses or [])
         self.calls: list = []
         self.timeouts: list = []
 
@@ -114,6 +182,8 @@ class FakeES:
         self.calls.append((index, body))
         if self._exc is not None:
             raise self._exc
+        if self._queue:
+            return self._queue.pop(0)
         return self._resp
 
 
