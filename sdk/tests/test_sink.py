@@ -29,6 +29,25 @@ def test_topic_domain_routing(tmp_path):
     assert sink._target_topic(HB_TOPIC) == "dev.obs.selfmonitor"
 
 
+def test_producer_no_value_serializer():
+    """#89 冒烟实测回归：producer 装配禁 value_serializer。
+
+    本层两个发送点（_send_with_retry/_send_once）均预编码为 UTF-8 bytes 再交给 producer；
+    若再加 value_serializer，kafka-python 会对 bytes 二次 json.dumps → TypeError（非 KafkaError）
+    逃过重试/spool/计数，静默丢事件。故装配参数必须不含 value_serializer。
+    """
+    sink = _make_sink()
+    producer = sink._ensure_producer()
+    assert "value_serializer" not in producer.kwargs, "禁止二次序列化（#89 冒烟根因）"
+    # 发送路径产物是预编码 bytes（不经 serializer 直接可达 broker）
+    sink._producer = producer
+    sink.emit(EVENT_TOPIC, {"node": "request"})
+    sink._flush_once(timeout=1)
+    assert len(producer.sent) == 1
+    assert isinstance(producer.sent[0][1], bytes)
+    assert json.loads(producer.sent[0][1]) == {"node": "request"}
+
+
 def test_send_success_no_spool(tmp_path):
     sink = _make_sink(tmp_path)
     producer = FakeProducer()

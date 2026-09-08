@@ -15,6 +15,7 @@ class FakeProducer:
     instances: list["FakeProducer"] = []
 
     def __init__(self, **kwargs) -> None:
+        self.kwargs = dict(kwargs)  # 断言 producer 装配参数用（#89：禁 value_serializer）
         self.sent: list[tuple[str, bytes]] = []
         self.flushed = False
         self.closed = False

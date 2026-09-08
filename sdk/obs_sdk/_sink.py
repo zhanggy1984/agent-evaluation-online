@@ -151,8 +151,10 @@ class Sink:
                 if self._producer is None:
                     kwargs: dict[str, Any] = {
                         "bootstrap_servers": self._servers,
-                        "value_serializer": lambda v: json.dumps(
-                            v, ensure_ascii=False).encode("utf-8"),
+                        # 无 value_serializer（why）：本层发送前已统一预编码为 UTF-8 bytes
+                        # （_send_with_retry / _send_once），再配 serializer 会对 bytes 二次
+                        # json.dumps → TypeError 非 KafkaError，逃过重试/spool 且不计数，
+                        # 静默丢事件（#89 冒烟实测抓到）。kafka 侧以 bytes 原样发送。
                         "acks": 1, "retries": 0,  # 重试由本层指数控制（§3.2 有界）
                         "max_in_flight_requests_per_connection": 1,  # 单连接保序
                         "linger_ms": 0, "request_timeout_ms": SEND_TIMEOUT_S * 1000,
