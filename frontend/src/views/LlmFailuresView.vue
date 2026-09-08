@@ -59,6 +59,11 @@ onMounted(() => void load())
   <div>
     <MetricFilterBar :loading="loading" @refresh="load" />
 
+    <!-- v1.14：折叠列表 size≤100 截断提示（total = 后端 cardinality 去重失败 trace 数） -->
+    <p v-if="payload && payload.truncated" class="muted trunc-hint">
+      窗口内共 {{ payload.total }} 条失败现场，仅显示最新 {{ payload.items.length }} 条
+    </p>
+
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
     <p v-if="loading && !payload" class="muted">加载中…</p>
 
@@ -68,3 +73,10 @@ onMounted(() => void load())
     />
   </div>
 </template>
+
+<style scoped>
+.trunc-hint {
+  margin: -2px 0 8px;
+  font-size: 12px;
+}
+</style>

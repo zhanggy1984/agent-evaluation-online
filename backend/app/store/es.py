@@ -315,11 +315,16 @@ def build_metrics_interfaces_body(
 def build_anomalies_body(
     *, agent: str | None, start_ts: int, end_ts: int, size: int
 ) -> dict:
-    """GET /metrics/anomalies body：request 红显（error/timeout）列表，ts desc。"""
+    """GET /metrics/anomalies body：request 红显（error/timeout）列表，ts desc。
+
+    track_total_hits=True：列表截断（size≤100）需如实 total 支撑 truncated 指示
+    （§8.4 v1.14）；量级可控时取精确计数，超大可换 track_total_hits: 10001 阈值语义。
+    """
     return {
         "query": _base_metrics_query(
             agent, start_ts, end_ts, node="request", statuses=["error", "timeout"]),
         "size": size,
+        "track_total_hits": True,
         "sort": [{"ts": {"order": "desc", "format": "epoch_millis"}}],
     }
 
@@ -331,11 +336,15 @@ def build_llm_failures_body(
 
     折叠键 = trace_key；命中行为 llm_call 失败现场（携带 interface/model/error），
     Q2（同 trace request 状态查）由 API 层另发，本函数只出 Q1。
+
+    collapse 不改 hits.total，折叠列表的"窗口内失败 trace 总数"须 cardinality(trace_key)
+    单独算（API 层以此支撑 truncated 指示），代价是一次高基数子聚合，7d 窗可接受。
     """
     return {
         "query": _base_metrics_query(
             agent, start_ts, end_ts, node="llm_call", statuses=["error", "timeout"]),
         "collapse": {"field": "trace_key"},
+        "aggs": {"trace_total": {"cardinality": {"field": "trace_key"}}},
         "sort": [{"ts": {"order": "desc", "format": "epoch_millis"}}],
         "size": size,
     }
@@ -456,20 +465,33 @@ def build_agents_body(*, start_ts: int, end_ts: int, size: int = 100) -> dict:
     return {
         "query": _base_metrics_query(None, start_ts, end_ts, node="request"),
         "size": 0,
-        "aggs": {"by_agent": {"terms": {"field": "agent", "size": size}}},
+        "aggs": {
+            "by_agent": {"terms": {"field": "agent", "size": size}},
+            # 真实去重 agent 总数：terms size 截断 top100 后，"近窗有流量 agent 到底几个"
+            # 会失真，须 cardinality 另算（API 层据此给 truncated 提示，detail §9.1）。
+            "distinct": {"cardinality": {"field": "agent"}},
+        },
     }
 
 
 async def run_agents(
     client, *, settings, request_timeout_s: float, start_ts: int, end_ts: int, size: int = 100,
-) -> list[str]:
-    """agents 查询 → 近窗内有 request 流量的 agent 名（按频次降序，纯实测）。"""
+) -> dict:
+    """agents 查询 → {"agents": [近窗有 request 流量 agent，按频次降序], "total": 真实去重总数}。
+
+    纯实测不并配置白名单（下拉数据源语义，detail §9.1 Q4/Q5）。total 缺 distinct agg
+    时回退 len(agents)（容测试 fake / ES 低版本响应）。
+    """
     body = build_agents_body(start_ts=start_ts, end_ts=end_ts, size=size)
     resp = await client.options(request_timeout=request_timeout_s).search(
         index=event_index_patterns(settings), body=body
     )
-    buckets = (resp.get("aggregations") or {}).get("by_agent") or {}
-    return [b["key"] for b in buckets.get("buckets") or [] if b.get("key")]
+    aggs = resp.get("aggregations") or {}
+    buckets = (aggs.get("by_agent") or {}).get("buckets") or []
+    agents = [b["key"] for b in buckets if b.get("key")]
+    distinct = (aggs.get("distinct") or {}).get("value")
+    total = int(distinct) if distinct is not None else len(agents)
+    return {"agents": agents, "total": total}
 
 
 async def fetch_anomalies(
@@ -486,12 +508,21 @@ async def fetch_anomalies(
 async def fetch_llm_failures(
     client, *, settings, request_timeout_s: float, size: int = 100, **kw
 ) -> dict:
-    """llm-failures Q1（按 trace 折叠的最新 llm_call 失败现场）。"""
+    """llm-failures Q1（按 trace 折叠的最新 llm_call 失败现场）。
+
+    返回 {hits, total}：total 优先取 trace_total cardinality agg（窗口内失败 trace 去重总数），
+    缺 agg 时回退 hits.total（容测试 fake）——注意 collapse 下的 hits.total 是折叠前行数，偏高，
+    仅作回退不用于生产语义。
+    """
     body = build_llm_failures_body(size=size, **kw)
     resp = await client.options(request_timeout=request_timeout_s).search(
         index=event_index_patterns(settings), body=body
     )
-    return _hits_result(resp)
+    result = _hits_result(resp)
+    agg = ((resp.get("aggregations") or {}).get("trace_total") or {}).get("value")
+    if agg is not None:
+        result["total"] = int(agg)
+    return result
 
 
 async def fetch_request_statuses(client, *, settings, request_timeout_s: float,

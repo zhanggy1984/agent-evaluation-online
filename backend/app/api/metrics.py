@@ -114,6 +114,9 @@ class MetricsOverview(BaseModel):
     agent: str | None = None
     source: str = "realtime"  # rollup | realtime | mixed
     fallback_hours: list[int] = []
+    # 7d 卡片分位 merge 的已 rollup 小时数（含零流量已处理小时）；1h/24h 恒 0。
+    # UI 据此标注"分位基于 N 个已完成小时"（分位与计数不同样本，§4.4/§8.4 v1.14）。
+    covered_hours: int = 0
     cards: MetricsOverviewCards = MetricsOverviewCards()
     series: list[OverviewSeriesPoint] = []
 
@@ -167,6 +170,9 @@ class AnomalyItem(BaseModel):
 class MetricsAnomalies(BaseModel):
     window: str
     agent: str | None = None
+    # 窗口内真实总数与截断指示：列表 size≤100（§14.4），total>len 即 items 只是最新一页。
+    total: int = 0
+    truncated: bool = False
     items: list[AnomalyItem] = []
 
 
@@ -185,12 +191,22 @@ class LlmFailureItem(BaseModel):
 class MetricsLlmFailures(BaseModel):
     window: str
     agent: str | None = None
+    # total = 窗口内**失败 trace 去重数**（collapse 不改 hits.total，须 cardinality 单算）；
+    # truncated = 折叠列表被 size≤100 截断（§14.4）。
+    total: int = 0
+    truncated: bool = False
     items: list[LlmFailureItem] = []
 
 
 class MetricsAgents(BaseModel):
-    """近 7d 有流量的 agent 名（纯实测、按频次降序）——筛选下拉数据源（Q4/Q5 决策）。"""
+    """近 7d 有流量的 agent 名（纯实测、按频次降序）——筛选下拉数据源（Q4/Q5 决策）。
 
+    total = 真实去重 agent 总数（distinct agg），可能 > len(agents)（top100 截断，
+    §14.4）；truncated = total > len(agents)。
+    """
+
+    total: int = 0
+    truncated: bool = False
     agents: list[str] = []
 
 
@@ -297,17 +313,29 @@ def _source_of(covered: list[int], fallback_hours: list[int]) -> str:
 # ---------- 各端点装载器 ----------
 
 
-def _overview_series(rows: list[dict], bucket_width_s: int) -> list[OverviewSeriesPoint]:
-    return [
-        OverviewSeriesPoint(
-            ts=p["ts"],
+def _overview_series(
+    rows: list[dict], bucket_width_s: int, start_ms: int, end_ms: int
+) -> list[OverviewSeriesPoint]:
+    """date_histogram 行 → 序列点；QPS 按**桶实际覆盖窗宽**折算（v1.14 缺陷修）。
+
+    ES date_histogram 对齐 interval 起于整边界：首桶可能左越 window_start、尾桶右越
+    window_end（进行中小时），若按满桶宽除会虚低 → 右端持续爬坡假象。逐桶
+    `covered_ms = min(ts+width, end_ms) - max(ts, start_ms)` 得真实样本时长；
+    covered_ms<=0（理论边界守卫）→ qps None。error/timeout_rate 分母仍是桶内 count 不变。
+    """
+    out: list[OverviewSeriesPoint] = []
+    for p in rows:
+        ts = p["ts"]
+        covered_ms = min(ts + bucket_width_s * 1000, end_ms) - max(ts, start_ms)
+        qps = p["count"] / (covered_ms / 1000) if covered_ms > 0 else None
+        out.append(OverviewSeriesPoint(
+            ts=ts,
             count=p["count"],
-            qps=p["count"] / bucket_width_s if bucket_width_s else None,
+            qps=qps,
             error_rate=_ratio(p["error"], p["count"]),
             timeout_rate=_ratio(p["timeout"], p["count"]),
-        )
-        for p in rows
-    ]
+        ))
+    return out
 
 
 async def _load_overview(
@@ -358,6 +386,7 @@ async def _load_overview(
     bucket_width_s = _BUCKET_WIDTH_S["1h" if window == "7d" else interval]
     return MetricsOverview(
         window=window, agent=agent, source=_source, fallback_hours=fallback_hours,
+        covered_hours=len(covered),
         cards=MetricsOverviewCards(
             qps=result["total"] / (window_ms / 1000) if window_ms else None,
             p50=p50, p95=p95, p99=p99,
@@ -365,7 +394,7 @@ async def _load_overview(
             error_rate=_ratio(result["error"], result["total"]),
             timeout_rate=_ratio(result["timeout"], result["total"]),
         ),
-        series=_overview_series(result["series"], bucket_width_s),
+        series=_overview_series(result["series"], bucket_width_s, start_ms, end_ms),
     )
 
 
@@ -431,11 +460,13 @@ async def _load_anomalies(
         )
     except TransportError as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
+    items = [AnomalyItem(**{k: h.get(k) for k in (
+        "agent", "trace_id", "interface", "status", "error_type", "error_msg",
+        "ts", "duration_ms")}) for h in result["hits"]]
+    total = int(result["total"])
     return MetricsAnomalies(
-        window=window, agent=agent,
-        items=[AnomalyItem(**{k: h.get(k) for k in (
-            "agent", "trace_id", "interface", "status", "error_type", "error_msg",
-            "ts", "duration_ms")}) for h in result["hits"]],
+        window=window, agent=agent, total=total, truncated=total > len(items),
+        items=items,
     )
 
 
@@ -477,7 +508,11 @@ async def _load_llm_failures(
             model=h.get("model"),
             ts=h.get("ts"),
         ))
-    return MetricsLlmFailures(window=window, agent=agent, items=items)
+    total = int(q1["total"])  # 失败 trace 去重总数（cardinality agg；缺 agg 回退 hits.total）
+    return MetricsLlmFailures(
+        window=window, agent=agent, total=total, truncated=total > len(items),
+        items=items,
+    )
 
 
 async def _load_agents(request: Request, session: AsyncSession) -> MetricsAgents:
@@ -488,13 +523,16 @@ async def _load_agents(request: Request, session: AsyncSession) -> MetricsAgents
     start_ms = end_ms - window_ms
     timeout_s = max(await _agg_timeout_ms(session) / 1000, 1.0)
     try:
-        agents = await es_store.run_agents(
+        res = await es_store.run_agents(
             client, settings=request.app.state.settings, request_timeout_s=timeout_s,
             start_ts=start_ms, end_ts=end_ms, size=_LIST_LIMIT,
         )
     except TransportError as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
-    return MetricsAgents(agents=agents)
+    total = int(res["total"])
+    return MetricsAgents(
+        total=total, truncated=total > len(res["agents"]), agents=res["agents"],
+    )
 
 
 # ---------- 端点 ----------

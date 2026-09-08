@@ -7,6 +7,7 @@
   → ERR_METRICS_0001、ES 超时 400、**缓存命中跳 ES**（二次请求 fake.calls 不增）。
 - FakeAsyncSession 无 dict_config 行 → 回退 seed 默认（ttl 60 / agg timeout 3000ms）。
 """
+import time
 from contextlib import contextmanager
 
 from _fakes import FakeAsyncSession, FakeES, es_hits, ns
@@ -57,6 +58,10 @@ def _app(es, role="viewer"):
 
 
 def _overview_resp():
+    # series 桶 key 贴近 now 的**内部桶**：边界覆盖宽折算（v1.14）下 ts 须落在查询窗内，
+    # 否则 covered_ms<=0 → qps=None 破坏"满桶 qps=count/宽"断言。取 now 前 2/3 分钟，
+    # 对 1h(1m 桶) 是满覆盖；7d 测试不查 series 数值，仅形状。
+    now = int(time.time() * 1000)
     return {
         "hits": {"total": {"value": 120, "relation": "eq"}},
         "aggregations": {
@@ -64,8 +69,10 @@ def _overview_resp():
             "err": {"doc_count": 4},
             "to": {"doc_count": 2},
             "series": {"buckets": [
-                {"key": 1000, "doc_count": 60, "err": {"doc_count": 2}, "to": {"doc_count": 1}},
-                {"key": 2000, "doc_count": 60, "err": {"doc_count": 2}, "to": {"doc_count": 1}},
+                {"key": now - 180_000, "doc_count": 60,
+                 "err": {"doc_count": 2}, "to": {"doc_count": 1}},
+                {"key": now - 120_000, "doc_count": 60,
+                 "err": {"doc_count": 2}, "to": {"doc_count": 1}},
             ]},
         },
     }
@@ -107,13 +114,19 @@ def _llm_fail_source(trace_key="good-question#tr-x", **kw):
     return base
 
 
-def _agents_resp(agents):
-    """terms(agent) agg canned：桶按频次降序（key=agent, doc_count=频次）。"""
+def _agents_resp(agents, distinct=None):
+    """terms(agent) agg canned：桶按频次降序（key=agent, doc_count=频次）。
+
+    distinct 缺省 = len(agents)（真实 resp 总带 cardinality agg；v1.14 起 total 读它）。
+    """
     return {
         "hits": {"total": {"value": 1, "relation": "eq"}},
-        "aggregations": {"by_agent": {"buckets": [
-            {"key": a, "doc_count": n} for a, n in agents
-        ]}},
+        "aggregations": {
+            "by_agent": {"buckets": [
+                {"key": a, "doc_count": n} for a, n in agents
+            ]},
+            "distinct": {"value": len(agents) if distinct is None else distinct},
+        },
     }
 
 
@@ -157,9 +170,13 @@ class TestStoreBodies:
         a = es_store.build_anomalies_body(agent=None, start_ts=1, end_ts=2, size=50)
         assert {"term": {"node": "request"}} in a["query"]["bool"]["filter"]
         assert a["size"] == 50
+        # v1.14：列表截断提示需真实 total → 关闭 hits.total 近似（截断语义 §8.4）
+        assert a["track_total_hits"] is True
         lf = es_store.build_llm_failures_body(agent=None, start_ts=1, end_ts=2, size=50)
         assert lf["collapse"] == {"field": "trace_key"}
         assert {"term": {"node": "llm_call"}} in lf["query"]["bool"]["filter"]
+        # collapse 不改 hits.total → trace_total 单独 cardinality(trace_key)（去重失败 trace 总数）
+        assert lf["aggs"]["trace_total"] == {"cardinality": {"field": "trace_key"}}
 
     def test_request_statuses_body_caps_terms_at_100(self):
         body = es_store.build_request_statuses_body([f"t{i}" for i in range(150)])
@@ -173,6 +190,8 @@ class TestStoreBodies:
         assert {"range": {"ts": {"gte": 1, "lte": 2}}} in q
         # terms(agent) 聚合；纯实测 —— 不并白名单，故无 agent 过滤（全量 request 去重）
         assert body["aggs"]["by_agent"] == {"terms": {"field": "agent", "size": 100}}
+        # v1.14：distinct cardinality(agent) = 真实去重总数（terms top100 截断后支撑 truncated）
+        assert body["aggs"]["distinct"] == {"cardinality": {"field": "agent"}}
         assert body["size"] == 0
 
     def test_parse_percentiles_and_series_rows(self):
@@ -199,6 +218,7 @@ class TestOverviewEndpoint:
         body = r.json()
         assert body["window"] == "1h" and body["agent"] is None
         assert body["source"] == "realtime" and body["fallback_hours"] == []
+        assert body["covered_hours"] == 0  # 分位标注仅 7d rollup 语义；1h 恒 0
         cards = body["cards"]
         assert cards["total"] == 120 and cards["error"] == 4 and cards["timeout"] == 2
         assert cards["p50"] == 12.3 and cards["p99"] == 154.2
@@ -226,6 +246,7 @@ class TestOverviewEndpoint:
         body = r.json()
         assert body["source"] == "realtime" and body["agent"] == _AGENT
         assert body["fallback_hours"] == []
+        assert body["covered_hours"] == 0  # 无覆盖 → 无已 rollup 小时可标
         # 7d 读 rollup index 两次（meta 覆盖探测 + request 组 doc）→ 实时兜底 agg（桶宽 1h）
         assert len(es.calls) == 3
         assert es.calls[0][0] == "dev.obs-metrics-rollup"
@@ -277,6 +298,7 @@ class TestOverviewEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["source"] == "mixed"  # 有覆盖 + 有缺桶（其余已闭合小时未 rollup）
+        assert body["covered_hours"] == 1  # 单个已 rollup 小时（meta 判别）
         cards = body["cards"]
         # total/error/timeout 仍实时整窗（120/4/2，非 merge 出的 63/1/1）
         assert cards["total"] == 120 and cards["error"] == 4 and cards["timeout"] == 2
@@ -329,6 +351,7 @@ class TestOverviewEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["source"] == "mixed"  # E/F 覆盖，其余已闭合小时缺桶
+        assert body["covered_hours"] == 2  # E/F 两个已 rollup 小时（含空小时 E，meta 判别）
         assert hour_e not in body["fallback_hours"]  # 空但已处理 → 非缺口
         assert hour_f not in body["fallback_hours"]
         assert len(body["fallback_hours"]) > 0
@@ -361,6 +384,34 @@ class TestOverviewEndpoint:
         with _enter(app, es) as c:
             r = c.get("/api/v1/metrics/overview", headers=_auth_hdr("ops"))
         assert r.status_code == 403 and r.json()["code"] == "ERR_AUTH_0002"
+
+
+class TestOverviewSeriesPartials:
+    """_overview_series 边界桶 QPS 覆盖宽折算（v1.14 缺陷修，纯函数）。
+
+    ES date_histogram 对齐整边界 → 首桶左越 window_start、尾桶（进行中小时）右越
+    window_end；按满桶宽除会虚低（右端爬坡假象）。逐桶 covered_ms 折算；覆盖=0 守卫 None。
+    """
+
+    def test_leading_trailing_full_buckets_width_semantics(self):
+        start, end, width_s = 100_000, 200_000, 60
+        rows = [
+            {"ts": 50_000, "count": 60, "error": 0, "timeout": 0},    # 首桶左越窗，覆盖 10s
+            {"ts": 110_000, "count": 600, "error": 0, "timeout": 0},  # 内部满桶 60s
+            {"ts": 190_000, "count": 60, "error": 0, "timeout": 0},   # 尾桶右越窗，覆盖 10s
+        ]
+        pts = metrics_api._overview_series(rows, width_s, start, end)
+        assert pts[0].qps == 60 / 10
+        assert pts[1].qps == 600 / 60
+        assert pts[2].qps == 60 / 10
+        # error/timeout_rate 分母仍是桶内 count（与覆盖宽无关）
+        assert pts[1].count == 600
+
+    def test_out_of_window_bucket_guard_returns_none(self):
+        # 理论越界（桶完全在窗外，生产不会出现，纯守卫）：covered_ms<=0 → qps None
+        pts = metrics_api._overview_series(
+            [{"ts": 9_000_000, "count": 5, "error": 0, "timeout": 0}], 60, 100_000, 200_000)
+        assert pts[0].qps is None
 
 
 class TestInterfacesEndpoint:
@@ -398,12 +449,24 @@ class TestAnomaliesEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert len(body["items"]) == 2
+        assert body["total"] == 2 and body["truncated"] is False
         item = body["items"][0]
         assert item["status"] == "error" and item["error_type"] == "db_error"
         assert item["trace_id"] and item["duration_ms"] == 800
         q = es.calls[0][1]["query"]["bool"]["filter"]
         assert {"term": {"node": "request"}} in q
         assert {"term": {"agent": _AGENT}} in q
+
+    def test_anomalies_total_truncated_hint(self):
+        # hits.total(5) > 返回条数(2) → truncated True：UI 渲染"仅显示最新 N 条"
+        src = [_anomaly_source(), _anomaly_source(status="timeout", trace_id="tr-y")]
+        app, es = _app(FakeES(response=es_hits(5, src)))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/anomalies", headers=_auth_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["items"]) == 2
+        assert body["total"] == 5 and body["truncated"] is True
 
 
 class TestLlmFailuresEndpoint:
@@ -420,8 +483,10 @@ class TestLlmFailuresEndpoint:
         with _enter(app, es) as c:
             r = c.get("/api/v1/metrics/llm-failures", headers=_auth_hdr())
         assert r.status_code == 200
-        items = r.json()["items"]
+        body = r.json()
+        items = body["items"]
         assert len(items) == 2 and len(es.calls) == 2  # Q1 → Q2
+        assert body["total"] == 2 and body["truncated"] is False  # 无 agg → 回退 hits.total
         by_trace = {it["trace_id"]: it for it in items}
         assert by_trace["tr-x"]["request_status"] == "ok"  # request ok + llm error
         assert by_trace["tr-x"]["llm_node_status"] == "error"
@@ -429,6 +494,27 @@ class TestLlmFailuresEndpoint:
         assert by_trace["tr-x"]["model"] == "claude-sonnet"
         assert by_trace["tr-y"]["request_status"] is None  # Q2 未命中 → 不做兜底猜测
         assert es.calls[0][1]["collapse"] == {"field": "trace_key"}
+
+    def test_llm_failures_total_from_cardinality_agg_truncated(self):
+        # collapse 不改 hits.total → total 走 trace_total cardinality agg（去重失败 trace 数）
+        q1 = {
+            "hits": {"total": {"value": 7, "relation": "eq"}, "hits": [
+                {"_source": _llm_fail_source("good-question#tr-x")},
+                {"_source": _llm_fail_source("good-question#tr-y",
+                                             status="timeout", trace_id="tr-y")},
+            ]},
+            "aggregations": {"trace_total": {"value": 7}},
+        }
+        app, es = _app(FakeES(responses=[q1, es_hits(0, [])]))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/llm-failures", headers=_auth_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["items"]) == 2
+        assert body["total"] == 7 and body["truncated"] is True
+        # Q1 body 携带 trace_total cardinality agg
+        agg = es.calls[0][1]["aggs"]["trace_total"]
+        assert agg == {"cardinality": {"field": "trace_key"}}
 
     def test_llm_failures_es_error_400(self):
         app, es = _app(FakeES(exc=TransportError("模拟超时")))
@@ -448,13 +534,44 @@ class TestAgentsEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["agents"] == ["good-question", "smart-procurement", "customer-service"]
+        assert body["total"] == 3 and body["truncated"] is False  # distinct=len 未截断
         # 固定 7d 窗：range 下界 ≈ now-7d（上界 now）；只发一次 search
         assert len(es.calls) == 1
         index, qbody = es.calls[0]
         assert "metrics-rollup" not in index  # agents 走实时事件 index，非 rollup
+        assert qbody["aggs"]["distinct"] == {"cardinality": {"field": "agent"}}
         rng = [f for f in qbody["query"]["bool"]["filter"]
                if "range" in f][0]["range"]["ts"]
         assert rng["lte"] - rng["gte"] == 7 * 24 * 3_600_000
+
+    def test_agents_distinct_total_truncated_hint(self):
+        # top3 桶 + 真实去重 7 个 → total=7、truncated=True（下拉只列最活跃 3 个）
+        app, es = _app(FakeES(response=_agents_resp([
+            ("good-question", 300), ("smart-procurement", 80), ("customer-service", 20),
+        ], distinct=7)))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["agents"]) == 3
+        assert body["total"] == 7 and body["truncated"] is True
+
+    def test_agents_no_distinct_agg_falls_back_to_len(self):
+        # 无 distinct agg（低版本 ES / 测试替身）→ total 回退 len(agents)，truncated=False
+        resp = {
+            "hits": {"total": {"value": 1, "relation": "eq"}},
+            "aggregations": {"by_agent": {"buckets": [
+                {"key": "good-question", "doc_count": 300},
+                {"key": "smart-procurement", "doc_count": 80},
+            ]}},
+        }
+        app, es = _app(FakeES(response=resp))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["agents"] == ["good-question", "smart-procurement"]
+        assert body["total"] == 2 and body["truncated"] is False
 
     def test_agents_es_error_400(self):
         app, es = _app(FakeES(exc=TransportError("模拟超时")))

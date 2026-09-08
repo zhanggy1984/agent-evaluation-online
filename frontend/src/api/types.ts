@@ -100,6 +100,8 @@ export interface MetricsOverview {
   agent: string | null
   source: string
   fallback_hours: number[]
+  // 7d 卡片分位 merge 的已 rollup 小时数（1h/24h 恒 0）；UI 分位标注依据（v1.14）
+  covered_hours: number
   cards: MetricsCards
   series: OverviewSeriesPoint[]
 }
@@ -153,6 +155,9 @@ export interface AnomalyItem {
 export interface MetricsAnomalies {
   window: string
   agent: string | null
+  // total = 窗口内真实条数；truncated = size≤100 截断（UI 提示"仅显示最新 N 条"，v1.14）
+  total: number
+  truncated: boolean
   items: AnomalyItem[]
 }
 
@@ -171,10 +176,16 @@ export interface LlmFailureItem {
 export interface MetricsLlmFailures {
   window: string
   agent: string | null
+  // total = 窗口内**失败 trace 去重数**；truncated = 折叠列表 size≤100 截断（v1.14）
+  total: number
+  truncated: boolean
   items: LlmFailureItem[]
 }
 
 // GET /metrics/agents：近 7d 有流量的 agent 名（纯实测、按频次降序）——筛选下拉数据源。
+// total = 真实去重 agent 总数（distinct agg），可 > len(agents)（top100 截断）；truncated 据此。
 export interface MetricsAgents {
+  total: number
+  truncated: boolean
   agents: string[]
 }

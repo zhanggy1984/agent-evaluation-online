@@ -59,6 +59,11 @@ onMounted(() => void load())
   <div>
     <MetricFilterBar :loading="loading" @refresh="load" />
 
+    <!-- v1.14：size≤100 截断提示（total 来自后端 track_total_hits 真实计数） -->
+    <p v-if="payload && payload.truncated" class="muted trunc-hint">
+      窗口内共 {{ payload.total }} 条，仅显示最新 {{ payload.items.length }} 条
+    </p>
+
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
     <p v-if="loading && !payload" class="muted">加载中…</p>
 
@@ -69,3 +74,10 @@ onMounted(() => void load())
     />
   </div>
 </template>
+
+<style scoped>
+.trunc-hint {
+  margin: -2px 0 8px;
+  font-size: 12px;
+}
+</style>
