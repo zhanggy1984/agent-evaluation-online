@@ -1,6 +1,6 @@
 # agent-evaluation-online 工程任务拆解（WBS）
 
-> 目的：把 **solution.md（v3.5.9，error-only 一期定稿 + 部署边界 + Task #4 契约修订与实现清单包 R-1~R-24 语义权威同步，含 R5-R7 auto-fixed 判据重构）** 与 **solution_detail.md（v1.10，开发就绪详设，含 Task #4 全部契约修订 B 包/R1~R24 落字 + §14.5 X 系列集成异常/边界用例登记）** 中"将要做的事情"拆成可执行的任务阶段与任务项，每项给**验证目标**，指导排期、认领与验收。本文不重述方案内容，只做**执行层拆解**并指向两文档锚点。
+> 目的：把 **solution.md（v3.5.9，error-only 一期定稿 + 部署边界 + Task #4 契约修订与实现清单包 R-1~R-24 语义权威同步，含 R5-R7 auto-fixed 判据重构）** 与 **solution_detail.md（v1.11，开发就绪详设，含 Task #4 全部契约修订 B 包/R1~R24 落字 + §14.5 X 系列集成异常/边界用例登记 + 2026-09-08 阶段 1 尾项实现收口注记：前端栈 Vue 裁定 / auth 最小闭环边界 / trace 查询实测修正，见修订记录 v1.11）** 中"将要做的事情"拆成可执行的任务阶段与任务项，每项给**验证目标**，指导排期、认领与验收。本文不重述方案内容，只做**执行层拆解**并指向两文档锚点。
 >
 > 权威口径：功能范围 = detail §0.1（锁定 v3.5.1；v3.5.2 仅同步部署边界、v3.5.3/v3.5.4 仅同步 Task #4 契约语义，均不改变 v1 error-only 功能范围）；阶段门 = solution §15 P0~P2；测试用例全集 = detail §14.1~§14.5（S-1~S-5、E-1~E-29、性能护栏 + 集成异常与边界 X-1~X-13（= T-4.13/T-4.14 编号化登记，detail §14.5），E-23~E-29 = R-13~R-24 修订包端到端）。**Task #4（offline 配套方案，独立文档 + 独立评审）已切两刀、双批方案均已产出并历 R1~R3/R5-R7/R-1~R-24 修订包演进（逐批登记见下「联调闭环编排」环 0 bullet）**：批 1 = offline `error-backflow-phase1.md` **v0.2.2**（契约 + offline 收单 = 联调环 0/环 1 offline 侧，2026-09-03 评审通过，后续 R1~R3 落改确认 + code_detail 转译注记）先行；批 2 = offline `error-backflow-phase2.md` **v0.7.2**（判定器复现 + verifier no_fallback + R5-R7 auto-fixed 判据重构 = T-3.8 落点，2026-09-07 终审通过；R5-R7 及后续修订包消费语义已逐步落字 online detail v1.4→**v1.9** / solution v3.5.4→**v3.5.9**）。双批是阶段 3.8/阶段 4 与联调环 0~3 的前置输入。
 
@@ -80,6 +80,8 @@
 - **T-1.6 前端骨架**：登录 + 链路查询列表 + trace 详情（树时间轴 + 红显 + 日志穿插）。**验证目标**：S-1 在浏览器可查回（P0 验收人工步）。
 
 **阶段出口**（solution §15 P0 / detail §14.3）：S-1、S-2、S-3 通过；手工投 Kafka 事件能按 trace 查回链路。
+
+- **阶段 1 收口（2026-09-08，本阶段出口达成）**：T-1.3 / T-1.4 / T-1.6 + auth 隐式前置后端闭环全部落地（T-1.1/T-1.2 前批已绿）；**S-1 浏览器级 + S-5 curl 级验证全绿**。落地要点：前端栈定 **Vue3 + Vite**（auth 最小闭环 = T-1.6 登录页数据源 §8.1 隐式前置，随本批闭环；登录落点先指 `/traces`，dashboard 待阶段 2）；ES index template/ILM 由 infra `es-init` 落建（ik_max_word 中文分词 + ILM 30d，template 接管新建周 index），本仓交付物 `es-template/`；trace 查询三端点护栏全开（列表折叠去重 + `cardinality(trace_key)` 去重总数、详情 seq asc 结构序 + ≤500 截断、日志懒加载分页、body_search 正文保护 + 检索面收窄）。**四实测发现（detail v1.11 修订记录）**：① ES collapse 不改 hits.total → 列表去重总数须独立 cardinality agg，且折叠键须 concrete keyword 字段（不支持 runtime）；② SDK request 事件在中间件 finally 才 emit、ts 恒最大 → 详情 ts asc 会让根沉底，改 seq asc 创建序；③ nginx 反代目标须用 container_name `obs-backend`（共享 external network 上 `backend` alias 被 5 仓轮询占用 → /api 404）；④ `backend/.env` 会被 docker compose 按运行 CWD 加载并覆盖仓根 `.env`（DB_PASSWORD 错源 → Access denied），容器重建须 `--force-recreate` 才吃新 env。
 
 ---
 

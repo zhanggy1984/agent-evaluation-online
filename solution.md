@@ -1,6 +1,6 @@
 # agent-evaluation-online 线上观测平台 技术方案
 
-> 版本：v3.5.9（error-only 一期定稿；同步部署边界：仅 backend+frontend Docker、依赖走公共 infra 与公共 API 网关；Task #4 B 包 needs_review v1 源 = error-run 判定产物 + reentry 版本门控语义同步 + v3.5.4 R5-R7 auto-fixed 判据重构权威同步 + v3.5.5 R-1 claim_k / R-2 claimed-case 级纯净判据权威同步 + v3.5.6 R-3~R-10 修订包语义同步 + v3.5.7 R-18/R-19 高危 2 条语义同步 + v3.5.8 R-13~R-17 B 类 5 条语义同步 + v3.5.9 R-20~R-24 C/低危 5 条语义同步，对应 solution_detail v1.10（v1.10 = v1.9 语义 + §14.5 X 系列集成异常/边界用例登记，无语义变更）/ offline error-backflow-phase2.md v0.7.2）
+> 版本：v3.5.9（error-only 一期定稿；同步部署边界：仅 backend+frontend Docker、依赖走公共 infra 与公共 API 网关；Task #4 B 包 needs_review v1 源 = error-run 判定产物 + reentry 版本门控语义同步 + v3.5.4 R5-R7 auto-fixed 判据重构权威同步 + v3.5.5 R-1 claim_k / R-2 claimed-case 级纯净判据权威同步 + v3.5.6 R-3~R-10 修订包语义同步 + v3.5.7 R-18/R-19 高危 2 条语义同步 + v3.5.8 R-13~R-17 B 类 5 条语义同步 + v3.5.9 R-20~R-24 C/低危 5 条语义同步，对应 solution_detail v1.11（v1.11 = v1.10 语义 + 2026-09-08 阶段 1 尾项实现收口注记：前端栈 Vue 裁定/auth 最小闭环边界/trace 查询实测修正，无语义变更；v1.10 = v1.9 语义 + §14.5 X 系列集成异常/边界用例登记，亦无语义变更；栈措辞 React→Vue 已就地同步修补、不升版）/ offline error-backflow-phase2.md v0.7.2）
 > 定位：**平台定标准，agent 适配**。观测平台是规则制定者，4 个现有 agent（good-question / customer-service / contract-check / smart-procurement）及未来接入 agent，一律按本平台统一规范整改接入。
 > v3 变更：吸收独立架构评审意见（锚点与异常判定模型、接口字典来源、回归隔离面、offline 配套细项）+ 4 项方向决策（兜底归属 L3 / cc 第一版不回流 / 正文默认关逐 agent 评估 / L3 offline 自动化判分）。
 > v3.1 变更：修订第二轮变更增量评审问题——§11 回归状态机按 case_type 分叉（error-only 不进 SCORING / 含 quality 必须进 SCORING）、L3 offline 判分穿透面与 no_fallback 达标线（防假绿）、seq 幂等回退 trace 级全局单调（branch 仅标注）、L1/L2 catch 转抛边界、llm_call 逻辑调用与重试自愈不出回流、L3 去重伪分类、看板 quality 出口、sp structlog 落地约束。
@@ -44,7 +44,7 @@
 
 | # | 决策项 | 定案 |
 |---|---|---|
-| D1 | 实现方式 / 技术栈 | **全自研**，技术栈跟随 offline：FastAPI + React + MySQL + Alembic + JWT |
+| D1 | 实现方式 / 技术栈 | **全自研**，技术栈跟随 offline：FastAPI + Vue3 + MySQL + Alembic + JWT |
 | D2 | 采集架构 | **obs-sdk 内嵌 agent 进程**，数据发 MQ，online 平台异步消费、处理、入库、显示 |
 | D3 | 消息队列 | **Kafka**（单 broker KRaft），SDK 侧 kafka-python，每 agent 一个 topic `obs.agent.<name>`，partition=1 |
 | D4 | 指标形态 | **请求级 + LLM 调用级双指标**（request 事件 / llm_call 事件分别统计）；error/timeout/ok 互斥 |
@@ -98,7 +98,7 @@
                     │  │ 聚类去重      │     └─────────┬──────────┘      │
                     │  └──────┬───────┘               │                 │
                     │         │ error_case_link      ▼                 │
-                    │  ┌──────▼────────┐        React 前端（三层页面）   │
+                    │  ┌──────▼────────┐        Vue3  前端（三层页面）   │
                     │  │ converter     │                               │
                     │  │ 组装统一 payload│                               │
                     │  │ （case payload│                               │
@@ -116,7 +116,7 @@
 > 图中 ES / Kafka 框为**逻辑依赖示意**：实际 MySQL / Kafka / ES 均为**公共 infra 租户**，不在 online 自持的 docker-compose 内——online 自持容器仅 backend + frontend 两个（§14 部署边界）。
 
 - **复用共享 infra（部署边界，v3.5.2）**：交付物仅 **backend + frontend 两个 Docker 服务**（`docker-compose.yml` 编排，不含任何中间件容器）；MySQL 8（库 `obs`）、Kafka、ES 8.x 均为**公共 infra 租户**——平台定策略、infra 落权执行（Kafka topic/ACL/consumer group 申请落权，§5.2/§12；ES index template/ILM/shard/replicas 归 infra，§7.1）；租户内命名带 `{env}.` 前缀参数化（无前缀 = 独立集群默认）。前端与 backend 统一经**公共 API 网关**路由（`{env}.` 子域/路径，网关终止 TLS）；offline↔online 平台间走内网、不经公网网关（§14 部署边界 / §17 #14/#15）。
-- **技术栈跟随 offline**：FastAPI + React + MySQL + Alembic + JWT。
+- **技术栈跟随 offline**：FastAPI + Vue3 + MySQL + Alembic + JWT。
 - **范围声明**：第一版观测 gq / cs / sp 三个 LLM 相关 agent + cc 的 HTTP 接口层；维度 3（回流）仅覆盖 gq / cs / sp（D18）。
 
 ---
@@ -510,7 +510,7 @@ auto-fixed 判据 = **claim 固化 K（claim_k）+ claimed-case 级纯净判据*
 
 | 域 | 主体 | 机制 |
 |---|---|---|
-| 平台用户 | 观测平台登录（React） | 独立账号体系（JWT），viewer/admin；viewer 观测/回流**查看** + 回流**人工操作**（D11 研发闭环），admin 另管 agent/接口字典/配置/用户/正文开关 |
+| 平台用户 | 观测平台登录（Vue3） | 独立账号体系（JWT），viewer/admin；viewer 观测/回流**查看** + 回流**人工操作**（D11 研发闭环），admin 另管 agent/接口字典/配置/用户/正文开关 |
 | agent 上报 | obs-sdk → Kafka（§5.2） | Kafka SASL + topic 级 ACL（每 agent 凭证映射 producer 身份、topic 不可互写，§12 补强）；`agent_credential` 存 Kafka 凭证、加密存储并轮换 |
 | 平台间 | offline ↔ online（pull 主导，D20） | offline 专用服务账号（evaluator 角色）+ 独立凭证，最小 API 面：**offline→online** pull-API（拉取 assembled payload，D19）+ case 激活/驳回态回写；**online→offline** 回归 run 结果回查（§10.5 单错级）；**pull-API 契约加固（v3.5.1，安全评审）**：请求/响应显式带 `case_type` 白名单（v1 仅 `regression_error`）+ `schema_version`，非白名单 case_type 返回空集而非全量（防未来误组装流出）；响应 evidence 区二期字段（session_snapshot/retrieve_hit 等）v1 恒 null/缺省，offline 反序列化不因缺省误判为存在数据 |
 
@@ -667,7 +667,7 @@ agent-evaluation-online/
 │   │   └── core/           # config / logging / auth / errors / http / dict_config
 │   └── tests/
 ├── sdk/                    # obs-sdk（kafka-python + 标准库 + structlog 可选集成）
-├── frontend/               # React：链路查询 / 指标看板 / 回流记录
+├── frontend/               # Vue3：链路查询 / 指标看板 / 回流记录
 ├── docker-compose.yml      # 仅编排 backend+frontend（交付物）；中间件走公共 infra、连接串经 .env 注入
 └── docs/                   # 观测契约规范 + agent 接入文档
 ```
@@ -675,7 +675,7 @@ agent-evaluation-online/
 > 未来可选组件（P2 后排期，非首版）：`collector/` 非 Python/Serverless agent 事件代收组件（§13.0 非 Python 路径）。
 
 **部署边界（v3.5.2 部署约束定稿）**：
-- **交付物**：仅 `backend`（FastAPI，含 api/consumer/analyzer/converter/worker 全部服务）+ `frontend`（React）两个 Docker 镜像，由根 `docker-compose.yml` 编排——**不含任何中间件容器**。
+- **交付物**：仅 `backend`（FastAPI，含 api/consumer/analyzer/converter/worker 全部服务）+ `frontend`（Vue3）两个 Docker 镜像，由根 `docker-compose.yml` 编排——**不含任何中间件容器**。
 - **依赖接入（公共 infra 租户）**：MySQL / Kafka / ES 的 endpoint + 最小权限账号由 infra 分配，经 `.env` 注入（不入镜像、不入仓库）；Kafka topic / ACL / consumer group 由平台向 infra **申请落权**后凭证才生效（先建 topic、后发凭证，§12），平台无 broker 建删权；ES index template / ILM / shard / replicas 平台定策略、infra 落建（§7.1）。
 - **租户命名**：库 / index / topic / consumer group 带 `{env}.` 前缀参数化（`{env}.obs`、`{env}.obs-*`、`{env}.obs.*`），无前缀 = 独立集群默认（§17 #15）。
 - **公共 API 网关**：浏览器 → 公共网关（终止 TLS + 域名）→ backend；平台内部自持 JWT（§17 #14）；backend 服务仅接受网关 / 白名单来源；offline↔online 平台间走内网、不经公网网关。

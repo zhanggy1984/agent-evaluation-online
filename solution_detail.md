@@ -14,6 +14,7 @@
 > 修订记录：2026-09-07 **v1.9（R-20~R-24 H7 批 C/低危 5 条逐条评审拍板落字，Task #4-③）**——**R-20**（offline，本稿仅语义注 + 立项登记）：R-12 core 空答 fail 不动；pre-scan 显式立项为 Phase B code_detail 实施门禁（owner = offline 实施，产物 = pre-scan 报告），复现 run 空答 fail 语义定性 = **leakage 空话术复发证据**（agent 无有效产出、与词表命中 fail 同属未修复、证据形态不同），「空答不落 na、落 verifier fail」保持。**R-21** root-late 补判通道（§4.3④/§4.4/§5.1⑩/§6.1/§6.2）：judged=1 后 root 迟到（root_ok 0→1）且 root_status∈{error,timeout} → 不重跑整 trace、step4 仅补一次 root 级候选（root_error_type 走 L1/L2 值域筛）+ `root_late_complement` 幂等 CAS 标记（§4.4/§5.1⑩）。**R-22** 收尾回填 na 统一 error_type=`scheduler_unexecuted`（scanner 回收/orchestrator cancel/run 级超时收尾三路径同源；「na case 必带 error_type」不变量全覆盖收尾路径；§7.6 v1.9 ①/§8.7）。**R-23** timeout 三层语义分界 + 兜底边界闭合注（case 级 na 源 / run 终态非直接源 = B-3 claim TTL 兜底 / 收尾回填环境级污染→unclean_run 批；§7.6 v1.9 ②）。**R-24** requeue guard 状态域精确化 = `cluster.status ∈ {open, claim, needs_review}` + 锚点保护（不动 fix_version/claim_k/TTL）+ verify 兜底 = 仅 pending invalidated link（§7.4/§9.4/§14 E-29）。对 solution.md v3.5.9；依据 offline `error-backflow-phase2.md` v0.7.2。R-20/R-21 code 变更单独立项 Phase B/实现清单。双端已 commit，收口见下「commit 收口」行。
 > 修订记录：2026-09-07 **commit 收口（双端基线确认）**——online main 0b4662f + e016c45 / offline dev dcf4680 + e85fa2e：solution/solution_detail/task + error-backflow-phase1/phase2/code_detail + 平台本体 docs 各就各位。v1.1~v1.8 历史行「双端均未 commit」为各版当时实态（历史快照保留）；后续修订以本行为 commit 基线。
 > 修订记录：2026-09-07 **v1.10（集成异常与边界用例登记层增补）**——§14 新增 §14.5「集成异常与边界用例（task.md 阶段 4 T-4.13/T-4.14 编号化，X 系列）」X-1~X-13：把 `task.md` T-4.13（异常 6 组）/ T-4.14（边界 7 组）追加场景编号化为验收用例（埋点前提/检索注入转义/平台间契约/大对象/时间/窗口/时序/数量级/并发词表/保留期边界死角），销 task.md L124/L160「须回填 detail §14」待办，验收以 X 编号为权威口径。纯用例登记层增补、无语义变更：solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动。
+> 修订记录：2026-09-08 **v1.11（阶段 1 尾项实现收口 + 前端栈裁定落字 + 查询实测修正，= task.md 阶段 1 T-1.3/T-1.4/T-1.6 + auth 隐式前置）**——本批实现约定与 S-1/S-5 验证发现：① **前端栈裁定 Vue3 + Vite**（本版 §9 全章 React 措辞随改；solution.md 六处同步就地修补、不升版——H7 A 类「直接修补不升版本」先例，语义基线不动）；② **Authorization 承载与 token 存储落定**（原文档缺口）：`Authorization: Bearer` 头 + access/refresh 双 token 存 localStorage（`obs_access`/`obs_refresh`），401 single-flight refresh-on-401；**登录成功落点先指 `/traces`**（§9.1 注，dashboard 属阶段 2 就位后改回）；③ **auth 最小闭环边界显式化**：5 次/15min 失败锁定 = 进程内计数（uvicorn `--workers 1` 单实例，重启清零可接受），**无 token-version 列迁移**——user_version 即时吊销属 §8.6 阶段 3 面，UserSession revoked + status 检查 + access 15min 短效已覆盖最小面；④ **trace 列表去重总数 = `cardinality(trace_key)` agg**（S-5 实测：ES collapse 不改 hits.total = 折叠前文档数，去重口径须独立 agg；折叠键须 concrete keyword 字段——collapse 不支持 runtime 字段，实测 400，见 es.py `build_trace_list_body`）；⑤ **详情排序 = seq asc 结构序**（S-1 实测：SDK 在中间件 finally 才 emit request 事件、其 ts 恒为全 trace 最大 → ts asc 让根锚点沉底子树散乱，改 seq 创建序即拓扑序，见 es.py `build_trace_events_body`）；⑥ **正文保护维持**（body_search=false 置空 input/output/log_message、检索面收窄 error_msg/error_type，前端零渲染兜底两层）；红显 = status∈{error,timeout}、llm_call 高亮 = node=="llm_call" 语义不变（CSS 顺序修正：red 定义于 llm 之后保证重叠时红胜）；⑦ **部署实测两坑**：nginx 反代目标须 container_name `obs-backend`（dev 共享 external network 上 `backend` alias 被 5 仓轮询占用 → 实测 /api 404）；`backend/.env` 会被 docker compose 按运行 CWD 加载并覆盖仓根 `.env`（DB_PASSWORD 错源 → Access denied），容器重建须 `--force-recreate` 才吃新 env。solution v3.5.9 / offline phase1 v0.2.2 / phase2 v0.7.2 语义基线不动。
 
 ---
 
@@ -23,7 +24,7 @@
 
 | 面 | 范围 | 落点 |
 |---|---|---|
-| online 平台 | FastAPI backend + React frontend 完整实现细节 | 本文件全章 |
+| online 平台 | FastAPI backend + Vue3 frontend 完整实现细节 | 本文件全章 |
 | agent 接入 | 4 个存量 agent（gq/cs/sp/cc）的 obs-sdk 埋点/接入契约 | 本文件 §11 |
 | offline 依赖边界 | D19/D20 信封 + pull 传输 + 回写/回查的 **online 侧**实现 | §7 + §8.7 |
 | offline 内部 | 只到「依赖契约 + 期望行为」；实现归 **Task #4**（独立方案、独立评审） | §7.3「offline 期望行为」 |
@@ -73,7 +74,7 @@
 | DB | MySQL 8，库名 `obs` | 只放平台元数据 + 回流状态，**不落事件本体** |
 | 事件存储 | Elasticsearch 8.x 单节点 | 事件 index + 日志 index 分列，ILM 30 天，周滚动（§5.2） |
 | MQ | Kafka（KRaft 单 broker），SASL/TLS + topic 级 ACL | 每 agent 一 topic，partition=1 |
-| 前端 | React（SPA，只经 backend API） | 无直连 ES/MySQL |
+| 前端 | Vue3（SPA，只经 backend API） | 无直连 ES/MySQL |
 | SDK | Python：`kafka-python` + 标准库 + structlog 可选 | 见 §11 |
 
 **部署边界【实现约定】（2026-09-03 补充）**：online 仅以 Docker 交付 **backend + frontend 两个服务**；MySQL/ES/Kafka 与网关/域名/TLS 一律使用**公共基础设施（公共 infra + 公共 API 网关）**，不自建、不随 compose 打包。上表 DB/事件存储/MQ 行「自管单实例」等运行时形态仅为平台侧视图，实际拓扑与凭证以公共 infra 为准——本平台以**租户**身份接入（infra 分配 endpoint + 最小权限账号 + topic/index/ACL 白名单，落点 §13.2/§13.3）。对外访问统一经公共 API 网关（浏览器→前端、前端→backend API 均过网关）。**网关默认拓扑（v1.1，§12.2 O-6）**：网关终止 TLS + 域名，平台内部仍自持 JWT（§13.1）；平台间端点（§8.7）不走公网网关，走 infra 内网/服务凭证直连（§13.5）。网关若做统一认证/限流前置属 infra 域，平台内角色模型（§13.1 JWT）保持不变；**若网关已吞认证，需与 infra 约定身份透传头防双认证打架——P0 前确认**。
@@ -128,7 +129,7 @@ agent-evaluation-online/
 ├── sdk/
 │   ├── pyproject.toml
 │   └── obs_sdk/                  # 见 §11.1
-├── frontend/                     # React：页面与路由规格见 §9.2（菜单/数据源）
+├── frontend/                     # Vue3：页面与路由规格见 §9.2（菜单/数据源）
 ├── docker-compose.yml            # 仅编排 backend+frontend（交付）；中间件用公共 infra，连接串经 .env 注入（§1.1 部署边界）
 ├── docs/                         # 观测契约规范 + agent 接入文档（与 §3/§11 同步维护）
 └── solution.md / solution_detail.md
@@ -1135,12 +1136,12 @@ CREATE TABLE `trace_judge_state` (
 
 ---
 
-## 9. 前端页面规格（React；依据 solution.md §12.1 + §9.3）
+## 9. 前端页面规格（Vue3 + Vite；依据 solution.md §12.1 + §9.3）
 
 ### 9.1 全局约定
 
 - 路由/菜单树见 §1.2/§12.1（solution）；**viewer/admin 按角色渲染菜单，admin-only 路由前端隐藏 + 后端二次鉴权**。
-- 默认落点 = 指标看板 `/dashboard`（全站纵览 tab）。
+- 默认落点 = 指标看板 `/dashboard`（全站纵览 tab）——**v1.11 注**：dashboard 属阶段 2（T-2.4）未就位，阶段 1 登录后先落 `/traces`（链路查询列表），dashboard 落地后路由守卫改回 `/dashboard`。
 - 空态与误读防呆（v3.5.1 易用性规则，实现为统一 `<EmptyState type=.../>` 组件）：
   - `needs_review` 状态筛选保留（error run 的 `na` 结果行可入列——case 级 infra 无法判定，reason 带 run_id+error_type，同批聚合，§7.6），**缺省为空属正常非功能缺失**。
   - 二期物（L3 质量出口 tab、弃留墙入口、trace quality 过滤/标记）**整条隐藏不可达、不灰置**；仅原始事件 JSON 不可避免暴露 `quality:null` 时行内提示「quality 观测为二期规划（v1 未采集），为空属预期，非采集故障」。

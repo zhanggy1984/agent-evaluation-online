@@ -1,0 +1,23 @@
+{
+  "policy": {
+    "_meta": {
+      "description": "obs 事件/日志 index 保留策略（detail §7.1）：hot → 30d delete。平台提交物；权威源 = 本项目 es-template/README.md + infra 仓 init/es/。"
+    },
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "set_priority": {
+            "priority": 100
+          }
+        }
+      },
+      "delete": {
+        "min_age": "30d",
+        "actions": {
+          "delete": {}
+        }
+      }
+    }
+  }
+}

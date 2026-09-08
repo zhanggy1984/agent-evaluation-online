@@ -1,0 +1,23 @@
+{
+  "name": "agent-evaluation-online-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "agent-evaluation-online 前端（T-1.6 阶段 1 收尾批：登录 + 链路查询 + trace 详情三页）。不引组件库，手写简洁 CSS；看板随阶段 2 再定。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.3",
+    "vite": "^6.1.0",
+    "vue-tsc": "^2.2.0"
+  }
+}

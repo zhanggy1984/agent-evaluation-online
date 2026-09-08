@@ -1,0 +1,5 @@
+# 构建上下文剔除：依赖由镜像内 npm ci 重建，宿主机痕迹与 VCS 不进上下文
+node_modules
+dist
+.git
+*.log

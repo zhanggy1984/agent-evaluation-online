@@ -1,0 +1,84 @@
+/* 全局极简样式：骨架期不引组件库，手写轻量约定（阶段 2 看板再定主题）。 */
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #e2e5ea;
+  --text: #24292f;
+  --muted: #6b7280;
+  --brand: #1a73e8;
+  --error: #d93025;
+  --timeout: #b45309;
+  --ok: #188038;
+  --hl-llm: #eef4ff;
+  --hl-red: #fdecea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#app {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.btn {
+  background: var(--brand);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 14px;
+  font-size: 14px;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: #fff;
+  color: var(--brand);
+  border: 1px solid var(--border);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.error-text {
+  color: var(--error);
+}
+
+.muted {
+  color: var(--muted);
+}

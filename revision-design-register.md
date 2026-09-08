@@ -354,3 +354,17 @@
 - **R-24（低危）→ A：requeue guard 状态域精确化 + 锚点保护**——复位条件 = `cluster.status ∈ {open, claim, needs_review}`（fixed/inactive closed 禁、需重测走 superseded+reopen）；requeue 不动 cluster 锚点（fix_version/claim_k/TTL 保留）；verify 兜底 = 仅 pending invalidated link。落字 = detail §7.4 + §9.4 + §14 用例。online-only。
 
 **落字（2026-09-07 逐问拍板批，本批全 landed）**：detail **v1.9**（header + 修订记录行 + §4.1 step4 表行 root-late 例外 + §4.3④ root-late 补判 + §4.4/§5.1⑩ `root_late_complement` 幂等列 + §6.1 补候选 bullet + §6.2 root-late 补候选聚类段 + §7.4 requeue guard 状态域改写（R-24）+ §7.6 v1.9 blockquote（R-22 收尾回填统一 / R-23 timeout 三层分界 / R-21 幂等标记）+ §8.7 runs 行 R-22 收尾注 + §9.4 requeue 门控行 + §14 E-28/E-29）+ solution **v3.5.9**（header + 变更行 + 修订记录表补 v3.5.8/v3.5.9 两行 + §6.1 step4 root-late 例外句 + §7.2 trace_judge_state 行 `root_late_complement` + §10.2 root-late 补判聚类段）+ phase2 **v0.7.2**（header + 契约引用行 v1.9 + §2.3 v0.7.2 注①R-22 ②R-20 ③R-23 三层分界 + §6.3 R-22 收尾统一注 + §6.4 源行三路径 + §7.2 R-20 注 + §11.1 收尾 error_type 护栏 + §10 v0.7.2 blockquote + §13 v0.7.2 行）。**R-21/R-24 = online 机制/语义（root_late_complement 列 + 消费 step4 补判 / requeue guard 状态域）= online 实现清单；R-20 code（pre-scan 报告）= Phase B code_detail 实施门禁；R-22 收尾单测护栏入实施清单。**（此前「待落字（未拍板不动版号）」句为拍板时历史标注，本批已落字。）**状态：recorded → designed → reviewed → approved → landed（detail v1.9 + solution v3.5.9 + phase2 v0.7.2）。**
+
+---
+
+## 附录 A：非 R 批次登记区（P0 平台轨实现收口等，非 Task #4 error 回流修订）
+
+> 本区登记**不属于 Task #4 error 回流修订**、但与同一批 online 权威文档（solution / solution_detail / task）联动的实现收口批次。
+> 单独成区以免污染上方 Task #4 台账的语义边界；性质同 header——工作台账、**非权威方案**，权威口径仍在 solution / solution_detail / task。
+> 状态机沿用 header：`recorded` → `designed` → `reviewed` → `approved` → `landed`。
+
+| 批次 | 内容（实现/裁定要点） | 落点 | 状态 |
+|---|---|---|---|
+| P0-1 | **online 阶段 1 尾项实现收口**：T-1.3（ES index template/ILM，`es-template/` 提交物 + infra `es-init` 落建，ik_max_word 中文分词 + ILM 30d）；T-1.4（trace 查询三端点护栏全开）；T-1.6（前端 **Vue3 + Vite** 三页 + nginx 反代）；**auth 最小闭环**（= T-1.6 登录页数据源 §8.1 隐式前置） | detail **v1.11** 修订记录（栈裁定 / auth 边界 / 四实测发现）+ §9 全章 React→Vue + §9.1 登录落点 /traces 注；solution 六处 React→Vue **就地修补不升版**（H7 A 类先例）+ L3 版本行联动；task.md 阶段 1 收口 bullet + L3 权威引用升 v1.11；ci.yml 注释 Vue 同步 | **landed（2026-09-08）**：S-1 浏览器级 + S-5 curl 级验证全绿、backend 152 单测过 |
+
+> **P0-1 实测发现（detail v1.11 修订记录，防复踩）**：① ES collapse 不改 hits.total（= 折叠前文档数）→ 去重 trace 总数须独立 `cardinality(trace_key)` agg，折叠键须 concrete keyword（不支持 runtime 字段，实测 400）；② 详情排序须 **seq asc**（SDK request 事件在中间件 finally 才 emit、ts 恒为全 trace 最大 → ts asc 会让根锚点沉底）；③ nginx 反代目标用 container_name `obs-backend`（共享 external network 上 `backend` alias 被 5 仓轮询占用 → /api 404）；④ `backend/.env` 会被 docker compose 按运行 CWD 加载并覆盖仓根 `.env`（DB_PASSWORD 错源 → Access denied），容器 env 变更须 `--force-recreate`。

@@ -7,8 +7,13 @@
 - mapping `dynamic:false` + 白名单字段（§5.2）：`input/output` 声明 text，若值非 str
   （obj/list/标量）须先序列化为文本再落，否则 mapping 解析拒收——明文形态进正文；
   `quality/retrieve_hit/session_ctx/extra` enabled:false（二期占位，只存 _source 不索引）。
-- dev 映射省 ik 自定义分词（标准分词回退，§5.2「无插件则标准分词并回退」）；生产 index
-  template/ILM 由 infra 建（§13.3），本文件只提供 dev 期 create-index-with-mapping 助手。
+- 中文分词（§5.2 analyzer `zh` = ik_max_word）：四个正文/检索字段（input/output/log_message/
+  error_msg）声明 `analyzer: zh`，settings 内 custom wrapper（tokenizer `ik_max_word`）。
+  本映射与生产 index template **同构**（template 权威源 infra 侧，§13.3；本文件 body 与
+  `es-template/` 提交物同源，防漂移见 es-template/README）。IK 插件随 infra ES 镜像装入；
+  「无插件则标准分词回退」由部署侧保证插件就位，映射本体不写 fallback。
+- dev 期 create-index-with-mapping 助手（ensure_weekly_index）仅 dev 环境调用；生产 index
+  由 infra template 接管（index 不存在时写入自动按 template 建，本文件分派不做显式建）。
 - **失败语义（§4.1 step5 边界）**：本模块只做"分派 + 抛 EsDispatchError"；写失败后的
   退避重试 / 超阈值显式丢弃计数 / rollup 缺口标记归属主循环（D5 step6）与 §5.3 rollup
   job（T-3.x 指标阶段，rollup 建成后标缺口才落得下）——本层不静默吞。
@@ -28,6 +33,10 @@ _MAPPING = {
         "event_kind": {"type": "keyword"},
         "trace_id": {"type": "keyword"},
         "agent": {"type": "keyword"},
+        # 检索折叠键（§8.2）：concrete keyword（doc_values）供列表 collapse——runtime 字段
+        # 不被 collapse 支持（实测 400）；agent#trace_id 由 build_doc 写入，跨 agent 同
+        # trace_id 不互并。heartbeat 无 trace_id 不写（列表已 must_not node=heartbeat）。
+        "trace_key": {"type": "keyword"},
         "agent_version": {"type": "keyword"},
         "interface": {"type": "keyword"},
         "node": {"type": "keyword"},
@@ -39,9 +48,9 @@ _MAPPING = {
         "duration_ms": {"type": "long"},
         "status": {"type": "keyword"},
         "error_type": {"type": "keyword"},
-        "error_msg": {"type": "text"},
-        "input": {"type": "text", "fields": {"kw": {"type": "keyword"}}},
-        "output": {"type": "text"},
+        "error_msg": {"type": "text", "analyzer": "zh"},
+        "input": {"type": "text", "analyzer": "zh", "fields": {"kw": {"type": "keyword"}}},
+        "output": {"type": "text", "analyzer": "zh"},
         "usage": {
             "properties": {
                 "prompt_tokens": {"type": "long"},
@@ -51,7 +60,7 @@ _MAPPING = {
         },
         "model": {"type": "keyword"},
         "log_level": {"type": "keyword"},
-        "log_message": {"type": "text"},
+        "log_message": {"type": "text", "analyzer": "zh"},
         "quality": {"enabled": False},  # 二期占位：不索引无倒排成本（§2.8）
         "retrieve_hit": {"enabled": False},
         "session_ctx": {"enabled": False},
@@ -59,7 +68,17 @@ _MAPPING = {
     },
 }
 
-_SETTINGS = {"number_of_shards": 1, "number_of_replicas": 0}  # 本地/独立集群默认（§5.2）
+# 本地/独立集群默认（§5.2）。analysis.analyzer.zh = ik_max_word custom wrapper：analysis-ik
+# 插件把 ik_max_word 注册为 tokenizer（非 analyzer type），须包一层 custom analyzer 供字段引用。
+_SETTINGS = {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+        "analyzer": {
+            "zh": {"type": "custom", "tokenizer": "ik_max_word"},
+        }
+    },
+}
 
 _TEXT_SOURCE_FIELDS = ("input", "output")  # 声明 text：非 str 值须序列化后再落
 
@@ -93,6 +112,8 @@ def build_doc(event: EventModel) -> dict:
         if value is not None and not isinstance(value, str):
             # 明文落正文（§5.2 input/output 检索面）；sort_keys 保证同语义文本稳定
             doc[field] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if doc.get("agent") and doc.get("trace_id"):  # 折叠键：heartbeat 等无 trace_id 的不写
+        doc["trace_key"] = f"{doc['agent']}#{doc['trace_id']}"
     return doc
 
 
