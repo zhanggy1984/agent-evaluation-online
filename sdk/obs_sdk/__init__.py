@@ -58,10 +58,15 @@ def init(agent: str, *, kafka_servers: str, topic: str,
          spool_dir: str | None = "/var/lib/obs-sdk",  # §11.1 权威签名；None=显式关补传降级
          sasl_username: Optional[str] = None, sasl_password: Optional[str] = None,
          flush_batch: int = 500, flush_interval_s: float = 2.0,
-         log_mode: str = "stdlib", heartbeat: bool = True) -> None:
+         log_mode: str = "stdlib", heartbeat: bool = True,
+         extra_loggers: Optional[list[str]] = None) -> None:
     """装配（detail §11.1）。agent 名 = 消费白名单名（DB agent.name，全名）；topic 必传完整
     `{env}.obs.agent.<name>`。必须在 agent 自身日志体系装配后调用（stdlib attach root /
-    structlog 由仓在链上插 processor）。重复 init 抛错（进程单例）。"""
+    structlog 由仓在链上插 processor）。重复 init 抛错（进程单例）。
+
+    stdlib 模式下默认把 handler 挂到 root logger；对 `propagate=False` 的自有命名 logger
+    （root handler 收不到，如 cs 的 `"cs"`）需经 `extra_loggers` 显式点名，同一 handler
+    一并挂到这些 logger 上（v0.1.1 新增；仅 stdlib 模式生效，structlog 忽略）。"""
     global _initialized
     if _initialized:
         raise RuntimeError("obs_sdk.init 已调用（进程级单例，勿重复初始化）")
@@ -81,7 +86,9 @@ def init(agent: str, *, kafka_servers: str, topic: str,
     sink.start()
     _state.sink = sink
     if log_mode == "stdlib":
-        attach_stdlib_handler()
+        handler = attach_stdlib_handler()
+        for name in extra_loggers or ():
+            logging.getLogger(name).addHandler(handler)  # propagate=False logger 才需点名（§11.3 cs）
     _initialized = True
     logger.info("obs_sdk init", extra={"agent": agent, "topic": topic,
                                        "log_mode": log_mode})

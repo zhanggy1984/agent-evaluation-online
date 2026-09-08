@@ -19,10 +19,13 @@ from obs_sdk._logging import ObsLogHandler
 
 
 def _detach_stdlib_handlers() -> None:
-    root = logging.getLogger()
-    for handler in list(root.handlers):
-        if isinstance(handler, ObsLogHandler):
-            root.removeHandler(handler)
+    # root + 所有命名 logger（extra_loggers 会挂到非 root logger，如 cs 的 "cs"，须一并摘）
+    loggers = [logging.getLogger(), *[lg for lg in logging.Logger.manager.loggerDict.values()
+                                       if isinstance(lg, logging.Logger)]]
+    for logger in loggers:
+        for handler in list(logger.handlers):
+            if isinstance(handler, ObsLogHandler):
+                logger.removeHandler(handler)
 
 
 @pytest.fixture(autouse=True)

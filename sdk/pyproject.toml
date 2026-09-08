@@ -4,7 +4,7 @@
 # 依赖最小化（kafka-python + 标准库 + structlog 可选）——agent 是外部仓，不得依赖 backend.app。
 [project]
 name = "obs-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "agent 观测上报 SDK（detail §11.1 v1 API；内存有界队列 → kafka-python 批量，可靠降级 §3.2）"
 requires-python = ">=3.11"
 dependencies = [

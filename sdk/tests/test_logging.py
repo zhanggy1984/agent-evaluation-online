@@ -96,3 +96,36 @@ def test_init_stdlib_attaches_handler_to_root():
     finally:
         obs_sdk.shutdown()
         root.setLevel(prev)
+
+
+def test_init_stdlib_extra_loggers_attaches_to_named_logger():
+    """init(extra_loggers=[...]) 把同一 handler 挂到 propagate=False 命名 logger（v0.1.1，§11.3 cs）。
+
+    场景：agent 自有 logger（如 cs "cs"）propagate=False → root handler 收不到该 logger 日志；
+    extra_loggers 点名后其 ctx 内业务日志才成 log 事件。验证挂在命名 logger 上且 root 也有。
+    """
+    root = logging.getLogger()
+    prev = root.level
+    root.setLevel(logging.INFO)
+    named = logging.getLogger("cs")          # 模拟 cs：logger 名即 agent 业务 logger
+    named.propagate = False                   # root 收不到，须 extra_loggers 点名
+    obs_sdk.init("customer-service", kafka_servers="nohost:1",
+                 topic="dev.obs.agent.customer-service", heartbeat=False,
+                 extra_loggers=["cs"])
+    try:
+        cs_has_handler = any(isinstance(h, ObsLogHandler) for h in named.handlers)
+        root_has_handler = any(isinstance(h, ObsLogHandler) for h in root.handlers)
+        assert cs_has_handler, "extra_loggers 应把 ObsLogHandler 挂到点名 logger 上"
+        assert root_has_handler, "root 默认挂接不受 extra_loggers 影响"
+        sink = obs_sdk._state.sink
+        enter("t0", "GET /x", now_ms())
+        named.info("cs 业务日志")
+        reset()
+        assert sink._queue.qsize() == 1, "propagate=False 命名 logger 的 ctx 内日志应成事件"
+        ev = sink._queue.get_nowait()[1]
+        assert validate_event(ev) is None and ev["node"] == "log"
+        assert ev["agent"] == "customer-service"
+    finally:
+        obs_sdk.shutdown()
+        named.propagate = True
+        root.setLevel(prev)
