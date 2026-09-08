@@ -107,6 +107,16 @@ def _llm_fail_source(trace_key="good-question#tr-x", **kw):
     return base
 
 
+def _agents_resp(agents):
+    """terms(agent) agg canned：桶按频次降序（key=agent, doc_count=频次）。"""
+    return {
+        "hits": {"total": {"value": 1, "relation": "eq"}},
+        "aggregations": {"by_agent": {"buckets": [
+            {"key": a, "doc_count": n} for a, n in agents
+        ]}},
+    }
+
+
 # ---------- store 纯 body（查询形状） ----------
 
 
@@ -155,6 +165,15 @@ class TestStoreBodies:
         body = es_store.build_request_statuses_body([f"t{i}" for i in range(150)])
         terms = [f for f in body["query"]["bool"]["filter"] if "terms" in f][0]
         assert len(terms["terms"]["trace_key"]) == 100  # §14.4 terms 护栏
+
+    def test_agents_body_request_anchor_terms_no_agent_filter(self):
+        body = es_store.build_agents_body(start_ts=1, end_ts=2)
+        q = body["query"]["bool"]["filter"]
+        assert {"term": {"node": "request"}} in q
+        assert {"range": {"ts": {"gte": 1, "lte": 2}}} in q
+        # terms(agent) 聚合；纯实测 —— 不并白名单，故无 agent 过滤（全量 request 去重）
+        assert body["aggs"]["by_agent"] == {"terms": {"field": "agent", "size": 100}}
+        assert body["size"] == 0
 
     def test_parse_percentiles_and_series_rows(self):
         p = es_store._parse_percentiles({"pct": {"values": {"50.0": 5, "95.0": 40, "99.0": 90}}})
@@ -416,3 +435,43 @@ class TestLlmFailuresEndpoint:
         with _enter(app, es) as c:
             r = c.get("/api/v1/metrics/llm-failures", headers=_auth_hdr())
         assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+
+class TestAgentsEndpoint:
+    def test_agents_ok_shape_and_order(self):
+        # 桶按频次降序由 ES terms 保证；API 层只透传 key 列表（纯实测，不含配置白名单）
+        app, es = _app(FakeES(response=_agents_resp([
+            ("good-question", 300), ("smart-procurement", 80), ("customer-service", 20),
+        ])))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["agents"] == ["good-question", "smart-procurement", "customer-service"]
+        # 固定 7d 窗：range 下界 ≈ now-7d（上界 now）；只发一次 search
+        assert len(es.calls) == 1
+        index, qbody = es.calls[0]
+        assert "metrics-rollup" not in index  # agents 走实时事件 index，非 rollup
+        rng = [f for f in qbody["query"]["bool"]["filter"]
+               if "range" in f][0]["range"]["ts"]
+        assert rng["lte"] - rng["gte"] == 7 * 24 * 3_600_000
+
+    def test_agents_es_error_400(self):
+        app, es = _app(FakeES(exc=TransportError("模拟超时")))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+    def test_agents_cache_hit_skips_es(self):
+        app, es = _app(FakeES(response=_agents_resp([("good-question", 300)])))
+        with _enter(app, es) as c:
+            first = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+            second = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert first.status_code == 200 and second.status_code == 200
+        assert len(es.calls) == 1  # O-1：二次命中缓存跳 ES
+
+    def test_agents_requires_viewer(self):
+        app, es = _app(FakeES(response=_agents_resp([])), role="ops")
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr("ops"))
+        assert r.status_code == 403 and r.json()["code"] == "ERR_AUTH_0002"

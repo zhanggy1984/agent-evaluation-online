@@ -173,3 +173,8 @@ export interface MetricsLlmFailures {
   agent: string | null
   items: LlmFailureItem[]
 }
+
+// GET /metrics/agents：近 7d 有流量的 agent 名（纯实测、按频次降序）——筛选下拉数据源。
+export interface MetricsAgents {
+  agents: string[]
+}

@@ -1,4 +1,5 @@
-/* 全局极简样式：骨架期不引组件库，手写轻量约定（阶段 2 看板再定主题）。 */
+/* 全局极简样式（IA 重构 v1.13 细节整容：面板轻阴影 + 圆角统一 + 表格斑马纹基调）。
+   约定：scoped 组件内表格/面板继承本基调，勿在组件内重复声明 border-radius/shadow 冲突值。 */
 :root {
   --bg: #f5f6f8;
   --panel: #ffffff;
@@ -11,6 +12,10 @@
   --ok: #188038;
   --hl-llm: #eef4ff;
   --hl-red: #fdecea;
+  /* 圆角层级：大面板 8px、小控件(输入/下拉/胶囊) 4px——大板与小件分层的惯例，避免全 4px 的平板感 */
+  --radius-lg: 8px;
+  --radius-sm: 4px;
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.05);
 }
 
 * {
@@ -26,10 +31,9 @@ body {
   line-height: 1.5;
 }
 
+/* 根节点全宽：内容宽度/居中由 App.vue 布局壳统一控制（顶部双行导航吸顶 + 1280 内容域） */
 #app {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 16px;
+  width: 100%;
 }
 
 a {
@@ -71,7 +75,8 @@ input {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
   padding: 14px 16px;
 }
 

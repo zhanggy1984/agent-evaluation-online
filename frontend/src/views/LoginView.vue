@@ -21,7 +21,7 @@ async function submit(): Promise<void> {
   errorMsg.value = ''
   try {
     await login(username.value.trim(), password.value)
-    await router.push({ name: 'dashboard' })
+    await router.push({ name: 'overview' })
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : '登录失败'
   } finally {

@@ -1,11 +1,15 @@
-// 路由（detail §9.2 三页 + §13.4 正文默认隐藏）。登录态看 localStorage access token。
-// 路由守卫：受保护路由无 token → /login；已登录访问 /login → /dashboard。
-// 落点（T-2.4，兑现 detail §9.1 v1.11 注）：'/' 与登录后首落 /dashboard，未命中兜底 /dashboard。
+// 路由（IA 重构 v1.13）：五个一级菜单各一页——总览(/dashboard 落点) / 接口 / 异常 / LLM 失败 /
+// 链路查询；trace 详情 /traces/:agent/:traceId 下钻。登录态看 localStorage access token。
+// 守卫：受保护路由无 token → /login；已登录访问 /login → 总览。
+// 落点：'/' 与登录后首落 /dashboard（总览），未命中兜底 /dashboard。
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { accessToken } from '../api/client'
-import DashboardView from '../views/DashboardView.vue'
+import AnomaliesView from '../views/AnomaliesView.vue'
+import InterfacesView from '../views/InterfacesView.vue'
+import LlmFailuresView from '../views/LlmFailuresView.vue'
 import LoginView from '../views/LoginView.vue'
+import OverviewView from '../views/OverviewView.vue'
 import TraceDetailView from '../views/TraceDetailView.vue'
 import TracesView from '../views/TracesView.vue'
 
@@ -16,8 +20,26 @@ const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
     {
       path: '/dashboard',
-      name: 'dashboard',
-      component: DashboardView,
+      name: 'overview',
+      component: OverviewView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/interfaces',
+      name: 'interfaces',
+      component: InterfacesView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/anomalies',
+      name: 'anomalies',
+      component: AnomaliesView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/llm-failures',
+      name: 'llm-failures',
+      component: LlmFailuresView,
       meta: { requiresAuth: true },
     },
     { path: '/traces', name: 'traces', component: TracesView, meta: { requiresAuth: true } },
@@ -34,7 +56,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   const loggedIn = accessToken() !== null
   if (to.meta.requiresAuth && !loggedIn) return { name: 'login' }
-  if (to.name === 'login' && loggedIn) return { name: 'dashboard' }
+  if (to.name === 'login' && loggedIn) return { name: 'overview' }
   return true
 })
 

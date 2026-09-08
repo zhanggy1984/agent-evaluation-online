@@ -188,6 +188,12 @@ class MetricsLlmFailures(BaseModel):
     items: list[LlmFailureItem] = []
 
 
+class MetricsAgents(BaseModel):
+    """近 7d 有流量的 agent 名（纯实测、按频次降序）——筛选下拉数据源（Q4/Q5 决策）。"""
+
+    agents: list[str] = []
+
+
 # ---------- O-1 进程内缓存（仿 dict_config 无锁；key = endpoint|agent|window） ----------
 
 _cache: dict[str, tuple[float, object]] = {}
@@ -474,6 +480,23 @@ async def _load_llm_failures(
     return MetricsLlmFailures(window=window, agent=agent, items=items)
 
 
+async def _load_agents(request: Request, session: AsyncSession) -> MetricsAgents:
+    """近 7d request 事件里真实出现的 agent 名（terms 去重、按频次降序）。"""
+    client = request.app.state.es_query
+    window_ms = _WINDOWS["7d"][0]
+    end_ms = _now_ms()
+    start_ms = end_ms - window_ms
+    timeout_s = max(await _agg_timeout_ms(session) / 1000, 1.0)
+    try:
+        agents = await es_store.run_agents(
+            client, settings=request.app.state.settings, request_timeout_s=timeout_s,
+            start_ts=start_ms, end_ts=end_ms, size=_LIST_LIMIT,
+        )
+    except TransportError as exc:
+        raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
+    return MetricsAgents(agents=agents)
+
+
 # ---------- 端点 ----------
 
 
@@ -530,4 +553,16 @@ async def metrics_llm_failures(
     _validate_window(window)
     value = await _cached(session, "llm-failures", agent, window,
                           lambda: _load_llm_failures(request, session, agent, window))
+    return value  # type: ignore[return-value]
+
+
+@router.get("/agents", response_model=MetricsAgents)
+async def metrics_agents(
+    user: ViewerUser,
+    request: Request,
+    session: _Session,
+) -> MetricsAgents:
+    """近 7d 有流量的 agent 名列表（筛选下拉数据源；固定 7d 窗，agent/window 无参）。"""
+    value = await _cached(session, "agents", None, "7d",
+                          lambda: _load_agents(request, session))
     return value  # type: ignore[return-value]

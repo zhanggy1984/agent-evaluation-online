@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// 链路查询页：trace_id / keyword 可任一（都空 = 近 7d 全部命中），agent 过滤。
-// 检索走后端默认时间窗（keyword_search_days=7）与 ≤200 上限；红显 = status∈{error,timeout}。
+// 链路查询页（一级菜单"链路查询"，IA 重构 v1.13 接壳）：trace_id / keyword 可任一
+// （都空 = 近 7d 全部命中），agent 过滤。检索走后端默认时间窗（keyword_search_days=7）
+// 与 ≤200 上限；红显 = status∈{error,timeout}。
+// Q6 决策：agent 过滤由自由文本框改为共享动态下拉（全站 + /metrics/agents 实测列表）。
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { logout } from '../api/auth'
-import { ApiError, readStoredUser } from '../api/client'
+import { ApiError } from '../api/client'
 import { listTraces } from '../api/traces'
+import { useAgents } from '../composables/useAgents'
 import type { TraceListItem } from '../api/types'
 
 const router = useRouter()
@@ -20,7 +22,7 @@ const page = ref(1)
 const pageSize = 20
 const maxPages = Math.ceil(200 / pageSize) // §14.4 深翻页上限 200 → 前端最多 10 页
 
-const user = readStoredUser()
+const { agents, loading: agentsLoading, errorMsg: agentsError, load: loadAgents } = useAgents()
 
 function fmtTs(ts: number | null): string {
   if (!ts) return '-'
@@ -32,6 +34,10 @@ function fmtTs(ts: number | null): string {
 
 function redFlag(row: TraceListItem): boolean {
   return row.status === 'error' || row.status === 'timeout'
+}
+
+function pickAgent(v: string): void {
+  queryForm.value.agent = v
 }
 
 async function doSearch(p = 1): Promise<void> {
@@ -76,30 +82,34 @@ function toDetail(row: TraceListItem): void {
   }
 }
 
-async function doLogout(): Promise<void> {
-  // 先 revoke 再清本地再跳转：跳早了守卫仍见 token 会把 /login 弹回 /traces
-  await logout()
-  void router.push({ name: 'login' })
+function retryAgents(): void {
+  void loadAgents(true)
 }
 
-onMounted(() => void doSearch(1))
+onMounted(() => {
+  void loadAgents()
+  void doSearch(1)
+})
 </script>
 
 <template>
   <div>
-    <header class="bar">
-      <strong>obs 链路查询</strong>
-      <span class="muted right">
-        <router-link class="nav" :to="{ name: 'dashboard' }">指标看板</router-link>
-        {{ user ? `${user.username}（${user.role}）` : '' }}
-        <button class="btn-ghost" type="button" @click="doLogout">退出</button>
-      </span>
-    </header>
-
     <form class="panel query" @submit.prevent="resetAndSearch">
       <input v-model="queryForm.trace_id" placeholder="trace_id（精确）" />
       <input v-model="queryForm.keyword" placeholder="错误关键字" />
-      <input v-model="queryForm.agent" placeholder="agent" />
+      <label class="agent-field">
+        <select
+          :value="queryForm.agent"
+          class="sel" @change="pickAgent(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">全站 agent</option>
+          <option v-for="a in agents" :key="a" :value="a">{{ a }}</option>
+        </select>
+        <span v-if="agentsLoading" class="muted hint">载入中…</span>
+        <button v-else-if="agentsError" class="link-like" type="button" @click="retryAgents">
+          agent 列表重试
+        </button>
+      </label>
       <button class="btn" type="submit" :disabled="loading">
         {{ loading ? '查询中…' : '查询' }}
       </button>
@@ -158,27 +168,42 @@ onMounted(() => void doSearch(1))
 </template>
 
 <style scoped>
-.bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.right {
-  display: inline-flex;
-  gap: 10px;
-  align-items: center;
-}
-
 .query {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .query input {
   flex: 1;
+  min-width: 140px;
+}
+
+.agent-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sel {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.hint {
+  font-size: 12px;
+}
+
+.link-like {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--brand);
+  font-size: 12px;
 }
 
 table {

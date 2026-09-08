@@ -1,6 +1,8 @@
-// 指标 API（detail §8.4，T-2.2）：四端点，window ∈ {1h,24h,7d}，agent 缺省 = 全站。
+// 指标 API（detail §8.4，T-2.2）：四端点，window ∈ {1h,24h,7d}，agent 缺省 = 全站；
+// /agents（Q4/Q5 决策）：近 7d 有流量的 agent 名（筛选下拉数据源）。
 import { api } from './client'
 import type {
+  MetricsAgents,
   MetricsAnomalies,
   MetricsInterfaces,
   MetricsLlmFailures,
@@ -31,4 +33,9 @@ export function metricsLlmFailures(
   agent: string | null, window: string,
 ): Promise<MetricsLlmFailures> {
   return api<MetricsLlmFailures>(`/metrics/llm-failures${qs({ agent, window })}`)
+}
+
+// 近 7d 有流量的 agent 名（固定 7d 窗，服务端 terms 去重按频次降序）
+export function metricsAgents(): Promise<MetricsAgents> {
+  return api<MetricsAgents>('/metrics/agents')
 }

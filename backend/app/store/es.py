@@ -447,6 +447,31 @@ async def run_metrics_interfaces(
     return {"request": request_rows, "llm": llm_rows}
 
 
+def build_agents_body(*, start_ts: int, end_ts: int, size: int = 100) -> dict:
+    """GET /metrics/agents body：近 7d request 事件按 agent 去重计数（纯实测，不并配置白名单）。
+
+    下拉数据源语义 = "最近真有流量的 agent"（detail §9.1 Q4/Q5 决策）：只数 request 锚事件
+    （同 overview 口径），排心跳；返回桶按频次降序即"最活跃在前"。terms size 护栏（§14.4）。
+    """
+    return {
+        "query": _base_metrics_query(None, start_ts, end_ts, node="request"),
+        "size": 0,
+        "aggs": {"by_agent": {"terms": {"field": "agent", "size": size}}},
+    }
+
+
+async def run_agents(
+    client, *, settings, request_timeout_s: float, start_ts: int, end_ts: int, size: int = 100,
+) -> list[str]:
+    """agents 查询 → 近窗内有 request 流量的 agent 名（按频次降序，纯实测）。"""
+    body = build_agents_body(start_ts=start_ts, end_ts=end_ts, size=size)
+    resp = await client.options(request_timeout=request_timeout_s).search(
+        index=event_index_patterns(settings), body=body
+    )
+    buckets = (resp.get("aggregations") or {}).get("by_agent") or {}
+    return [b["key"] for b in buckets.get("buckets") or [] if b.get("key")]
+
+
 async def fetch_anomalies(
     client, *, settings, request_timeout_s: float, size: int = 100, **kw
 ) -> dict:
