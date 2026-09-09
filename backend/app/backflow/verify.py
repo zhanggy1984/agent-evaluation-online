@@ -207,6 +207,13 @@ async def judge_link(
     case_id = link.case_id if link is not None else None
     if not fv or not case_id:
         return {"outcome": "no_progress", "reason": "缺 fix_version / 现行 pending case_id"}
+    if link.verify_status != "pending":
+        # E-10 终态只读显式守卫（P2-5）：pending 是唯一可判定态，passed/failed/
+        # invalidated/superseded 均不可覆写（迟到 run 不追加不改写，重开另起新 link）。
+        # recheck_job 扫描谓词本已只取 pending，此守卫把"终态只读"固化为 judge_link
+        # 局部不变量，防未来调用方直接对终态 link 误触判定链路。
+        return {"outcome": "no_progress",
+                "reason": "link 非 pending（终态只读，迟到 run 不覆写）"}
     claim_k = int(cluster.claim_k or 2)
     truncated = bool(cluster.input_truncated)
     link_id = link.id

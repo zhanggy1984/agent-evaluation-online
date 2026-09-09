@@ -20,6 +20,7 @@ from app.analyzer.cluster import (
     build_cluster_row,
     error_msg_for,
     pick_merge_target,
+    reentry_gate_allows,
 )
 from app.worker.cluster_job import _candidate_error_sets, _judgement
 
@@ -151,6 +152,53 @@ class TestJudgementParsing:
         assert _candidate_error_sets(ns(judgement_json=None)) == []
         assert _candidate_error_sets(ns(judgement_json="not-a-dict")) == []
         assert _judgement(ns(judgement_json=None)) == {}
+
+
+# ---- reentry_gate_allows：§7.5 版本门控（B-5 等值+日期前缀序，P2-5 纯函数） ----------
+
+class TestReentryGate:
+    def test_same_day_same_value_allows(self):
+        assert reentry_gate_allows("2026.09.03-r47", "2026.09.03-r47") is True
+
+    def test_same_day_different_value_blocks(self):
+        # 同日不等值按"修复上线中/未上线"处理——防 r100<r47 类字典序把同日已上线误判
+        for v in ("2026.09.03-r48", "2026.09.03-r100", "2026.09.03"):
+            assert reentry_gate_allows(v, "2026.09.03-r47") is False
+
+    def test_cross_day_later_allows(self):
+        assert reentry_gate_allows("2026.09.04-rc1", "2026.09.03-r47") is True
+        assert reentry_gate_allows("2026.09.05", "2026.09.03-r47") is True
+
+    def test_cross_day_earlier_blocks(self):
+        assert reentry_gate_allows("2026.09.02-r99", "2026.09.03-r47") is False
+
+    def test_same_value_pure_date_allows(self):
+        assert reentry_gate_allows("2026.09.03", "2026.09.03") is True
+
+    def test_non_date_literal_equality_only(self):
+        # 非 YYYY.MM.DD 形态 → 不透明字面量等值比较（构建标签不参与跨日）
+        assert reentry_gate_allows("app-2.0", "app-2.0") is True
+        assert reentry_gate_allows("app-1.9", "app-2.0") is False
+
+    def test_one_side_non_date_uses_literal_equality(self):
+        # 单侧非日期形态 → 整体按字面量等值（不截前缀比较）
+        assert reentry_gate_allows("app-2.0", "app-2.0") is True
+        assert reentry_gate_allows("app-1.9", "app-2.0") is False
+        assert reentry_gate_allows("2026.09.04-r1", "app-2.0") is False
+
+    def test_none_or_blank_versions_block(self):
+        # 无版本证据 / 空串 → 不满足门控（人工 reopen 兜底）
+        assert reentry_gate_allows(None, "2026.09.03-r47") is False
+        assert reentry_gate_allows("2026.09.03-r47", None) is False
+        assert reentry_gate_allows("", "2026.09.03-r47") is False
+        assert reentry_gate_allows("  ", "2026.09.03-r47") is False
+
+    def test_whitespace_stripped_before_compare(self):
+        assert reentry_gate_allows(" 2026.09.04-r1 ", "2026.09.03-r47") is True
+
+    def test_non_date_agent_vs_dated_fix_blocks(self):
+        # agent 非日期形态 vs fix 日期形态 → 整体字面量不等 → False（日期前缀只对双侧同形态生效）
+        assert reentry_gate_allows("app-2.0", "2026.09.03-r47") is False
 
 
 # ---- worker/main：_cluster_loop 生命周期（monkeypatch job 函数，不连库） -------------

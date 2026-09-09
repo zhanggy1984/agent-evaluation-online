@@ -27,6 +27,9 @@ batch 落库 + CAS 收口。E-7/E-8 真 offline 端到端留阶段 4 环 2。
   C-12 excluded_case_ids 命中 → record excluded_hit + case_pass NULL + 不迁移（保持 claim/pending）
   C-13 recheck_job 编排：驱动真 worker _run_recheck_cycle 扫 claim+pending → 逐簇独立事务收口
        fixed_auto（C-3 是 judge_link 直连单簇，本场景补编排路径 wiring）
+  C-14 E-10（P2-5 S-11 归属）：passed/fixed 终态后再调 judge_link（link 已非 pending）→ 显式
+       守卫 no_progress；即便 offline 出现同 bound_version 迟到 fail run 亦不追加不覆写
+       （guard 先于版本扫描短路——reentry 门控探针见 cluster_probe S-7~S-10）
 
 隔离：agent 前缀 clm-%（≤64）；结尾清理 conv/link/verify_record/cluster/batch/user/
 dict_config/agent。退出码全绿 0。
@@ -701,6 +704,59 @@ async def c13_recheck_orchestration(engine, client, viewer_token) -> None:
         await fake.aclose()
 
 
+async def c14_terminal_readonly_e10(engine, client, viewer_token) -> None:
+    """C-14 E-10（P2-5 S-11）：终态只读显式守卫——迟到 run 不覆写不追加。
+
+    judge_link 对**现行 pending link**收口到 passed/fixed 后，link 已非 pending；此时再对其调
+    judge_link（防未来调用方误触的真实形态）→ 入口守卫（fv/case_id 校验后，verify_status!
+    ="pending"）短路返 no_progress，先于 agent_versions/list_runs/append 任何动作。即便假
+    offline 返回同 bound_version 新 run_id 的失败 run，也到不了记录追加逻辑。
+    """
+    print("\n===== C-14 E-10：judge_link 终态守卫——迟到 run 不覆写/不追加 =====")
+    cid = await _claim_cluster(engine, client, viewer_token, agent="clm-c14",
+                               snapshot='{"q": "c14"}', fv="14.0.0", case_id="case-c14", k=1)
+    link = await _pending_link(engine, cid)
+    fake = _fake_offline(
+        versions=["14.0.0"],
+        by_version={"14.0.0": [_run_item("c14r1")]},
+        results={"c14r1": [_case_row("case-c14", "c14r1", x_pf="pass")]},
+    )
+    try:
+        summary = await _run_judge(engine, fake, cid)
+        assert summary["outcome"] == "fixed_auto", f"C-14 前置 fixed_auto 失败: {summary}"
+    finally:
+        await fake.aclose()
+    # 终态已达成：link passed（非 pending）+ cluster fixed + record×1。
+    # 迟到同 bound_version 失败 run 出现 → 对非 pending link 复调 judge_link（现行链路不会到，
+    # 此为主张的误触形态）→ 守卫短路。
+    late = _fake_offline(
+        versions=["14.0.0"],
+        by_version={"14.0.0": [_run_item("c14r2")]},
+        results={"c14r2": [_case_row("case-c14", "c14r2", x_pf="fail",
+                                     error_type="assertion_shape")]},
+    )
+    try:
+        summary2 = None
+        async with AsyncSession(engine) as s2:
+            cluster = (await s2.scalars(
+                select(ErrorCluster).where(ErrorCluster.id == cid))).one()
+            cur_link = (await s2.scalars(select(ErrorCaseLink)
+                                         .where(ErrorCaseLink.cluster_id == cid))).one()
+            summary2 = await judge_link(s2, late, cluster=cluster, link=cur_link)
+            await s2.commit()
+        recs = await _records(engine, link.id)
+        c = await _cluster(engine, cid)
+        after_pending = await _pending_link(engine, cid)
+        ok = (summary2["outcome"] == "no_progress"
+              and "终态只读" in (summary2.get("reason") or "")
+              and len(recs) == 1  # 迟到 fail run 未追加
+              and c.status == "fixed" and after_pending is None)
+        check("C-14 E-10：no_progress + record 不追加 + cluster 保持 fixed + 无新 pending",
+              ok, f"{summary2} status={c.status} records={len(recs)}")
+    finally:
+        await late.aclose()
+
+
 _settings_cache: dict = {}
 
 
@@ -733,6 +789,7 @@ async def main() -> None:
             await c1_claim_fields(engine, client, viewer_token, viewer_id)
             await c2_state_transitions(engine, client, viewer_token, admin_token)
             await c3_verify_passed_e7(engine, client, viewer_token)
+            await c14_terminal_readonly_e10(engine, client, viewer_token)
             await c13_recheck_orchestration(engine, client, viewer_token)
             await c4_fail_reopen(engine, client, viewer_token)
             await c5_unclean_batch(engine, client, viewer_token)
@@ -750,7 +807,7 @@ async def main() -> None:
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} 项失败 → {FAILURES}")
         sys.exit(1)
-    print("全绿：P2-4 claim 状态机 + verify 回查收口 13 场景通过")
+    print("全绿：P2-4 claim 状态机 + verify 回查收口 + P2-5 E-10 终态守卫 14 场景通过")
 
 
 if __name__ == "__main__":

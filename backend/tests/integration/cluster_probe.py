@@ -12,7 +12,16 @@
   S-3 同键 fixed 终态后正常复发 → generation+1 新簇；root-late（reopen=False）同键 closed → skip 不开；
   S-4 Fork A：root_input_hash NULL 行候选不建簇只置 processed；
   S-5 gate 关停（candidate_error_sets 空）行 → 只置 processed；
-  S-6 uk_cluster_dedup 唯一约束在库真在（同键同代重复插 → IntegrityError，E-12 防护面）。
+  S-6 uk_cluster_dedup 唯一约束在库真在（同键同代重复插 → IntegrityError，E-12 防护面）；
+  S-7 fixed+fix_version 后同键再现（agent_version 跨日 > fix）→ gen+1 新簇 + 同事务
+      conv(action="reentry", actor_user_id=None，P2-5 §7.5 E-9)；原 fixed 簇不动；
+  S-8 新现 agent_version 同日不等值（r48 vs fix r47）→ merge_candidate 返 "blocked" 零落
+      （不建簇不 conv，防 r100<r47 类字典序乱序）；
+  S-9 新现 agent_version 早于 fix 日期 → "blocked" 零落；
+  S-10 回归护栏：fixed 无 fix_version（UPDATE 造数，无 claim 语义）与 inactive 终态复发
+      → 维持 P2-1 无条件照开 gen+1（无门控基础不咨询、亦不写 reentry conv，S-3 兼容）。
+  S-11→ claim_probe C-14（E-10 终态只读显式守卫：本文件无 claim/verify 基建，回查链路在
+      claim_probe 侧同构 C-3 基建处验，跨域脚手架不重复落）。
 
 隔离：探针 agent 前缀 cp-（≤64 字符），开头按 LIKE cp-% 清理残留，结尾再清。退出码全绿 0。
 """
@@ -28,7 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E4
 
 from app.analyzer.cluster import merge_candidate  # noqa: E402
 from app.core.config import Settings  # noqa: E402
-from app.models.error_flow import ErrorCluster, TraceJudgeState  # noqa: E402
+from app.models.error_flow import (  # noqa: E402
+    ConversionRecord,
+    ErrorCluster,
+    TraceJudgeState,
+)
 from app.worker.cluster_job import _merge_row  # noqa: E402
 
 FAILURES: list[str] = []
@@ -73,6 +86,9 @@ def _probe_row(session, *, agent, trace_id, root_hash=H1, snapshot=None,
 async def _reset(engine) -> None:
     async with AsyncSession(engine) as s:
         await s.execute(delete(TraceJudgeState).where(TraceJudgeState.agent.like("cp-%")))
+        # conv 引用 cluster（FK）→ 先删 conv 再删 cluster
+        csub = select(ErrorCluster.id).where(ErrorCluster.agent.like("cp-%"))
+        await s.execute(delete(ConversionRecord).where(ConversionRecord.cluster_id.in_(csub)))
         await s.execute(delete(ErrorCluster).where(ErrorCluster.agent.like("cp-%")))
         await s.commit()
 
@@ -244,6 +260,141 @@ async def s6_unique(engine) -> None:
           got_ie, f"got_integrity_error={got_ie}")
 
 
+async def _conv_for(engine, cluster_id: int) -> list:
+    async with AsyncSession(engine) as s:
+        return list((await s.scalars(
+            select(ConversionRecord).where(ConversionRecord.cluster_id == cluster_id)
+        )).all())
+
+
+async def _fixed_with(engine, agent: str, *, fix_version: str | None) -> int:
+    """造 fixed 终态簇（P2-5 §7.5 门控锚点）：首现 merge → UPDATE fixed [+fix_version]。"""
+    async with AsyncSession(engine) as s:
+        r1 = _probe_row(s, agent=agent, trace_id=f"{agent}-1")
+        await s.flush()
+        await _merge_row(s, r1, now=NOW)
+        cid = (await s.scalars(select(ErrorCluster).where(
+            ErrorCluster.agent == agent))).one().id
+        vals = {"status": "fixed"}
+        if fix_version is not None:
+            vals["fix_version"] = fix_version  # claim 产物恒带 fix_version
+        await s.execute(update(ErrorCluster).where(ErrorCluster.id == cid).values(**vals))
+        await s.commit()
+        return cid
+
+
+async def s7_reentry_e9(engine) -> None:
+    print("\n===== S-7 E-9：fixed+fix_version 后跨日再现过门控 → gen+1 + conv(reentry) =====")
+    agent = "cp-re7"
+    async with AsyncSession(engine) as s:
+        await _fixed_with(engine, agent, fix_version="2026.09.08-r47")  # g1 fixed
+        # 同键线上再现：agent_version 跨日后于 fix 日期 → 过 §7.5 门控 → reentry 新簇
+        r2 = _probe_row(s, agent=agent, trace_id="cp-re7-2",
+                        err_summary=_summary(agent_version="2026.09.09-r2"))
+        await s.flush()
+        await _merge_row(s, r2, now=NOW)
+        await s.commit()
+    clusters = sorted(await _clusters(engine, agent), key=lambda c: c.generation)
+    check("S-7 再现（版本>fix）→ 新簇 gen2 open + trigger_version 冻结",
+          len(clusters) == 2 and clusters[1].generation == 2
+          and clusters[1].status == "open"
+          and clusters[1].trigger_version == "2026.09.09-r2",
+          f"n={len(clusters)} gens={[c.generation for c in clusters]}")
+    check("S-7 原 fixed 簇不动（gen1 保持 fixed + fix_version + count=1）",
+          clusters[0].status == "fixed"
+          and clusters[0].fix_version == "2026.09.08-r47"
+          and clusters[0].count == 1,
+          f"g1 status={clusters[0].status} fix={clusters[0].fix_version} count={clusters[0].count}")
+    convs = await _conv_for(engine, clusters[1].id)
+    check("S-7 conv(action=reentry) 落新簇 + actor_user_id=None + §7.5 提示原文",
+          len(convs) == 1 and convs[0].action == "reentry"
+          and convs[0].actor_user_id is None
+          and "线上仍复发" in (convs[0].detail or ""),
+          f"conv={[(c.action, c.cluster_id) for c in convs]}")
+
+
+async def s8_sameday_blocked(engine) -> None:
+    print("\n===== S-8 同日不等值 → merge_candidate 返 blocked（零落不建簇不 conv） =====")
+    agent = "cp-re8"
+    await _fixed_with(engine, agent, fix_version="2026.09.08-r47")
+    action = None
+    async with AsyncSession(engine) as s:
+        action = await merge_candidate(
+            s, agent=agent, interface=IFACE, layer="L1", error_type="llm_timeout",
+            input_hash=H1, input_snapshot=None, input_truncated=0,
+            error_msg="sameday", trace_id="cp-re8-2",
+            trigger_version="2026.09.08-r48",  # 同日不同构建 → 按 fix 上线中挡
+            reopen_after_terminal=True, now=NOW)
+        await s.commit()
+    clusters = await _clusters(engine, agent)
+    check("S-8 blocked + 簇数不变（gen1 孤） + 无 reentry conv",
+          action == "blocked" and len(clusters) == 1
+          and not await _conv_for(engine, clusters[0].id),
+          f"action={action} n={len(clusters)}")
+
+
+async def s9_early_blocked(engine) -> None:
+    print("\n===== S-9 早于 fix 日期 → blocked（零落） =====")
+    agent = "cp-re9"
+    await _fixed_with(engine, agent, fix_version="2026.09.08-r47")
+    action = None
+    async with AsyncSession(engine) as s:
+        action = await merge_candidate(
+            s, agent=agent, interface=IFACE, layer="L1", error_type="llm_timeout",
+            input_hash=H1, input_snapshot=None, input_truncated=0,
+            error_msg="early", trace_id="cp-re9-2",
+            trigger_version="2026.09.07-r1",  # 事件早于 fix → 非复发
+            reopen_after_terminal=True, now=NOW)
+        await s.commit()
+    clusters = await _clusters(engine, agent)
+    check("S-9 blocked + 簇数不变 + 无 conv",
+          action == "blocked" and len(clusters) == 1
+          and not await _conv_for(engine, clusters[0].id),
+          f"action={action} n={len(clusters)}")
+
+
+async def s10_no_gate_regression(engine) -> None:
+    print("\n===== S-10 回归护栏：无门控基础维持 P2-1 无条件开（S-3 兼容） =====")
+    # (a) fixed 但 fix_version NULL（UPDATE 造数，无 claim 语义）→ 照开 gen2
+    agent_a = "cp-re10a"
+    await _fixed_with(engine, agent_a, fix_version=None)
+    action_a = None
+    async with AsyncSession(engine) as s:
+        action_a = await merge_candidate(
+            s, agent=agent_a, interface=IFACE, layer="L1", error_type="llm_timeout",
+            input_hash=H1, input_snapshot=None, input_truncated=0,
+            error_msg="recur", trace_id="cp-re10a-2", trigger_version="2026.09.09-r1",
+            reopen_after_terminal=True, now=NOW)
+        await s.commit()
+    ca = sorted(await _clusters(engine, agent_a), key=lambda c: c.generation)
+    check("S-10a fixed 无 fix_version → 照开 gen2 + 不写 reentry conv",
+          action_a == "created" and len(ca) == 2 and ca[1].generation == 2
+          and not await _conv_for(engine, ca[1].id),
+          f"action={action_a} n={len(ca)}")
+    # (b) inactive 终态复发 → 照开 gen2（最高代非 fixed，不咨询门控）
+    agent_b = "cp-re10b"
+    async with AsyncSession(engine) as s:
+        await _fixed_with(engine, agent_b, fix_version=None)
+        # 把上一步 fixed(无 fv) 改为 inactive——测试 inactive 终态分支
+        await s.execute(update(ErrorCluster)
+                        .where(ErrorCluster.agent == agent_b)
+                        .values(status="inactive"))
+        await s.commit()
+    action_b = None
+    async with AsyncSession(engine) as s:
+        action_b = await merge_candidate(
+            s, agent=agent_b, interface=IFACE, layer="L1", error_type="llm_timeout",
+            input_hash=H1, input_snapshot=None, input_truncated=0,
+            error_msg="recur", trace_id="cp-re10b-2", trigger_version="2026.09.09-r1",
+            reopen_after_terminal=True, now=NOW)
+        await s.commit()
+    cb = sorted(await _clusters(engine, agent_b), key=lambda c: c.generation)
+    check("S-10b inactive 终态复发 → 照开 gen2 + 无 reentry conv",
+          action_b == "created" and len(cb) == 2 and cb[1].generation == 2
+          and not await _conv_for(engine, cb[1].id),
+          f"action={action_b} n={len(cb)}")
+
+
 async def main() -> None:
     settings = Settings()
     engine = create_async_engine(settings.sqlalchemy_url)
@@ -255,6 +406,10 @@ async def main() -> None:
         await s4_forka_no_hash(engine)
         await s5_gate_closed(engine)
         await s6_unique(engine)
+        await s7_reentry_e9(engine)
+        await s8_sameday_blocked(engine)
+        await s9_early_blocked(engine)
+        await s10_no_gate_regression(engine)
     finally:
         await _reset(engine)
         await engine.dispose()
@@ -262,7 +417,7 @@ async def main() -> None:
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} 项失败 → {FAILURES}")
         sys.exit(1)
-    print("全绿：P2-1 聚类归并 DB 壳 6 场景通过")
+    print("全绿：P2-1 聚类归并 + P2-5 §7.5 reentry 门控 DB 壳 10 场景通过")
 
 
 if __name__ == "__main__":
