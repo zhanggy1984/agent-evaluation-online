@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # 未配置 = fail-closed（/pull/* 全 ERR_PULL_0001 401），不进 _validate_secrets 强校验
     evaluator_service_secret: str = ""
 
+    # ---- 平台间回查读面（§7.6/§8.7，P2-4 E-7） ----
+    # offline 只读 base（runs/results/versions）；空 = recheck_job 停轮（offline 配套轨未
+    # 启动前的安全默认）。回查 client 复用 evaluator_service_secret 作 Bearer（双向预共享，
+    # §13.5）——offline 侧持同值校验。
+    offline_base_url: str = ""
+
     # ---- 引导 admin（seed.py init_admin 用，§13.1；生产首登即改密） ----
     admin_username: str = "admin"
     admin_password: str = ""
