@@ -115,7 +115,10 @@ async def ensure_rollup_index(client, settings: Settings) -> None:
     if await client.indices.exists(index=index):
         return
     try:
-        await client.indices.create(index=index, mappings=ROLLUP_MAPPING)
+        # 单节点 dev 显式 replica=0：默认 replica=1 无法分配 → 集群 yellow、healthcheck(须 green)假阴性（2026-09-09 C1）
+        await client.indices.create(
+            index=index, mappings=ROLLUP_MAPPING, settings={"index": {"number_of_replicas": 0}}
+        )
     except Exception as exc:  # 竞态已建视为成功；其余异常上抛给 job 自愈
         if "resource_already_exists_exception" not in str(exc):
             raise
