@@ -7,10 +7,12 @@
   （judged=1 后重复到期不重判，聚类消费后置 processed）。D3 只做累积 + 幂等位。
 - 多实例安全：同 trace 单 partition 串行（§3.3 partition=1），无并发写同行；
   offset 重放由 uk_trace 唯一行吸收（不重复建行）+ judged 位吸收（不重复判定）。
-- R-21 root-late（v1.12 判定就位）：judged=1 后迟到的 root（root_ok 0→1）且 root_status
-  ∈{error,timeout} → CAS `root_late_complement` 0→1 置位 + 返回触发信号；主循环在**同一
-  事务**调 root_late_complement 做单事件补判（analyzer.classify，写 judgement_json.root_late；
-  不改 judged、不重跑整 trace、不推翻已判 candidates）。聚类归并 = T-3.6 消费该字段。
+- R-21 root-late（v1.12 判定就位 / v1.15 P2-1 聚类内联）：judged=1 后迟到的 root
+  （root_ok 0→1）且 root_status ∈{error,timeout} → CAS `root_late_complement` 0→1 置位 +
+  返回触发信号；主循环在**同一事务**调 root_late_complement 做单事件补判
+  （analyzer.classify，写 judgement_json.root_late；不改 judged、不重跑整 trace、不推翻
+  已判 candidates），补判 hit 且 hash 齐备同刻内联归并进 error_cluster（§4.3④/E-28
+  closed 不翻案；cluster_job 不重扫 root_late 防双计，Fork B 用户拍板）。
 - ttl_until = 最后触发行事件的 ts + 完成窗口 + 宽限（【实现约定】60s + 300s，§4.3/§6.1，
   参数由 dict_config 运行时键注入，D5 启动加载）。
 """
@@ -26,6 +28,7 @@ from app.analyzer.classify import (
     root_late_decision,
     root_late_payload,
 )
+from app.analyzer.cluster import merge_candidate
 from app.consumer.schema import EventModel
 from app.core.input_hash import compute_input_hash, snapshot_input
 from app.models.agent import Agent, Interface
@@ -47,6 +50,11 @@ class StateEffects:
 def _ms_to_utc(ms: int) -> datetime:
     """事件 ts(int ms UTC) → naive UTC datetime（DATETIME(3) 存 UTC，detail §5）。"""
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _utc_now() -> datetime:
+    """当前 naive UTC datetime（与 worker/analyzer.cluster 同源口径）。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _empty_state(agent: str, trace_id: str) -> dict:
@@ -288,3 +296,23 @@ async def root_late_complement(session: AsyncSession, event: EventModel) -> None
     jj = dict(row.judgement_json) if isinstance(row.judgement_json, dict) else {}
     jj["root_late"] = root_late_payload(result, row.root_status)
     row.judgement_json = jj
+    if result.hit and row.root_input_hash and row.interface:
+        # R-21 Fork B（用户拍板）：补判同事务内联聚类归并——行已 judged（很可能已 processed，
+        # cluster_job ≤15s 消费先行），root 迟到只能在此消费；cluster_job 不重扫 root_late 防
+        # 双计。root 带 input → hash 齐备走正规归并；代表字段用到达 root 事件本身。
+        # closed（fixed/inactive）簇不翻案 → reopen_after_terminal=False（§4.3④/E-28）。
+        await merge_candidate(
+            session,
+            agent=row.agent,
+            interface=row.interface,
+            layer=result.layer,
+            error_type=result.error_type,
+            input_hash=row.root_input_hash,
+            input_snapshot=row.input_snapshot_clean,
+            input_truncated=row.input_truncated,
+            error_msg=event.error_msg or "",
+            trace_id=row.trace_id,
+            trigger_version=event.agent_version,
+            reopen_after_terminal=False,
+            now=_utc_now(),
+        )

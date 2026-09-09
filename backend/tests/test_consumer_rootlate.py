@@ -6,13 +6,14 @@ DB 壳：行 + 字典（agent/dict_config/interface）→ analyzer.root_late_dec
 行为最小集（列级 select 反查 + 等值匹配），不连真库。
 """
 import pytest
+from _fakes import FakeAsyncSession, ns
 
+import app.consumer.state as state_mod
 from app.consumer.schema import EventModel
 from app.consumer.state import root_late_complement
 from app.models.agent import Agent, Interface
 from app.models.config import DictConfig
 from app.models.error_flow import TraceJudgeState
-from _fakes import FakeAsyncSession, ns
 
 IFACE = "POST /api/chat/{id}"
 
@@ -32,11 +33,17 @@ def _root_event(agent="good-question", trace_id="tr-1", status="error",
 
 def _row(agent="good-question", trace_id="tr-1", *, root_status="error",
          root_error_type="llm_timeout", llm_fact=0, judged=1, complement=1,
-         root_ok=1, jj=None):
-    """补判已 CAS 置位后的 trace_judge_state 行（judged=1 ∧ root_late_complement=1）。"""
+         root_ok=1, jj=None, root_hash=None, snapshot=None, truncated=0):
+    """补判已 CAS 置位后的 trace_judge_state 行（judged=1 ∧ root_late_complement=1）。
+
+    root_hash 缺省 None = 残 trace 无 input 现场（Fork A：内联归并不触发）；归并 wiring
+    测试显式传 64-hex 走 merge_candidate。
+    """
     return ns(
         agent=agent, trace_id=trace_id, root_ok=root_ok, interface=IFACE,
         root_status=root_status, root_error_type=root_error_type,
+        root_input_hash=root_hash, input_snapshot_clean=snapshot,
+        input_truncated=truncated,
         llm_fact_ok=llm_fact, judged=judged, root_late_complement=complement,
         judgement_json=jj if jj is not None else {"version": 1, "layer": "L2",
                                                   "candidate_error_sets": []},
@@ -146,3 +153,75 @@ class TestRootLateComplement:
         session2 = _session(row=row2, agent=_agent_row())
         await root_late_complement(session2, _root_event())
         assert "root_late" not in row2.judgement_json
+
+
+HASH64 = "c" * 64
+
+
+class TestRootLateInlineMerge:
+    """R-21 Fork B：补判 hit 且 hash 齐备 → 同事务内联 merge_candidate（wiring 层）。
+
+    merge_candidate 本体 DB 语义（开簇/count/R-13/E-12）归 cluster_probe 集成探针；
+    此处 monkeypatch 断言**何时调用**与**键/代表字段正确传递**（Fork A/B 门）。
+    """
+
+    async def _run(self, monkeypatch, *, row, event=None):
+        calls: list[dict] = []
+
+        async def fake_merge(session, **kw):
+            calls.append(kw)
+
+        monkeypatch.setattr(state_mod, "merge_candidate", fake_merge)
+        await root_late_complement(_session(row=row, agent=_agent_row()), event or _root_event())
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_hit_with_hash_calls_merge_once(self, monkeypatch):
+        row = _row(root_error_type="llm_timeout", root_hash=HASH64,
+                   snapshot="clean input", truncated=0)
+        calls = await self._run(monkeypatch, row=row)
+        assert len(calls) == 1
+        kw = calls[0]
+        assert kw["agent"] == "good-question" and kw["interface"] == IFACE
+        assert kw["layer"] == "L1" and kw["error_type"] == "llm_timeout"
+        assert kw["input_hash"] == HASH64
+        assert kw["input_snapshot"] == "clean input" and kw["input_truncated"] == 0
+        assert kw["error_msg"] == "late root"          # 代表字段用到达 root 事件本身
+        assert kw["trace_id"] == "tr-1"
+        assert kw["trigger_version"] == "2026.08.31-r47"  # event.agent_version
+        assert kw["reopen_after_terminal"] is False    # §4.3④/E-28：closed 不翻案
+        assert "now" in kw
+        # 幂等：补判仍写 root_late，不重跑不推翻已判
+        assert row.judgement_json["root_late"]["hit"] is True
+
+    @pytest.mark.asyncio
+    async def test_hit_but_no_root_hash_skips_merge(self, monkeypatch):
+        # Fork A 同源：残 trace 无 root input（hash NULL）→ 只写 root_late，不归并
+        row = _row(root_error_type="llm_timeout", root_hash=None)
+        calls = await self._run(monkeypatch, row=row)
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_miss_never_calls_merge(self, monkeypatch):
+        # gate 关停（agent.backflow_allow=0）→ hit=False → 只写 root_late{hit:false}，不归并
+        row = _row(root_error_type="llm_timeout", root_hash=HASH64)
+        calls: list[dict] = []
+
+        async def fake_merge(session, **kw):
+            calls.append(kw)
+
+        monkeypatch.setattr(state_mod, "merge_candidate", fake_merge)
+        await root_late_complement(
+            _session(row=row, agent=_agent_row(backflow_allow=0)),
+            _root_event(error_type="llm_timeout"),
+        )
+        assert row.judgement_json["root_late"]["hit"] is False
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_interface_missing_skips_merge(self, monkeypatch):
+        # interface 缺行无法成键（error_cluster.interface NOT NULL）→ 不归并
+        row = _row(root_error_type="llm_timeout", root_hash=HASH64)
+        row.interface = None
+        calls = await self._run(monkeypatch, row=row)
+        assert calls == []
