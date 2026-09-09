@@ -1,4 +1,5 @@
-"""worker 进程主装配（T-2.1 judge_scan 1min + T-3.1 cluster 15s + T-2.3 rollup 整点，独立进程）。
+"""worker 进程主装配（T-2.1 judge_scan 1min + T-3.1 cluster 15s + T-3.2 assemble 1min
++ T-2.3 rollup 整点，独立进程）。
 
 - 入口：`python -m app.worker`（__main__.py）→ asyncio.run(main())。compose 独立
   service（同 backend 镜像同 env），backend 容器不启动 worker。
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.db import create_engine
 from app.core.log import get_logger
+from app.worker.assemble_job import ASSEMBLE_BATCH, run_assemble
 from app.worker.cluster_job import CLUSTER_BATCH, run_cluster_merge
 from app.worker.judge_scan_job import JUDGE_SCAN_BATCH, run_judge_scan
 
@@ -30,13 +32,14 @@ logger = get_logger("worker.main")
 
 JUDGE_INTERVAL_S = 60   # judge_scan 周期（完成窗口 60s 同级粒度，§4.3）
 CLUSTER_INTERVAL_S = 15  # cluster 聚类消费周期（判定到期即应尽快归并进 error_cluster，T-3.1）
+ASSEMBLE_INTERVAL_S = 60  # assemble 组装补偿扫描周期（detail §6.3「每分钟扫」，P2-2）
 ROLLUP_ALIGN_S = 5      # rollup 整点后 5s 抖动（躲开消费侧/其他定时任务整点高峰）
 DB_READY_TIMEOUT_S = 60  # 启动守卫等 backend 迁移建表的上限
 DB_READY_RETRY_S = 2    # 守卫轮询间隔
 
 
 class WorkerApp:
-    """后台 job 主循环：judge_scan + cluster + rollup 协程组；stop() 取消 + dispose。"""
+    """后台 job 主循环：judge_scan + cluster + assemble + rollup 协程组；stop() 取消 + dispose。"""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -53,10 +56,12 @@ class WorkerApp:
         self._es = AsyncElasticsearch(self.settings.es_url)
         self._tasks.append(asyncio.create_task(self._judge_loop()))
         self._tasks.append(asyncio.create_task(self._cluster_loop()))
+        self._tasks.append(asyncio.create_task(self._assemble_loop()))
         self._tasks.append(asyncio.create_task(self._rollup_loop()))
         logger.info("worker 启动", extra={"env": self.settings.app_env,
                                          "judge_interval_s": JUDGE_INTERVAL_S,
-                                         "cluster_interval_s": CLUSTER_INTERVAL_S})
+                                         "cluster_interval_s": CLUSTER_INTERVAL_S,
+                                         "assemble_interval_s": ASSEMBLE_INTERVAL_S})
 
     async def stop(self) -> None:
         self._stop.set()
@@ -118,6 +123,19 @@ class WorkerApp:
             except Exception:
                 logger.exception("cluster_merge 异常（下轮自愈）")
             await asyncio.sleep(CLUSTER_INTERVAL_S)
+
+    async def _assemble_loop(self) -> None:
+        """D19 组装补偿扫描：每 60s 一轮。run → sleep 串行，慢跑只延迟下轮不重叠。"""
+        while not self._stop.is_set():
+            try:
+                assembled = await run_assemble(
+                    self._engine, logger=logger, batch=ASSEMBLE_BATCH
+                )
+                if assembled:
+                    logger.debug("assemble 本轮组装", extra={"assembled": assembled})
+            except Exception:
+                logger.exception("assemble 异常（下轮自愈）")
+            await asyncio.sleep(ASSEMBLE_INTERVAL_S)
 
     async def _rollup_loop(self) -> None:
         """rollup：对齐下一 UTC 整点 + 5s 抖动后跑一轮（run_rollup 内做整小时回填）。
