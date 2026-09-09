@@ -31,7 +31,8 @@ services:
       DB_MIGRATE_USER: ${DB_MIGRATE_USER:-}
       DB_MIGRATE_PASSWORD: ${DB_MIGRATE_PASSWORD:-}
       ES_URL: ${ES_URL_INTERNAL:-http://elasticsearch:9200}
-      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}
+      # 2026-09-09 修 Kafka 回流断裂：容器内一律走 kafka:19092（INTERNAL 未发布 listener，绕 Docker Desktop NAT 黑洞）
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:19092}
       JWT_SECRET: ${JWT_SECRET:?jwt_secret 必须设置（≥256bit）}
       FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
@@ -66,12 +67,16 @@ services:
       DB_MIGRATE_USER: ${DB_MIGRATE_USER:-}
       DB_MIGRATE_PASSWORD: ${DB_MIGRATE_PASSWORD:-}
       ES_URL: ${ES_URL_INTERNAL:-http://elasticsearch:9200}
-      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:9092}
+      # 2026-09-09 修 Kafka 回流断裂：容器内一律走 kafka:19092（INTERNAL 未发布 listener，绕 Docker Desktop NAT 黑洞）
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL:-kafka:19092}
       JWT_SECRET: ${JWT_SECRET:?jwt_secret 必须设置（≥256bit）}
       FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
     command: sh -c "python -m app.worker"
+    # 2026-09-09 镜像自带 HEALTHCHECK 打 8000/healthz（backend 适用）；worker 无 uvicorn 恒 unhealthy → 显式禁用
+    healthcheck:
+      disable: true
     volumes:
       - ./backend:/app
     depends_on:
