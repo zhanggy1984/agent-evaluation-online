@@ -1,8 +1,9 @@
 """D19 统一 case payload 信封组装（detail §6.3 / §7.1，P2-2 / T-3.2）。
 
 - `build_envelope` 纯函数：cluster 行 → 信封 dict（键序对齐 §7.1 sample）。供
-  assemble_job 与后续 P2-4 claim/requeue 复用。payload_id=uuid4() 每次构建新发
-  （幂等键）；requeue 复用旧 payload_id 属 P2-4，另行重建 link 行不进本函数。
+  assemble_job 组装新发（payload_id=uuid4()，幂等键）与 **P2-3 requeue 复用旧
+  payload_id 重填**（content_gap 补齐后以现词表重推，§7.4：重填 payload_json 不改
+  payload_id）。
 - `assemble_cluster` 单簇组装编排：resolve wordlist → build_envelope → 写
   error_case_link（assembled+pending）+ conversion_record(action=assemble) 一步
   事务。uk_link_current/uk_link_payload 冲突（双 worker 竞态）上抛 IntegrityError
@@ -40,17 +41,21 @@ def parse_snapshot_input(snapshot: str | None):
         return snapshot
 
 
-def build_envelope(*, cluster, words: list[str], wordlist_version: int) -> dict:
+def build_envelope(
+    *, cluster, words: list[str], wordlist_version: int, payload_id: str | None = None
+) -> dict:
     """cluster（ORM 行或 SimpleNamespace，须有 agent/interface/first_trace_id/id/
     generation/trigger_version/fix_version/input_snapshot）→ D19 信封 dict。
 
     键序对齐 §7.1 sample；assert.config_ref.wordlist_version ===
     no_fallback_config.wordlist_version（同刻固化同源，单一版本源）。
+    payload_id：缺省新发 uuid4（组装幂等键）；requeue 重填传旧 payload_id 复用
+    （§7.4 锚点保护：复位不改 payload_id，offline upsert 幂等）。
     """
     return {
         "schema_version": SCHEMA_VERSION,
         "case_type": CASE_TYPE,
-        "payload_id": str(uuid.uuid4()),
+        "payload_id": payload_id or str(uuid.uuid4()),
         "source": {
             "agent": cluster.agent,
             "interface": cluster.interface,

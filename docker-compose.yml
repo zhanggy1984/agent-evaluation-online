@@ -37,6 +37,8 @@ services:
       FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # 平台间 /pull/* evaluator 服务凭证（预共享静态 secret，offline 侧部署同持；未配置 = /pull/* 401）
+      EVALUATOR_SERVICE_SECRET: ${EVALUATOR_SERVICE_SECRET:-}
     # 部署边界：backend 不暴露宿主端口（对外唯一入口 = 前端 nginx → backend）。
     # 需要宿主直连调试时临时加：ports: ["127.0.0.1:8000:8000"]（用后移除）。
     command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
@@ -73,6 +75,8 @@ services:
       FERNET_KEYS: ${FERNET_KEYS:?fernet_keys 必须设置}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # 平台间 /pull/* evaluator 服务凭证（预共享静态 secret，offline 侧部署同持；未配置 = /pull/* 401）
+      EVALUATOR_SERVICE_SECRET: ${EVALUATOR_SERVICE_SECRET:-}
     command: sh -c "python -m app.worker"
     # 2026-09-09 镜像自带 HEALTHCHECK 打 8000/healthz（backend 适用）；worker 无 uvicorn 恒 unhealthy → 显式禁用
     healthcheck:

@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     jwt_access_minutes: int = 15      # §13.1：短效 access
     jwt_refresh_days: int = 7
 
+    # ---- 平台间（D20，detail §8.8/§8.9） ----
+    # offline(evaluator) 服务凭证：/pull/* 预共享静态 secret（用户拍板）。offline 侧部署时同持；
+    # 未配置 = fail-closed（/pull/* 全 ERR_PULL_0001 401），不进 _validate_secrets 强校验
+    evaluator_service_secret: str = ""
+
     # ---- 引导 admin（seed.py init_admin 用，§13.1；生产首登即改密） ----
     admin_username: str = "admin"
     admin_password: str = ""
