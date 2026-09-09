@@ -25,6 +25,7 @@ USER appuser
 EXPOSE 8000
 
 # 无鉴权探活：python slim 无 curl/wget，用标准库 urllib 打 /healthz
+# 注意：本探针仅 backend(uvicorn:8000) 适用；worker 复用同镜像但无 8000，compose 内已用 healthcheck: disable 覆盖（2026-09-09）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
 
