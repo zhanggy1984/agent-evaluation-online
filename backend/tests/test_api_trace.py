@@ -4,12 +4,12 @@ FakeES 替 ES 查询（录 body 断言检索护栏/正文开关）；FakeAsyncSe
 （无行 → 回退 seed 默认 7d/3000ms）。鉴权走真实 deps 链：签发 viewer/admin JWT →
 require_viewer 放行、非 viewer 角色 403。
 """
-from contextlib import contextmanager
 import time
-
-from elasticsearch.exceptions import TransportError
+from contextlib import contextmanager
 
 from _fakes import FakeAsyncSession, FakeES, es_hits, ns
+from elasticsearch.exceptions import TransportError
+
 from app.core.config import Settings
 from app.core.db import get_session
 from app.core.security import create_access_token

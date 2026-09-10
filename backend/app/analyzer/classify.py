@@ -29,7 +29,7 @@ judge_scan_job（worker）与 consumer root-late 补判共用本层。
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 Layer = Literal["L1", "L2", "none"]
 Evidence = Literal["root", "subnode"]
@@ -77,7 +77,8 @@ class TraceFacts:
 
 @dataclass
 class ErrorCandidate:
-    """单 error_type 回流候选（对应 judgement_json.candidate_error_sets 一项，T-3.6 聚类去重键）。"""
+    """单 error_type 回流候选（对应 judgement_json.candidate_error_sets 一项，
+    T-3.6 聚类去重键）。"""
 
     error_type: str
     layer: Layer

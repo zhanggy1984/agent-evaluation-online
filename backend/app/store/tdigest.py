@@ -166,9 +166,8 @@ class TDigest:
     def serialize(self) -> str:
         """centroids → {"v":1,"c":[[mean,weight],…]} → base64(utf-8)。"""
         payload = {"v": 1, "c": [[m, w] for m, w in zip(self._means, self._weights)]}
-        return base64.b64encode(
-            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).decode("ascii")
+        raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
     @classmethod
     def deserialize(cls, sketch: str | None, compression: int = _K_DEFAULT) -> "TDigest":

@@ -8,8 +8,7 @@
 """
 from types import SimpleNamespace
 
-from app.models.agent import Agent
-from app.models.agent import Interface
+from app.models.agent import Agent, Interface
 from app.models.config import DictConfig
 from app.models.error_flow import TraceJudgeState
 from app.models.user import User as _User

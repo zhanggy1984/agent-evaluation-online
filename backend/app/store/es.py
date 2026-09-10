@@ -196,7 +196,8 @@ def _hits_result(resp) -> dict:
 
 # ============================================================================
 # metrics 实时聚合层（detail §8.4 + §14.4 护栏，T-2.2）
-# 只读 request/llm_call 事件（overview 以 node=request 锚点；log index 与指标无关，仅查 event index）。
+# 只读 request/llm_call 事件（overview 以 node=request 锚点；log index 与指标无关，
+# 仅查 event index）。
 # 护栏：agg request_timeout 由调用方传秒（metric_agg_timeout_ms dict 键 / 3000ms，seed 默认）；
 # anomalies/llm-failures 是列表（非聚合）永远读实时事件 index（rollup 丢 trace 身份）。
 # 7d 时段已完成小时走 rollup（T-2.3 metrics_rollup 读助手），本层只管实时聚合面。

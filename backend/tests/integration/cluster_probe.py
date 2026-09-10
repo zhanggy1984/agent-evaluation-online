@@ -7,9 +7,11 @@
 覆盖 judge/consumer「DB 壳留集成探针」先例下 cluster 的**实库语义**（单测走 fake 无法覆盖的
 多行 select / 聚合 max / UPDATE rowcount / 唯一索引）：
   S-1 开新簇：字段逐项（agent/interface/layer/error_type/input_hash/error_msg/first_trace_id/
-      trigger_version/first_ts/latest_ts/count/generation/status）+ _merge_row 结尾 processed CAS=1；
+      trigger_version/first_ts/latest_ts/count/generation/status）+
+      _merge_row 结尾 processed CAS=1；
   S-2 窗内同键 count+1（不重建不改代）+ R-13 快照缺回填 + input_truncated 刷新；
-  S-3 同键 fixed 终态后正常复发 → generation+1 新簇；root-late（reopen=False）同键 closed → skip 不开；
+  S-3 同键 fixed 终态后正常复发 → generation+1 新簇；
+      root-late（reopen=False）同键 closed → skip 不开；
   S-4 Fork A：root_input_hash NULL 行候选不建簇只置 processed；
   S-5 gate 关停（candidate_error_sets 空）行 → 只置 processed；
   S-6 uk_cluster_dedup 唯一约束在库真在（同键同代重复插 → IntegrityError，E-12 防护面）；

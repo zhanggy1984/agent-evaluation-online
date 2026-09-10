@@ -1,4 +1,5 @@
-"""#89 4 仓冒烟探针（detail §14.1 S-1 前提 / S-4 前提数据解锁）。容器内 `docker exec obs-backend` 运行。
+"""#89 4 仓冒烟探针（detail §14.1 S-1 前提 / S-4 前提数据解锁）。
+容器内 `docker exec obs-backend` 运行。
 
 前置：obs-backend 已 up（consumer 由 lifespan 拉起，app_env=dev）；probe 在容器内用
 compose 注入 env（DB_HOST=mysql / ES_URL / KAFKA_BOOTSTRAP 容器内 alias）建连，与
@@ -89,7 +90,9 @@ async def _heartbeat_dropped(es: AsyncElasticsearch, agent: str) -> dict[str, in
     try:
         resp = await es.search(
             index=index,
-            query={"bool": {"filter": [{"term": {"node": "heartbeat"}}, {"term": {"agent": agent}}]}},
+            query={
+                "bool": {"filter": [{"term": {"node": "heartbeat"}}, {"term": {"agent": agent}}]}
+            },
             sort=[{"ts": "desc"}],
             size=1,
         )
@@ -191,7 +194,8 @@ async def poll(agent: str, expect_llm: bool, timeout_s: float) -> None:
     check(f"{agent} 本轮零丢弃（无新增 form A dropped 心跳）", not bad,
           f"delta={dd}：真实事件全部合法通过，无 schema/脱敏/agent 丢弃"
           if not bad else f"delta={dd} 含丢弃：{bad} —— 上抛真实丢包")
-    print(f"\n===== {agent} probe 结果：{'全部通过' if not FAILURES else f'{len(FAILURES)} 项失败'} =====")
+    verdict = "全部通过" if not FAILURES else f"{len(FAILURES)} 项失败"
+    print(f"\n===== {agent} probe 结果：{verdict} =====")
     for name in FAILURES:
         print(f"  - {name}")
     sys.exit(0 if not FAILURES else 1)

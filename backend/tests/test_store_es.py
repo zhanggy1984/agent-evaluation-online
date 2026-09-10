@@ -6,9 +6,9 @@
 """
 from app.core.config import Settings
 from app.store.es import (
-    MAX_DETAIL_EVENTS,
     _KEYWORD_FIELDS,
     _KEYWORD_FIELDS_BODY,
+    MAX_DETAIL_EVENTS,
     build_trace_events_body,
     build_trace_list_body,
     build_trace_logs_body,

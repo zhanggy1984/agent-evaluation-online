@@ -5,8 +5,8 @@ build_judgement_json。覆盖 L1/L2 分支、OR 门控、cc 白名单关停、�
 timeout 不带 error_type 出口、多候选归并、root-late 单事件补判、root_late_payload 落库形状。
 """
 from app.analyzer.classify import (
-    AgentContext,
     LLM_ERR_TYPES,
+    AgentContext,
     TraceFacts,
     build_judgement_json,
     decide,

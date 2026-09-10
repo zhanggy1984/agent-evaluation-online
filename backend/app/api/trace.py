@@ -102,7 +102,9 @@ async def list_traces(
     keyword: str | None = Query(default=None, max_length=200, description="错误信息关键字"),
     agent: str | None = Query(default=None, max_length=64),
     interface: str | None = Query(default=None, max_length=256),
-    start_ts: int | None = Query(default=None, description="epoch ms；缺省 = now - keyword_search_days"),
+    start_ts: int | None = Query(
+        default=None, description="epoch ms；缺省 = now - keyword_search_days"
+    ),
     end_ts: int | None = Query(default=None, description="epoch ms；可选"),
     body_search: bool = Query(default=False, description="true 才检索/返回正文三字段"),
     page: int = Query(default=1, ge=1),
@@ -110,7 +112,9 @@ async def list_traces(
 ) -> Page[TraceListItem]:
     offset = (page - 1) * page_size
     if offset >= es_store.MAX_LIST_RESULTS:  # §14.4 深翻页上限
-        raise AppError("ERR_TRACE_0002", f"检索深度上限 {es_store.MAX_LIST_RESULTS}，请缩小范围", http=400)
+        raise AppError(
+            "ERR_TRACE_0002", f"检索深度上限 {es_store.MAX_LIST_RESULTS}，请缩小范围", http=400
+        )
 
     settings = request.app.state.settings
     days = await get_global_int(session, "keyword_search_days", _DEFAULT_SEARCH_DAYS)

@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import pytest
-
 from _fakes import FakeAsyncSession, ns
+
 from app.api import auth as auth_api
 from app.core.config import Settings
 from app.core.db import get_session

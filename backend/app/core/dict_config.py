@@ -51,4 +51,7 @@ async def get_global_config(
 async def get_global_int(session: AsyncSession, key: str, default: int) -> int:
     """整型全局键读取（keyword_search_days 等）；非 int 形态回退默认。"""
     value = await get_global_config(session, key, default)
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    # bool 是 int 子类，须显式排除，否则 True/False 会被当成 1/0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    return default
