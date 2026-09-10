@@ -15,6 +15,21 @@ from app.models.user import User as _User
 from app.models.user import UserSession as _UserSession
 
 
+class _NullSavepoint:
+    """`session.begin_nested()` 替身：no-op savepoint（不回退、不模拟异常后的清理）。
+
+    FakeAsyncSession 只做 SQLAlchemy 表达式树的**最小等值解析**、不真写库，故「回退到
+    savepoint」在替身上无物可回退；单测只验「判定段确实被 savepoint 包住」的接线。
+    真回退语义（DB 异常后行仍在）由 push_probe 真库场景覆盖。
+    """
+
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class FakeResult:
     def __init__(self, row):
         self._row = row
@@ -148,6 +163,9 @@ class FakeAsyncSession:
 
     async def flush(self):
         pass
+
+    def begin_nested(self):
+        return _NullSavepoint()
 
     def add(self, obj):
         self.added.append(obj)

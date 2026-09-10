@@ -95,6 +95,11 @@ export const LAYER_OPTIONS = [
   { value: 'L2', label: 'L2' },
 ]
 
+// 疑似丢推送警示（详情页 result_gap_suspected=true 时展示）。措辞与后端 GAP_CAPTION 同义：
+// 一句「可能少了一笔结果」即可，**不做对账面板**（§8.7 只要求可观测标记）。
+export const RESULT_GAP_WARN =
+  '疑似丢失一笔结果推送（回归 K 序列已中断，待 offline 补推或人工核查）'
+
 // input_truncated 警示（claim/fixed 态展示；R-10，detail §9.3）
 export const INPUT_TRUNCATED_WARN =
   '复现输入原始 input>8K 已截断，证据不完整：相关 run pass 不计 K；建议小输入重测或人工复核（R-10）'

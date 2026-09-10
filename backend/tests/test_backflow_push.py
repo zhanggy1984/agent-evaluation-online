@@ -1,26 +1,31 @@
-"""v1.23 第 2 刀 单测：结果推送接收面 + 「结果未达」标记（detail §8.7/§8.9/§9.3）。
+"""v1.23 第 2/3 刀 单测：结果推送接收面 + 「结果未达」标记（detail §8.7/§8.9/§9.3）。
 
 - POST /backflow/regression-results 鉴权（evaluator 静态 secret，缺失/错误/未配置 → ERR_PULL_0001）
   与载荷校验（schema_version 非 1.0 → ERR_PULL_0004；pass_fail='na' 缺 error_type →
-  ERR_PULL_0002；run_status 只收终态值域 → 422）。
+  ERR_PULL_0002；run_status 只收终态值域 → 422；prev_terminal_version 必填、值可为 null）。
 - 落库语义：非白名单 case_type 丢行计数（载荷仍原样留档）、空数组合法、重复推送幂等
   （uk_verify_run，零写）、orphan（无现行 link）落哨兵行 link_id=0 留档但不推进判定、
   conversion_record action=regression_result + actor_user_id=NULL（系统动作）。
-- case_pass 派生（link.case_id 命中行；na/缺行 → NULL）与「links_advanced = 本次新落行的 link」。
+- case_pass 派生（link.case_id 命中行；na/缺行 → NULL）——**已非判定输入**，仅读面对账位。
+- 第 3 刀落库即判的**接线**（判定内核本体的覆盖在 verify 直测 + claim_probe/push_probe 真库）：
+  cluster 非 claim（或不存在）→ 不调 judge_link（数据照落）；cluster=claim → 调判定；
+  links_advanced 只在判定 outcome ∈ TERMINAL_OUTCOMES 时列该 link。judge_link 在单测里打桩
+  （FakeAsyncSession 无 scalars，跑不了真链），断的是**调用条件与响应语义**。
 - _result_overdue 三态（claim **TTL 回退现场**锚 conv(action='claim_ttl_expire') + fix_version
   非空 + 无结果行、且不在有效 claim 期内 / assembled 超 N 天 / 都没超）+ 有结果行不命中
   + 阈值边界 + 详情端点接线（逐字文案）。
 - 载荷字段校验：finished_ts 非 ISO8601 → ERR_PULL_0002(400)；重复推送 cases_dropped 与首次一致。
 
 注：FakeAsyncSession 的 flush 是 no-op（不回填自增 id），凡断言 run_record_id 的用例走
-_IdBackfillSession（仅补 flush 回填，其余同 Fake）。真实写面语义（唯一键冲突/CAS 竞态）
-留给集成探针。
+_IdBackfillSession（仅补 flush 回填，其余同 Fake）。真实写面语义（唯一键冲突/CAS 竞态/
+判定收敛）留给集成探针。
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
 
 from _fakes import FakeAsyncSession, ns
 
+import app.api.backflow as backflow_api
 from app.api.backflow import (
     ORPHAN_LINK_ID,
     OVERDUE_CAPTION,
@@ -71,8 +76,9 @@ def _now():
 def _body(**over):
     body = dict(
         schema_version="1.0", agent="agent-x", agent_version="1.5.0",
-        run_id="run-1", run_status="completed", bound_version_first_seen=True,
-        agent_latest_version="1.5.0", finished_ts="2026-01-05T08:00:00Z",
+        run_id="run-1", run_status="completed",
+        agent_latest_version="1.5.0", prev_terminal_version=None,
+        finished_ts="2026-01-05T08:00:00Z",
         cases=[{"case_id": "c-1", "case_type": "regression_error",
                 "pass_fail": "pass"}],
     )
@@ -152,6 +158,22 @@ def test_push_rejects_non_iso8601_finished_ts():
 # ---------- 载荷校验：R-22 / 丢行 / 空数组 ----------
 
 
+def test_push_prev_terminal_version_required_but_nullable():
+    """第 3 刀新字段：**必填但值可为 null**（漏带 → 422，判据失效；null = 首次无前序）。
+
+    为什么必填：缺行中断判据「prev_terminal_version 非空且本地无该版本」在字段缺失时静默
+    退化为「永不中断」——与「漏带水位字段则该条守卫失效」同性质的失效模式，必须在入口挡。
+    """
+    with _app() as c:
+        body = _body()
+        body.pop("prev_terminal_version")
+        assert c.post(_URL, headers=_hdr(), json=body).status_code == 422  # 漏带 → 拒
+        assert c.post(_URL, headers=_hdr(), json=_body(prev_terminal_version=None)
+                      ).status_code == 200  # 显式 null → 合法
+        assert c.post(_URL, headers=_hdr(), json=_body(prev_terminal_version="1.4.0")
+                      ).status_code == 200
+
+
 def test_push_na_without_error_type_rejected():
     cases = [{"case_id": "c-1", "case_type": "regression_error", "pass_fail": "na"}]
     with _app() as c:
@@ -218,7 +240,8 @@ def test_push_drops_non_whitelist_case_type():
     raw = _added(session, VerifyRunRecord)[0].raw_json
     assert [c["case_type"] for c in raw["cases"]] == ["regression_error", "random_access"]
     assert raw["agent_latest_version"] == "1.5.0"          # 零 DDL 承载的水位字段
-    assert raw["bound_version_first_seen"] is True
+    assert raw["prev_terminal_version"] is None            # 缺行中断判据的输入（第 3 刀）
+    assert "bound_version_first_seen" not in raw           # 本批删除：必填却零读取点（(e)）
     assert raw["finished_ts"] == "2026-01-05T08:00:00Z"
     assert raw["schema_version"] == "1.0"
 
@@ -233,8 +256,34 @@ def test_push_all_cases_dropped_still_200():
 # ---------- 落库：命中现行 link / 孤儿 / 幂等 ----------
 
 
-def test_push_advances_current_link_and_writes_conversion():
-    session = _IdBackfillSession(registry={ErrorCaseLink: [_pending_link()]})
+class _GetRegistrySession(_IdBackfillSession):
+    """get 亦按 registry 回行（第 3 刀判定链要按 link.cluster_id 重读 cluster）。"""
+
+    async def get(self, model, pk):
+        row = next((r for r in self.registry.get(model, [])
+                    if getattr(r, "id", None) == pk), None)
+        return row if row is not None else await super().get(model, pk)
+
+
+def _cluster(status="claim", cid=10):
+    return ns(id=cid, status=status, claim_k=2, input_truncated=0,
+              fix_version="1.5.0", agent="agent-x")
+
+
+def _stub_judge(monkeypatch, *, outcome="pending", calls=None):
+    """打桩 judge_link：只验接线（真链走 claim_probe/push_probe 真库）。"""
+    async def fake(session, *, cluster, link):
+        if calls is not None:
+            calls.append((cluster.id, link.id))
+        return {"outcome": outcome, "reason": "stub"}
+    monkeypatch.setattr(backflow_api, "judge_link", fake)
+
+
+def test_push_lands_row_and_writes_conversion(monkeypatch):
+    session = _GetRegistrySession(registry={ErrorCaseLink: [_pending_link()],
+                                            ErrorCluster: [_cluster()]})
+    calls: list = []
+    _stub_judge(monkeypatch, outcome="pending", calls=calls)
     cases = [
         {"case_id": "c-1", "case_type": "regression_error", "pass_fail": "pass"},
         {"case_id": "c-2", "case_type": "regression_error", "pass_fail": "fail"},
@@ -242,16 +291,57 @@ def test_push_advances_current_link_and_writes_conversion():
     with _app(session) as c:
         r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=10, cases=cases))
         assert r.status_code == 200
-        assert r.json()["links_advanced"] == [30]  # 本次真正新落行的 link
+        # 判定跑了（cluster=claim）但未收敛终态 → links_advanced 空（第 3 刀语义收窄）
+        assert calls == [(10, 30)]
+        assert r.json()["links_advanced"] == []
         assert r.json()["duplicated"] is False
     rec = _added(session, VerifyRunRecord)[0]
     assert rec.link_id == 30
     assert rec.case_pass == 1  # 命中 link.case_id 的行（c-1 pass）→ 1
+    assert rec.raw_json["prev_terminal_version"] is None
     conv = _added(session, ConversionRecord)[0]
     assert conv.action == "regression_result"
     assert conv.cluster_id == 10 and conv.link_id == 30
     assert conv.actor_user_id is None  # 系统动作（offline 推送），非人工
     assert "run-1" in conv.detail and "dropped=0" in conv.detail
+
+
+def test_push_links_advanced_only_on_terminal_migration(monkeypatch):
+    # 响应语义 = 「真正发生终态迁移的 link」（passed/failed/superseded 三类）
+    for outcome, expected in (("fixed_auto", [30]), ("reopened", [30]),
+                              ("needs_review", [30]), ("gap", []),
+                              ("unclean_batch", []), ("no_progress", [])):
+        session = _GetRegistrySession(
+            registry={ErrorCaseLink: [_pending_link()], ErrorCluster: [_cluster()]})
+        _stub_judge(monkeypatch, outcome=outcome)
+        with _app(session) as c:
+            r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=10))
+        assert r.status_code == 200, outcome
+        assert r.json()["links_advanced"] == expected, outcome
+
+
+def test_push_skips_judgment_when_cluster_not_claim(monkeypatch):
+    """守卫：cluster 非 claim（或已不存在）→ 不调判定，但数据照落。
+
+    为什么必须挡：`_find_current_link` 只按 link.verify_status=pending 查——needs_review
+    resolve↔reopen 过渡、TTL 认领失效、admin invalidate 都可能在非 claim 簇上留下 pending
+    link；不挡就会对已 fixed/needs_review 的簇写终态迁移（越权改状态）。
+    """
+    for row in (_cluster(status="fixed"), _cluster(status="needs_review"),
+                _cluster(status="inactive"), None):
+        registry = {ErrorCaseLink: [_pending_link()]}
+        if row is not None:
+            registry[ErrorCluster] = [row]
+        session = _GetRegistrySession(registry=registry)
+        calls: list = []
+        _stub_judge(monkeypatch, calls=calls)
+        with _app(session) as c:
+            r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=10))
+        assert r.status_code == 200, row
+        assert calls == [], row
+        assert r.json()["links_advanced"] == [], row
+        assert len(_added(session, VerifyRunRecord)) == 1  # 留档不受影响
+        assert len(_added(session, ConversionRecord)) == 1
 
 
 def test_push_orphan_archives_without_advancing():

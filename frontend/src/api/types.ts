@@ -300,6 +300,9 @@ export interface BackflowClusterDetail extends BackflowCluster {
   verify_runs: BackflowVerifyRun[]
   conversions: BackflowConversion[]
   waiting_days: number
+  // 疑似丢失一笔结果推送（后端派生字段，零 DDL：本簇现行 pending link 的 prev_terminal_version
+  // 在 online 已收版本集里查无 → 回归 K 序列中断，待 offline 补推或人工核查）
+  result_gap_suspected: boolean
   reentry_observe: ReentryObserve | null
   open_batches: BackflowBatch[]
 }

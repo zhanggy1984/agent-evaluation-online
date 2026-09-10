@@ -27,6 +27,7 @@ import {
   INPUT_TRUNCATED_WARN,
   OFFLINE_STATUS_TEXT,
   reentryCaption,
+  RESULT_GAP_WARN,
   REVIEW_REASON_TEXT,
   VERIFY_STATUS_TEXT,
 } from '../backflowLabels'
@@ -312,6 +313,9 @@ const rows = computed(() => detail.value?.conversions ?? [])
         <p v-if="(st === 'fixed' || st === 'claim') && detail.input_truncated" class="warn-line">
           {{ INPUT_TRUNCATED_WARN }}
         </p>
+        <!-- 结果推送缺失（后端派生，只标示「疑似少一笔」，不展开对账）：不限状态展示——
+             卡在 claim/open 等结果时它是主因，判成 fixed 后仍需可见（可能是假修复） -->
+        <p v-if="detail.result_gap_suspected" class="warn-line">{{ RESULT_GAP_WARN }}</p>
         <p v-if="needsReview && reasonText()" class="note-line">待人工复核原因：{{ reasonText() }}</p>
       </section>
 

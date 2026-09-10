@@ -15,9 +15,9 @@
   无 pending 取末条 / 按 cluster 分组 / 无 link 不入结果；overview 响应形状 + 状态键零填充
   + to_fix NULL→0；clusters 列表 page/page_size 钳位 + item 带 link 摘要。
   **筛选/watch 的 SQL 组合语义不在此覆盖**（stub 不解释 where），由浏览器 e2e 对真实数据核验。
-- claim R-5 版本预检（_claim_warning）：offline 未配 → None；fix_version 未见于已见版本
-  → 「已见版本：…」提示；已见且 generation≤1 → None；generation>1 命中 completed run →
-  reentry 提示；读面抛 OfflineReadError → None（best-effort）。
+- claim R-5 版本预检（_claim_warning，第 3 刀切本地源）：零已收结果 → None；fix_version
+  未见于「已收结果的版本集」→ 提示；已见且 generation≤1 → None；generation>1 命中
+  completed run → reentry 提示；本地查询异常 → None（best-effort 不变）。
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -39,7 +39,6 @@ from app.backflow.recurrence import (
 )
 from app.core.config import Settings
 from app.core.db import get_session
-from app.core.offline_client import OfflineReadError
 from app.core.security import create_access_token
 from app.main import create_app
 from app.models.error_flow import (
@@ -54,12 +53,11 @@ from app.models.error_flow import (
 _MOCK_SECRET = "s3cret-evaluator"
 
 
-def _settings(offline_base_url=""):
+def _settings():
     return Settings(
         app_env="test", resource_env="dev",
         jwt_secret="mock-secret-" * 8,
         evaluator_service_secret=_MOCK_SECRET,
-        offline_base_url=offline_base_url,
     )
 
 
@@ -451,7 +449,7 @@ def _detail_claim_cluster_rows():
     link = ns(id=30, payload_id="p-1", case_id="c-1", case_type="case",
               offline_status="active", verify_status="pending",
               assembled_ts=claimed_at, invalidate_reason=None)
-    run = ns(id=1, run_id="run-9", bound_version="1.4.0", case_pass=1,
+    run = ns(id=1, link_id=30, run_id="run-9", bound_version="1.4.0", case_pass=1,
              run_status="completed", verified_ts=claimed_at + timedelta(hours=1),
              raw_json={})
     conv = ns(id=1, action="claim", detail="认领", closed_by="u1",
@@ -518,71 +516,68 @@ def test_detail_open_cluster_reentry_observe_none():
 # ---------- claim R-5 版本预检：_claim_warning 分支 ----------
 
 
-class _FakeOffline:
-    """OfflineClient 替身：只读面可注入 + aclose 空操作。"""
+class _ReceivedRows:
+    """`_received_versions` 的 select 结果替身：只给 .all()。"""
 
-    def __init__(self, base_url, *, secret="", timeout_s=None):  # mock 替身
-        self.versions = []
-        self.runs = []
+    def __init__(self, rows):
+        self._rows = rows
 
-    async def agent_versions(self, *, agent, window_days=14):
-        if isinstance(self.versions, Exception):
-            raise self.versions
-        return self.versions
-
-    async def list_runs(self, *, agent, version=None):
-        return self.runs
-
-    async def aclose(self):
-        pass
+    def all(self):
+        return self._rows
 
 
-def _patch_claim_warning(monkeypatch, *, versions=None, runs=None, raise_err=None,
-                         offline_base_url="http://offline.local"):
-    fake = _FakeOffline("http://offline.local")
-    fake.versions = raise_err if raise_err else (versions or [])
-    fake.runs = runs or []
-    monkeypatch.setattr(backflow_api, "OfflineClient", lambda *a, **kw: fake)
-    monkeypatch.setattr(backflow_api, "get_settings",
-                        lambda: _settings(offline_base_url=offline_base_url))
-    return fake
+class _ReceivedSession:
+    """`_received_versions` 替身 session：execute 回 canned (bound_version, run_status) 行。
+
+    第 3 刀后数据源 = 本地 `verify_run_record` join（_received_versions 一条 select），
+    FakeAsyncSession 不支持 `.all()`，故只替身这一条读面——本组用例测的是**软提示判据**，
+    不测 SQL 形状（join 正误由 claim_probe 真库核验）。
+    """
+
+    def __init__(self, rows=None, *, boom=False):
+        self.rows = list(rows or [])
+        self.boom = boom
+        self.stmts: list = []
+
+    async def execute(self, stmt, params=None, execution_options=None):
+        self.stmts.append(stmt)
+        if self.boom:
+            raise RuntimeError("DB 抖动模拟")
+        return _ReceivedRows(self.rows)
 
 
-def test_claim_warning_offline_unset_is_none(monkeypatch):
-    monkeypatch.setattr(backflow_api, "get_settings", lambda: _settings())
-    assert _run(_claim_warning("agent-x", 1, "1.4.0")) is None
+def test_claim_warning_no_received_results_is_none():
+    # 该 agent 零已收结果 → 无可比版本集，不提示（原「offline 未配」分支的等价物）
+    assert _run(_claim_warning(_ReceivedSession(), "agent-x", 1, "1.4.0")) is None
 
 
-def test_claim_warning_fix_version_not_seen(monkeypatch):
-    _patch_claim_warning(monkeypatch, versions=[{"version": "1.3.0"},
-                                                {"version": "1.3.1"}])
-    w = _run(_claim_warning("agent-x", 1, "1.4.0"))
+def test_claim_warning_fix_version_not_seen():
+    sess = _ReceivedSession([("1.3.0", "completed"), ("1.3.1", "completed")])
+    w = _run(_claim_warning(sess, "agent-x", 1, "1.4.0"))
     assert w is not None and "未观测到 agent-x@1.4.0" in w
-    assert "已见版本" in w and "1.3.0" in w and "1.3.1" in w
+    assert "已收结果的版本" in w and "1.3.0" in w and "1.3.1" in w
 
 
-def test_claim_warning_fix_version_seen_generation1_none(monkeypatch):
-    _patch_claim_warning(monkeypatch, versions=[{"version": "1.4.0"}])
-    assert _run(_claim_warning("agent-x", 1, " 1.4.0 ")) is None  # trim 后精确成员
+def test_claim_warning_fix_version_seen_generation1_none():
+    sess = _ReceivedSession([("1.4.0", "completed")])
+    assert _run(_claim_warning(sess, "agent-x", 1, " 1.4.0 ")) is None  # trim 后精确成员
 
 
-def test_claim_warning_generation_gt1_completed_run_hits(monkeypatch):
-    # R-7 沿用：同版本已有 completed run + generation>1 → reentry 提示
-    _patch_claim_warning(monkeypatch, versions=[{"version": "1.4.0"}],
-                         runs=[{"run_id": "r1", "status": "completed"}])
-    w = _run(_claim_warning("agent-x", 2, "1.4.0"))
+def test_claim_warning_generation_gt1_completed_run_hits():
+    # R-7 沿用：同版本已有 completed run 结果 + generation>1 → reentry 提示
+    sess = _ReceivedSession([("1.4.0", "completed")])
+    w = _run(_claim_warning(sess, "agent-x", 2, "1.4.0"))
     assert w is not None and "reentry" in w
 
 
-def test_claim_warning_generation_gt1_no_completed_none(monkeypatch):
-    _patch_claim_warning(monkeypatch, versions=[{"version": "1.4.0"}],
-                         runs=[{"run_id": "r1", "status": "running"}])
-    assert _run(_claim_warning("agent-x", 2, "1.4.0")) is None
+def test_claim_warning_generation_gt1_no_completed_none():
+    sess = _ReceivedSession([("1.4.0", "running")])
+    assert _run(_claim_warning(sess, "agent-x", 2, "1.4.0")) is None
 
 
-def test_claim_warning_offline_read_error_is_none(monkeypatch):
-    _patch_claim_warning(monkeypatch, raise_err=OfflineReadError("boom"))
-    assert _run(_claim_warning("agent-x", 1, "1.4.0")) is None
+def test_claim_warning_query_error_is_none():
+    # best-effort 不变：本地查询异常不得把已 commit 的 claim 变成 500
+    assert _run(_claim_warning(_ReceivedSession(boom=True), "agent-x", 1, "1.4.0")) is None
 
 
 # ---------- API 层：_link_item / _cluster_links（P2-6 列表 link 摘要） ----------

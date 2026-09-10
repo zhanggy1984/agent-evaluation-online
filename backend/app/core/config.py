@@ -54,9 +54,11 @@ class Settings(BaseSettings):
     evaluator_service_secret: str = ""
 
     # ---- 平台间回查读面（§7.6/§8.7，P2-4 E-7） ----
-    # offline 只读 base（runs/results/versions）；空 = recheck_job 停轮（offline 配套轨未
-    # 启动前的安全默认）。回查 client 复用 evaluator_service_secret 作 Bearer（双向预共享，
-    # §13.5）——offline 侧持同值校验。
+    # **v1.23 第 3 刀起已无消费方**（判定内核切推送源，core/offline_client + worker/recheck_job
+    # 整删，online 不再有任何 offline 出站读）。字段保留仅为部署 .env 兼容（存量 .env 仍带此键，
+    # 删字段会触发 pydantic 校验失败）；新部署不必填，填了也不生效。若确认无存量 .env，可另立
+    # 刀连同 .env.example 一并清理（属配置变更，未在本刀范围内）。
+    # 原语义：offline 只读 base（runs/results/versions），空 = recheck_job 停轮。
     offline_base_url: str = ""
 
     # ---- 引导 admin（seed.py init_admin 用，§13.1；生产首登即改密） ----

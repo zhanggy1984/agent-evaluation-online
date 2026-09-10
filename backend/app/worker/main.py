@@ -1,12 +1,12 @@
 """worker 进程主装配（T-2.1 judge_scan 1min + T-3.1 cluster 15s + T-3.2 assemble 1min
-+ T-2.3 rollup 整点，独立进程）。
++ T-2.3 rollup 整点 + 本批 rejudge 1min（本地补判安全网），独立进程）。
 
 - 入口：`python -m app.worker`（__main__.py）→ asyncio.run(main())。compose 独立
   service（同 backend 镜像同 env），backend 容器不启动 worker。
 - **周期调度 = asyncio 自管**（用户裁定，§5.3 注记改「APScheduler 同族」表述）：不引
-  APScheduler——judge_scan 每 60s 一轮、cluster 每 15s 一轮、rollup 对齐下一 UTC 整点
-  + 5s 抖动后跑；各 job 各自线性 `run → sleep`，await 串行天然不重叠（慢跑只延迟
-  下一轮，rollup 的确定性 _id 整小时覆写保证补算幂等，不需跳过本轮）。
+  APScheduler——judge_scan/cluster/rejudge/assemble 各自周期一轮（60s/15s/60s/60s），rollup
+  对齐下一 UTC 整点 + 5s 抖动后跑；各 job 各自线性 `run → sleep`，await 串行天然不重叠
+  （慢跑只延迟下一轮，rollup 的确定性 _id 整小时覆写保证补算幂等，不需跳过本轮）。
 - 启动守卫：先有界轮询 `SELECT 1 FROM agent LIMIT 1`（60s 超时报错退出）——等 backend
   的 alembic 建表；worker 自身**不跑 alembic**（防与 upgrade head 抢跑，detail §14）。
 - 单 job 异常 logger.exception + 下周期自愈（不拖垮进程）；MySQL/ES 惰性建连：
@@ -28,7 +28,7 @@ from app.worker.assemble_job import ASSEMBLE_BATCH, run_assemble
 from app.worker.claim_ttl_job import CLAIM_TTL_BATCH, run_claim_ttl
 from app.worker.cluster_job import CLUSTER_BATCH, run_cluster_merge
 from app.worker.judge_scan_job import JUDGE_SCAN_BATCH, run_judge_scan
-from app.worker.recheck_job import RECHECK_BATCH, run_recheck
+from app.worker.rejudge_job import REJUDGE_BATCH, run_rejudge
 
 logger = get_logger("worker.main")
 
@@ -37,15 +37,17 @@ CLUSTER_INTERVAL_S = 15  # cluster 聚类消费周期（判定到期即应尽快
 ASSEMBLE_INTERVAL_S = 60  # assemble 组装补偿扫描周期（detail §6.3「每分钟扫」，P2-2）
 CLAIM_TTL_INTERVAL_S = 60  # claim 复核窗 TTL 回退扫描周期（P2-4 E-8；§7.2 无在线拉取时钟，
                           # TTL/回查全周期 job 驱动）
-RECHECK_INTERVAL_S = 60  # claim 回查判定周期（P2-4 E-7；与 assemble 同级；offline_base_url
-                         # 空 = 停轮，offline 配套轨启动后填 .env）
+# v1.23 第 3 刀删 RECHECK_INTERVAL_S：判定已由结果推送端点（写面）同步驱动，不再有回查轮询 job
+REJUDGE_INTERVAL_S = 60  # 本地补判安全网周期（本批补）：判定触发已退化为「一次性事件」，
+                         # ①claim 晚于推送 ②判定抛异常 ③状态过渡窗口 三类现场要有人再判一次。
+                         # 与已删的 recheck 无关（recheck 是拉 offline，本 job 零 outbound）。
 ROLLUP_ALIGN_S = 5      # rollup 整点后 5s 抖动（躲开消费侧/其他定时任务整点高峰）
 DB_READY_TIMEOUT_S = 60  # 启动守卫等 backend 迁移建表的上限
 DB_READY_RETRY_S = 2    # 守卫轮询间隔
 
 
 class WorkerApp:
-    """后台 job 主循环：judge_scan + cluster + assemble + rollup 协程组；stop() 取消 + dispose。"""
+    """后台 job 主循环（6 协程组）；stop() 取消全部 task 并 dispose 引擎/ES。"""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -64,14 +66,14 @@ class WorkerApp:
         self._tasks.append(asyncio.create_task(self._cluster_loop()))
         self._tasks.append(asyncio.create_task(self._assemble_loop()))
         self._tasks.append(asyncio.create_task(self._claim_ttl_loop()))
-        self._tasks.append(asyncio.create_task(self._recheck_loop()))
+        self._tasks.append(asyncio.create_task(self._rejudge_loop()))
         self._tasks.append(asyncio.create_task(self._rollup_loop()))
         logger.info("worker 启动", extra={"env": self.settings.app_env,
                                          "judge_interval_s": JUDGE_INTERVAL_S,
                                          "cluster_interval_s": CLUSTER_INTERVAL_S,
                                          "assemble_interval_s": ASSEMBLE_INTERVAL_S,
                                          "claim_ttl_interval_s": CLAIM_TTL_INTERVAL_S,
-                                         "recheck_interval_s": RECHECK_INTERVAL_S})
+                                         "rejudge_interval_s": REJUDGE_INTERVAL_S})
 
     async def stop(self) -> None:
         self._stop.set()
@@ -160,18 +162,21 @@ class WorkerApp:
                 logger.exception("claim_ttl 异常（下轮自愈）")
             await asyncio.sleep(CLAIM_TTL_INTERVAL_S)
 
-    async def _recheck_loop(self) -> None:
-        """claim 回查判定：每 60s 一轮。offline_base_url 空 → run_recheck 停轮（安全默认）。"""
+    async def _rejudge_loop(self) -> None:
+        """本地补判：每 60s 一轮。run → sleep 串行，慢跑只延迟下轮不重叠。
+
+        只在 claim 簇上重放已落库结果行（零 outbound），是「判定改一次性触发」后的安全网。
+        """
         while not self._stop.is_set():
             try:
-                processed = await run_recheck(
-                    self._engine, self.settings, logger=logger, batch=RECHECK_BATCH
+                judged = await run_rejudge(
+                    self._engine, logger=logger, batch=REJUDGE_BATCH
                 )
-                if processed:
-                    logger.debug("recheck 本轮回查", extra={"processed": processed})
+                if judged:
+                    logger.debug("rejudge 本轮补判", extra={"judged": judged})
             except Exception:
-                logger.exception("recheck 异常（下轮自愈）")
-            await asyncio.sleep(RECHECK_INTERVAL_S)
+                logger.exception("rejudge 异常（下轮自愈）")
+            await asyncio.sleep(REJUDGE_INTERVAL_S)
 
     async def _rollup_loop(self) -> None:
         """rollup：对齐下一 UTC 整点 + 5s 抖动后跑一轮（run_rollup 内做整小时回填）。

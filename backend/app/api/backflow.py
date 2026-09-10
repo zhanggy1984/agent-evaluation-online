@@ -9,14 +9,18 @@ P2-4（新增，viewer 为主 / admin 单独 fixed-review）：
   详情（link 摘要 + verify_run_record 时间线 + conversion 审计时间线 + 已待天数）。
 - 全写端点：cluster/link 不存在 → ERR_CLUSTER_0001(404)；非法迁移 → ERR_CLUSTER_0003(400)；
   CAS 竞态落空 → ERR_CLUSTER_0002(409，带当前状态)——detail §8.9 语义，P2-4 激活。
-- 结果推送接收面（v1.23 第 2 刀，**只增不删**）：POST /backflow/regression-results（evaluator
-  静态 secret，不新造 JWT/scope）——offline run 终态 commit 后主动推结果，online 落
-  verify_run_record 留档（uk_verify_run 幂等）。**本刀只落数据位**：判定内核切推送源（K 折叠
-  / 终态收敛）归下一刀，recheck_job/verify.py 原样保留，两路并存。
+- 结果推送接收面（v1.23 第 2 刀建面 / **第 3 刀接判定**）：POST /backflow/regression-results
+  （evaluator 静态 secret，不新造 JWT/scope）——offline run 终态 commit 后主动推结果，online
+  落 verify_run_record 留档（uk_verify_run 幂等）**并同事务内推进该 link 判定**
+  （verify.judge_link，数据源 = 本 link 已收结果行集），`links_advanced` 随之升级为「真正
+  发生终态迁移的 link」。轮询链（core/offline_client + worker/recheck_job）已整删。
 - 详情读面新增 result_overdue（§8.7 保活标记「回查结果未达（疑似 offline 停摆），人工核查」）：
   MySQL 现算、零 DDL、不落列不设时钟。claim 分支锚定 conv(action='claim_ttl_expire')
-  （v1.23 第 3 刀换判据）——原「超 claim_due_ts」判据被 claim_ttl_job 的 60s 回退清场
+  （v1.23 第 2 刀换判据）——原「超 claim_due_ts」判据被 claim_ttl_job 的 60s 回退清场
   冲掉、实际恒假，详见 _result_overdue docstring。
+- 详情读面第二个派生标记 result_gap_suspected（本批补）：本簇现行 pending link 命中
+  `verify.link_gap_version`（缺行中断现场）→ true，语义 = 「疑似丢失一笔结果推送」。
+  判定异常降级与一次性推送的安全网 = `worker/rejudge_job.py`（本批补）。
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -39,12 +43,11 @@ from app.backflow.claim import (
     CONV_DETAIL_MAX,
 )
 from app.backflow.requeue import MANUAL_INVALIDATE_REASON
-from app.core.config import get_settings
+from app.backflow.verify import TERMINAL_OUTCOMES, judge_link, link_gap_version
 from app.core.db import get_session
 from app.core.dict_config import get_global_int
 from app.core.errors import AppError
 from app.core.log import get_logger
-from app.core.offline_client import OfflineClient, OfflineReadError
 from app.models.error_flow import (
     ConversionRecord,
     ErrorCaseLink,
@@ -177,10 +180,13 @@ class RegressionResultsRequest(BaseModel):
     run_id: str = Field(max_length=64)
     # 只推终态（原 B-1(c) 值集不变，改由 offline 保证而非 online 过滤）
     run_status: Literal["completed", "partial_failed", "timeout", "cancelled"]
-    # 该 (agent, version) 在 offline 侧是否首次出现终态 run（重建 no_progress 守卫，§7.6）
-    bound_version_first_seen: bool
     # offline 侧该 agent 已有终态 run 的最大版本（恢复防假连续守卫，§8.7 v1.23）
     agent_latest_version: str = Field(max_length=64)
+    # 本次 run 之前、该 agent 最近一个已到终态 run 的版本（与上面两个水位字段同一次查询产出）。
+    # **必填但值可为 null**：null = 该 agent 此前没有任何终态 run（首次），此时无前序可查、
+    # 不中断；非空而 online 本地（本 link 的 verify_run_record 行集）无该版本记录 = 上一笔
+    # 结果推送丢失 → gap 中断不累计 K（见 verify.judge_link 缺行中断判据）。
+    prev_terminal_version: str | None = Field(max_length=64)
     trigger_signal_id: int | None = None  # = 信封 source.cluster_id，回关联 cluster_id
     finished_ts: str  # run 终态时刻（ISO8601 UTC）
     cases: list[RegressionCaseItem]  # 必填，**空数组合法**（落 run 级行、case_pass=null）
@@ -397,6 +403,34 @@ async def _result_overdue(
     return {"hit": False, "kind": None, "since_ts": None, "caption": None}
 
 
+# ---------- 「疑似丢了一笔结果推送」标记（本批补，(g)；零 DDL 现算） ----------
+
+# 逐字文案（前端命中即原样渲染，与 OVERDUE_CAPTION 同规）
+GAP_CAPTION = "疑似丢失一笔结果推送（回归 K 序列已中断，待 offline 补推或人工核查）"
+
+
+async def _result_gap_suspected(
+    session: AsyncSession, cluster: ErrorCluster, links: list[ErrorCaseLink]
+) -> bool:
+    """本簇**现行 pending link** 是否存在「缺行中断」现场（派生布尔，不落列、不设时钟）。
+
+    为什么要有这个可见面：判定内核遇到 gap 时（§8.7 `prev_terminal_version` 本地无记录 =
+    上一笔结果推送 fire-and-forget 三次全败）结论是「**不迁移、不累计 K**」，簇静默停在
+    claim——**除了日志没有任何可见面**：offline 侧以为推过了、viewer 只看得到「一直待回归」，
+    这是本刀（判定从轮询改一次性事件推送）新引入的失效模式，必须可观测。
+
+    判据本体在 `verify.link_gap_version`（与 `judge_link` 内联 gap 分支同源），本函数只做
+    遍历与短路，**不在此另抄判据**。只扫 pending link：终态 link 的判定已收口，再报 gap 无
+    处置意义（且终态 link 的 K 序列不再演进）。
+    """
+    for lk in links:
+        if lk.verify_status != "pending":
+            continue
+        if await link_gap_version(session, cluster, lk) is not None:
+            return True
+    return False
+
+
 # ---------- 读面（§8.4 L1084-1086，viewer；P2-6 前端回流页消费） ----------
 
 
@@ -519,12 +553,31 @@ async def get_cluster_detail(
     anchor = cluster.claimed_at if cluster.status == "claim" else cluster.first_ts
     waiting_days = max(0, (int((_utc_now() - anchor).total_seconds() // 86400))
                        if anchor else 0)
+    link_case = {lk.id: lk.case_id for lk in links}
+
+    def _excluded_hit(r: VerifyRunRecord) -> bool:
+        """本 run 是否**没跑到**本 link 的 case（读面对账标记；v1.23 第 3 刀重派生）。
+
+        原读 offline run 详情的 excluded_case_ids；推送源 raw_json = 载荷原样，不再有该键，
+        故按同义重算 = 载荷 cases[] 未含本 link 的 case_id（等价于判定内核判 missing 的现场：
+        run 收到了、本 case 缺行）。空 cases[] → True（整个 run 无逐 case 行，本 case 必然未跑）。
+        无 cases 键（第 2 刀落的旧行）→ False：旧行语义不可重算，宁缺勿假报。
+        """
+        cid = link_case.get(r.link_id)
+        if not cid:
+            return False
+        cases = (r.raw_json or {}).get("cases")
+        if not isinstance(cases, list):
+            return False
+        return all(str(c.get("case_id") or "") != str(cid)
+                   for c in cases if isinstance(c, dict))
+
     verify_items = [
         {
             "record_id": r.id, "run_id": r.run_id, "bound_version": r.bound_version,
             "case_pass": r.case_pass,
             "run_status": r.run_status, "verified_ts": _iso(r.verified_ts),
-            "excluded_hit": bool((r.raw_json or {}).get("excluded_hit")),
+            "excluded_hit": _excluded_hit(r),
         }
         for r in runs
     ]
@@ -538,6 +591,7 @@ async def get_cluster_detail(
     observe = await recurrence_flow.cluster_reentry_observe(session, cluster)
     open_batches = await _open_batches(session, cluster_id)
     overdue = await _result_overdue(session, cluster, links, runs, convs)
+    gap_suspected = await _result_gap_suspected(session, cluster, links)
     item = _cluster_item(cluster, _link_item(links[0]) if links else None)
     item.update({
         "links": [_link_item(lk) for lk in links],
@@ -545,13 +599,14 @@ async def get_cluster_detail(
         "conversions": conv_items,
         "waiting_days": waiting_days,
         "result_overdue": overdue,
+        "result_gap_suspected": gap_suspected,
         "reentry_observe": None if observe is None
         else {**observe, "since_ts": _iso(observe["since_ts"])},
         "open_batches": open_batches,
     })
     logger.debug(
-        "backflow cluster 详情 出参: cluster_id=%s links=%s runs=%s overdue=%s",
-        cluster_id, len(links), len(runs), overdue["kind"] or "-",
+        "backflow cluster 详情 出参: cluster_id=%s links=%s runs=%s overdue=%s gap=%s",
+        cluster_id, len(links), len(runs), overdue["kind"] or "-", gap_suspected,
     )
     return item
 
@@ -578,50 +633,68 @@ async def claim_cluster_endpoint(
         session, cluster, fix_version=body.fix_version, note=body.note,
         k=body.k, actor_id=user.id,
     )
-    await session.commit()  # claim 先落库：软提示查询不拖慢/不随读面异常回滚认领
-    warning = await _claim_warning(agent, generation, result["fix_version"])  # R-5/R-7
+    await session.commit()  # claim 先落库：软提示查询不拖慢/不随查询异常回滚认领
+    warning = await _claim_warning(session, agent, generation, result["fix_version"])  # R-5/R-7
     out = ClaimResponse(**result, warning=warning)
     logger.debug("claim 出参: cluster_id=%s claim_k=%s due=%s", cluster_id,
                  out.claim_k, out.claim_due_ts)
     return out
 
 
-async def _claim_warning(agent: str, generation: int, fix_version: str) -> str | None:
-    """claim 软提示（best-effort，非硬拦；offline 未配/读面不可达 → 退 None）。
+async def _received_versions(session: AsyncSession, agent: str) -> list[tuple[str, str | None]]:
+    """online 已收该 agent 结果的行（bound_version, run_status）去重列表（v1.23 第 3 刀）。
 
-    - R-5 版本预检（P2-6 做全，detail §9.3）：fix_version 未见于 offline 已见版本
-      （agents/{agent}/versions 读面）→ 「未观测到…可能未发版或字面量不匹配，已见版本：…」
-      ——防字面量 typo；与 verify.judge_link 的 versions 面门控同口径（trim 后精确成员）。
-    - R-7 reentry（沿用）：generation>1 且 fix_version 命中已 completed run → 提示同版本
-      重试命中 reentry。
+    数据源 = `verify_run_record` 关联到本 agent 的 cluster（link→cluster 两跳 join）。
+    为什么是这张表：结果推送落的就是它（offline 出站读面已随第 3 刀整删，online 不再持有
+    发版拓扑，只剩「已收到过哪些版本的结果」这一自证事实）。
+    边界：orphan 行（link_id 哨兵 0，trigger_signal_id 关联断裂）无 link 可 join → **不在本
+    列表内**（要对账这类断裂有详情读面/result_overdue 标记，不为此加一次全表 JSON 扫描）。
     """
-    settings = get_settings()
-    if not settings.offline_base_url:
-        return None
-    client = OfflineClient(settings.offline_base_url,
-                           secret=settings.evaluator_service_secret, timeout_s=3)
+    rows = await session.execute(
+        select(VerifyRunRecord.bound_version, VerifyRunRecord.run_status)
+        .join(ErrorCaseLink, ErrorCaseLink.id == VerifyRunRecord.link_id)
+        .join(ErrorCluster, ErrorCluster.id == ErrorCaseLink.cluster_id)
+        .where(ErrorCluster.agent == agent)
+        .distinct()
+    )
+    return [(str(bv), st) for bv, st in rows.all() if bv]
+
+
+async def _claim_warning(
+    session: AsyncSession, agent: str, generation: int, fix_version: str
+) -> str | None:
+    """claim 软提示（best-effort，非硬拦；本地零已收结果 → 退 None）。
+
+    - R-5 版本预检（v1.20 做全、**v1.23 第 3 刀降级**，detail §8.7/§9.3）：数据源由 offline
+      「agent 已见版本」只读面降为**「online 已收结果的版本集」**（见 `_received_versions`）
+      ——fix_version 不在其中 → 「未观测到…可能未发版或字面量不匹配，已收结果的版本：…」。
+      **语义弱化必须知道**：该集只反映「结果推送到达过」，正常新 fix 尚未跑完回归时照样会亮，
+      属 informational，**不再等价于「未发版」**（唯一还能判「未发版」的是判定内核的发版水位
+      守卫，见 verify.judge_link）。
+    - R-7 reentry（沿用）：generation>1 且该版本已收到 completed run 结果 → 提示同版本重试
+      命中 reentry。
+    """
     try:
-        face = await client.agent_versions(agent=agent)
-        seen = [str(it.get("version") or it.get("name") or "") for it in face]
-        seen = list(dict.fromkeys(s for s in seen if s))
-        fv = claim_flow.normalize_fix_version(fix_version)
-        if seen and fv not in seen:
-            shown = "、".join(sorted(seen)[:12])
-            if len(seen) > 12:
-                shown += f" 等 {len(seen)} 个"
-            return (f"注意：未观测到 {agent}@{fv} 评测 run——可能未发版或字面量"
-                    f"不匹配，已见版本：{shown}")
-        if generation > 1:
-            runs = await client.list_runs(agent=agent, version=fv)
-            if any(r.get("status") == "completed" for r in runs):
-                return (f"注意：{agent}@{fv} 已存在 completed run（generation>1 同版本"
-                        f"重试命中 reentry）——是否确为新修复？verify 回查按实际判定；硬闸属 P2-5")
+        received = await _received_versions(session, agent)
+    except Exception:  # 软提示绝不把已成功的 claim 变成 500（调用方已先 commit）
+        logger.warning("claim 软提示查询失败（忽略）", exc_info=True)
         return None
-    except OfflineReadError as exc:
-        logger.warning("claim 软提示查询失败（忽略）", extra={"err": str(exc)})
-        return None
-    finally:
-        await client.aclose()
+    if not received:
+        return None  # 该 agent 零已收结果：无可比版本集，宁缺勿假（原 offline 未配分支的等价物）
+    fv = claim_flow.normalize_fix_version(fix_version)
+    seen = sorted({bv for bv, _ in received})
+    if fv not in seen:
+        shown = "、".join(seen[:12])
+        if len(seen) > 12:
+            shown += f" 等 {len(seen)} 个"
+        return (f"注意：未观测到 {agent}@{fv} 评测 run——可能未发版或字面量"
+                f"不匹配，已收结果的版本：{shown}")
+    if generation > 1 and any(
+        bv == fv and st == "completed" for bv, st in received
+    ):
+        return (f"注意：{agent}@{fv} 已存在 completed run（generation>1 同版本"
+                f"重试命中 reentry）——是否确为新修复？verify 判定按实际结果；硬闸属 P2-5")
+    return None
 
 
 @router.post("/clusters/{cluster_id}/ignore", response_model=StatusResponse)
@@ -801,9 +874,9 @@ def _split_cases(cases: list[RegressionCaseItem]) -> tuple[list[RegressionCaseIt
 def _case_pass_of(link: ErrorCaseLink | None, kept: list[RegressionCaseItem]) -> int | None:
     """run 级行的 case_pass：由 link.case_id 命中载荷行派生（无 link/无 case_id/缺行 → NULL）。
 
-    本刀判定内核不切（K 折叠/终态收敛归下一刀），此列只保证与旧轮询路径的兜底读法兼容
-    （verify._decision_from_row 在 raw_json 无 x_pf 时回退 case_pass）；na 与缺行同为 NULL，
-    两者区分留给下一刀从 raw_json.cases[] 重派生（载荷已原样留档）。
+    **本列已非判定输入**（v1.23 第 3 刀判定内核切源后，判据从 raw_json.cases[] 现算，见
+    verify.judge_link/_x_pf_of，na 与缺行在那里被区分开）——保留写入只为读面对账/人工排查时
+    仍有一眼可读的 pass 位，勿再据此判 K。
     """
     if link is None or not link.case_id:
         return None
@@ -854,18 +927,26 @@ def _conv_detail(
 async def record_regression_result(
     session: AsyncSession, body: RegressionResultsRequest,
 ) -> dict:
-    """结果推送落库（§8.7；幂等键 = uk_verify_run(link_id, run_id)）；返回响应字段字典。
+    """结果推送落库 + **同事务判定**（§8.7；幂等键 = uk_verify_run(link_id, run_id)）。
 
-    本刀语义边界（**只落数据位，不重算判定**——内核切推送源归下一刀，两路并存）：
+    v1.23 第 3 刀：判定内核已切推送源（offline 出站读面与轮询链整删），落库即判——**`flush`
+    后、`commit` 前**调用 `judge_link`，判定写入与数据位同一事务。**判定异常 → 降级不回滚**
+    （本批补，见下方 try/except 与 rejudge_job）：savepoint 只回退判定写，结果行照常落库、
+    响应仍 200 —— 旧架构（轮询 recheck）判失败不影响行已落库，本刀不得低于它。语义边界：
     - 落 verify_run_record 一行（run 级；case_pass 由 link.case_id 命中行派生）+ 一条
       conversion_record（action=regression_result，actor_user_id=NULL = 系统动作）。
-    - orphan：仍落库留档（link_id=哨兵 0，防关联断裂丢数据），links_advanced 空、不推进判定；
-      conv 照写（cluster_id=NULL、link_id=0）——审计链要求「收到即留痕」，orphan 正是最需要
-      人工对账的现场，不写就变成静默丢数据。
-    - 重复推送（同 link_id + run_id 已有行）：duplicated=true，不重复落库、不重复写 conv。
-    - links_advanced 语义 = **本次真正新落 run 行的 link**（载荷 trigger_signal_id 反查到现行
-      pending link 且未重复）：重复推送为空、orphan 为空。本刀不产生 passed/failed/superseded
-      等终态迁移（那属判定内核，下一刀），故该字段只表达「数据位推进」。
+    - orphan：仍落库留档（link_id=哨兵 0，防关联断裂丢数据），links_advanced 空、**不调判定**
+      （无 link 可判）；conv 照写（cluster_id=NULL、link_id=0）——审计链要求「收到即留痕」，
+      orphan 正是最需要人工对账的现场，不写就变成静默丢数据。
+    - 重复推送（同 link_id + run_id 已有行）：duplicated=true，不重复落库、不重复写 conv、
+      **不重跑判定**（该 run 的首推已判过；重判只是对全链重放，副作用见 verify.judge_link
+      unclean 闸）。
+    - links_advanced 语义 = **本次真正发生终态迁移的 link**（passed/failed/superseded 三类，
+      判据单一来源 = verify.TERMINAL_OUTCOMES）。**这是相对第 2 刀的收窄**：第 2 刀该字段只表达
+      「数据位推进」（落了 run 行即列），现在只有 link 真正离开 pending 才列——offline 的对账读法
+      随之升级（收到非空 = 已收敛终态）。
+    - cluster 非 `claim` 态不判（数据照落）：`_find_current_link` 的谓词是「pending link」，
+      **不等价于**原 recheck 扫描谓词（`cluster.status=='claim'` ∧ pending link）——见下方守卫。
     - cases_dropped 口径 = **载荷校验产物，与是否落库正交**：每次都按本次载荷现算并返回，
       重复推送（duplicated=true）同样返回该值。因此重试必须拿到与首次**一致**的答案——否则
       offline 在「响应丢失」场景（fire-and-forget 重推，§8.7）会误判「没丢数据」。
@@ -948,7 +1029,7 @@ async def record_regression_result(
         bound_version=body.agent_version,  # = 原 verify_run_record.bound_version
         case_pass=_case_pass_of(link, kept),
         run_status=body.run_status,
-        # 载荷**原样**留档：cases[] / agent_latest_version / bound_version_first_seen /
+        # 载荷**原样**留档：cases[] / agent_latest_version / prev_terminal_version /
         # finished_ts 全在其中——零 DDL 承载 offline 水位字段（§8.7 v1.23 第 2 刀补）
         raw_json=body.model_dump(mode="json"),
     )
@@ -961,8 +1042,56 @@ async def record_regression_result(
         actor_user_id=None,  # 系统动作（offline 推送），非人工
     ))
     await session.flush()  # 回填自增 id 供响应；commit 由端点层显式做（auth/pull 先例）
+
+    # ---- 落库即判（v1.23 第 3 刀；与上面落库同一事务）----
+    # **必须补 cluster.status == 'claim' 守卫**：`_find_current_link` 只按「link.verify_status
+    # = pending」查——那是**读面**的现行定义，不等于判定的**可判谓词**。cluster 可以非 claim
+    # 却仍有 pending link：needs_review 的 resolve → reopen 之间、TTL 认领失效、admin 手工
+    # invalidate 的过渡窗口都会留下 pending link（且 uk_link_current 下至多一条）。旧 recheck
+    # 是靠扫描谓词（cluster.status=='claim' ∧ pending link）挡住的，切源后没有那层扫描，**不补
+    # 这个判断就会对非 claim 簇调用判定链 → 对已 fixed/needs_review 簇写终态迁移**（越权改状态，
+    # CAS 守卫只能兜住并发、兜不住语义错）。不满足即静默跳过：数据仍落库留档，等簇回到 claim
+    # 后由后续推送重新驱动判定（判定本身是对全链重放，不依赖触发时机）。
+    advanced: list[int] = []
+    if link is not None:
+        cluster = await session.get(ErrorCluster, link.cluster_id)
+        if cluster is not None and cluster.status == "claim":
+            try:
+                # savepoint 隔离判定副作用（本批偏离规格的**加严**，非放宽）：判定链是**边判
+                # 边写**（link/cluster CAS + conv），可能在链的后半段才抛异常 —— 裸调用时那些
+                # 半笔写会随本次 commit 一起落库（半态：link 已迁移却无终态判定/无 auto_fixed
+                # conv），且 link 一旦离开 pending 就再也补判不到。savepoint 让判定的写**全进
+                # 全出**，半笔自动回退、link 保持 pending 交 rejudge 重放（同 claim_ttl_job
+                # savepoint 先例）。
+                # 注意别把理由写成「异常会污染事务致 commit 失败」——**实测不成立**（MySQL 的
+                # 语句级报错不作废整个事务，裸调用时这里照样 200 且行照落，探针 S-18 第一版
+                # 正是这么假绿的）：savepoint 挡的是**半态落库**，不是提交失败。
+                async with session.begin_nested():
+                    summary = await judge_link(session, cluster=cluster, link=link)
+            except Exception:
+                # 为什么**降级**而非回滚/500：本刀把判定搬进落库同事务后，判定抛异常会让
+                # **一笔已到达的真实结果**整单 500 —— offline fire-and-forget 三次重试全败
+                # 即永久丢数据。第 2 刀架构下 recheck 判失败不影响行已落库，本刀不得低于它。
+                # 降级不产生半态：判定是对全链的**幂等重放**（数据源 = 已落库行集），跳过只是
+                # 「这一轮没判」，行已落库、link 仍 pending，由 rejudge_job 兜底补判。
+                # 回滚则相反：它把「数据先保住」与「状态立刻迁移」捆绑，牺牲的还是数据 ——
+                # 状态可补判，丢掉的推送不可补（online 无法向 offline 索要）。
+                logger.exception(
+                    "回归结果落库后判定异常（降级跳过，待 rejudge 兜底）: "
+                    "link_id=%s cluster_id=%s run_id=%s",
+                    link_id, link.cluster_id, body.run_id,
+                )
+            else:
+                if summary.get("outcome") in TERMINAL_OUTCOMES:
+                    advanced.append(link_id)
+                if summary.get("outcome") == "gap":
+                    # 推送丢失是对账事件（offline fire-and-forget 三次全败），留痕不静默
+                    logger.warning(
+                        "结果推送缺行中断: cluster=%s link=%s gap_version=%s",
+                        link.cluster_id, link_id, summary.get("gap_version"),
+                    )
     return {"accepted": True, "duplicated": False, "run_record_id": record.id,
-            "links_advanced": [link_id] if link is not None else [],
+            "links_advanced": advanced,
             "cases_dropped": dropped}
 
 
@@ -978,10 +1107,10 @@ async def regression_results_endpoint(
     ——本刀不存在「200 + accepted=false」路径，该字段保留为契约形状。"""
     logger.debug(
         "regression-results 入参: agent=%s agent_version=%s run_id=%s run_status=%s"
-        " trigger_signal_id=%s cases=%s first_seen=%s latest_version=%s finished_ts=%s",
+        " trigger_signal_id=%s cases=%s latest_version=%s prev_terminal=%s finished_ts=%s",
         body.agent, body.agent_version, body.run_id, body.run_status,
-        body.trigger_signal_id, len(body.cases), body.bound_version_first_seen,
-        body.agent_latest_version, body.finished_ts,
+        body.trigger_signal_id, len(body.cases),
+        body.agent_latest_version, body.prev_terminal_version, body.finished_ts,
     )  # cases 只打条数（正文不落日志）
     result = await record_regression_result(session, body)
     await session.commit()

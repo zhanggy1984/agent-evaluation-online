@@ -46,7 +46,7 @@ function mk(over: Partial<BackflowClusterDetail> = {}): BackflowClusterDetail {
     fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
     claim_k: 2, needs_review_reason: null, link: null,
     links: [], verify_runs: [], conversions: [], waiting_days: 9,
-    reentry_observe: null, open_batches: [], ...over,
+    reentry_observe: null, open_batches: [], result_gap_suspected: false, ...over,
   }
 }
 
@@ -437,6 +437,16 @@ describe('时间线与角色显示', () => {
     expect(on.text()).toContain('R-10')
     const off = await mountWith(mk({ status: 'open', input_truncated: 1 }))
     expect(off.text()).not.toContain('R-10')
+  })
+
+  it('result_gap_suspected=true → 出「疑似丢失一笔结果推送」警示（不限状态）', async () => {
+    const on = await mountWith(mk({ status: 'claim', result_gap_suspected: true }))
+    expect(on.text()).toContain('疑似丢失一笔结果推送')
+    const off = await mountWith(mk({ status: 'claim', result_gap_suspected: false }))
+    expect(off.text()).not.toContain('疑似丢失一笔结果推送')
+    // 已判定 fixed 也要可见（缺口可能是假修复的成因，不能只在等结果态提示）
+    const fixed = await mountWith(mk({ status: 'fixed', result_gap_suspected: true }))
+    expect(fixed.text()).toContain('疑似丢失一笔结果推送')
   })
 
   it('reentry_observe caption 仅在 fixed/claim 且 count>0 时出现', async () => {
