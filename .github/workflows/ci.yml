@@ -89,7 +89,7 @@ jobs:
   # 真库探针：pytest 全跑在 _fakes.FakeAsyncSession 上，看不见 DB 层破坏（模型 / 迁移 /
   # CAS 竞态 / 唯一键冲突）—— 这一层只有真库探针能拦。D-1~D-4 那批缺陷全出在这一带。
   #
-  # 只搬 4 个探针，排除项各有硬理由（勿凭「漏了」补进来）：
+  # 只搬 5 个探针，排除项各有硬理由（勿凭「漏了」补进来）：
   #   d6_probe        需 Kafka + ES + 完整消费链 + 60s 心跳等待（S-2/S-3 投事件验消费）
   #   smoke_4agents   需全栈 + 外部真实业务流量，否则没有断言对象
   #   e2e_seed        纯造数、零断言 —— 它是浏览器 e2e 的素材，不是门禁
@@ -147,14 +147,17 @@ jobs:
         run: pip install -e ".[dev]"
       - name: alembic upgrade head（建表）
         run: alembic upgrade head
-      # 四个独立 step 而非 for 循环：失败时能在 UI 里一眼看出红在哪个探针
+      # 五个独立 step 而非 for 循环：失败时能在 UI 里一眼看出红在哪个探针
       - name: cluster_probe（13 场景）
         run: python tests/integration/cluster_probe.py
       - name: claim_probe（15 场景）
         run: python tests/integration/claim_probe.py
       - name: pull_probe（13 场景）
         run: python tests/integration/pull_probe.py
-      # 顺序约束：assemble_probe 的 A-8 走全局 run_assemble，是四个里唯一会写他人数据的
+      # 空库可跑：push_probe 自造数据（前缀 push-），不依赖任何既有行；不进 Kafka、不碰 ES。
+      - name: push_probe（15 场景）
+        run: python tests/integration/push_probe.py
+      # 顺序约束：assemble_probe 的 A-8 走全局 run_assemble，是五个里唯一会写他人数据的
       # 探针 —— 必须放最后，避免其副作用落进其它探针的断言窗口。
       - name: assemble_probe（10 场景，必须最后）
         run: python tests/integration/assemble_probe.py
