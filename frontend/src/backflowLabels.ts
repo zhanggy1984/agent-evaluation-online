@@ -48,13 +48,16 @@ export const REVIEW_REASON_TEXT: Record<string, string> = {
 }
 
 // conversion action → 中文（未知 action 兜底原文；枚举随 claim.py 写面收敛）
+// 刻意不配 auto_activate：solution_detail.md:642 那串是 DDL 列注释的**举例**、不是值域契约——
+// 它无任何语义定义章节，且同串里的 `fixed` 与实现写面实际用的 `fixed_review` 也对不上。
+// 配了反而会让后人误以为存在一份正式「设计枚举」。将来后端真落写点时，
+// spec 的守卫断言会红（见 backflowLabels.spec.ts），届时再补不迟。
 export const CONVERSION_ACTION_TEXT: Record<string, string> = {
   assemble: '组装',
   claim: '认领',
   ignore: '忽略',
   reopen: '重开',
   requeue: '重推',
-  auto_activate: '自动激活',
   invalidate: '人工失效',
   auto_fixed: '回归收敛自动置 fixed',
   fixed_review: 'admin 复核',

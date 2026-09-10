@@ -14,9 +14,6 @@ const BACKEND_WRITTEN_ACTIONS = [
   'invalidate', 'needs_review', 'needs_review_resolve', 'reentry', 'reopen', 'requeue',
 ]
 
-// solution_detail.md:642 的 action 枚举（**设计值域**，含尚未落写点的 auto_activate）
-const DESIGNED_ACTIONS = [...BACKEND_WRITTEN_ACTIONS, 'auto_activate']
-
 describe('CLUSTER_STATUS_LABEL', () => {
   it('覆盖后端 cluster_status 全部取值', () => {
     // models/error_flow.py ErrorCluster.status 枚举
@@ -87,17 +84,13 @@ describe('REVIEW_REASON_TEXT / LAYER_OPTIONS', () => {
 })
 
 describe('CONVERSION_ACTION_TEXT', () => {
-  it('覆盖设计枚举（solution_detail.md:642）全部 action', () => {
-    for (const a of DESIGNED_ACTIONS) {
-      expect(CONVERSION_ACTION_TEXT[a], a).toBeTruthy()
-    }
-  })
-
-  it('已知缺口：auto_activate 在设计枚举内但后端无写点', () => {
-    // 后端 ack.py / pull.py 不写任何 conversion_record，全仓无 action="auto_activate"。
-    // 此断言把「设计有、实现无」这一事实钉在测试里，避免被当成前端多余条目删掉——
-    // 删了会在补上写点时静默退化成显示英文原文。**未修，待口径确认。**
-    expect(CONVERSION_ACTION_TEXT.auto_activate).toBe('自动激活')
+  it('auto_activate 不在映射内（守卫：查实为 DDL 列注释举例，非设计值域）', () => {
+    // solution_detail.md:642 的 `-- assemble/claim/ignore/fixed/reopen/requeue/auto_activate/
+    // invalidate/…` 是列注释的**举例串**：全仓无任何语义定义章节，且同串里的 `fixed`
+    // 与实现写面实际使用的 `fixed_review` 也对不上 → 它不是值域契约，故前端不配映射。
+    // 保留这组断言的意义：若将来后端真落写点并补进 BACKEND_WRITTEN_ACTIONS，这里会红，
+    // 提醒同步补映射——避免重演 D-3 那种「漏键 → 界面显示英文裸值」的缺陷形态。
+    expect(CONVERSION_ACTION_TEXT.auto_activate).toBeUndefined()
     expect(BACKEND_WRITTEN_ACTIONS).not.toContain('auto_activate')
   })
 
