@@ -18,7 +18,10 @@ frontend/dist/
 backend/exports/
 backend/backups/
 
-# ---- 一次性验收/探针脚本（含测试凭据，不进仓库；与 offline 仓同纪律） ----
+# ---- 一次性验收脚本（开发期临时写在 backend/ 根目录、跑完即弃；与 offline 仓同纪律） ----
+# 注意：backend/tests/integration/*.py 是「常驻集成测试」——有幂等清理 + 退出码，且 ci.yml 的
+# probe job 引用其中四个作真库门禁，**必须入库**，不在本条范围内。两类都叫「探针」，
+# 判据是「能否被 CI 反复执行」而非名字（口径详见 CONTRIBUTING.md「提交纪律」）。
 backend/verify_*.py
 backend/run_*.py
 backend/trigger_*.py

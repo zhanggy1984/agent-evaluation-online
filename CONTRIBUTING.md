@@ -27,4 +27,6 @@
 
 - commit message 中文；双仓（online/offline）分开提交；改动契约/文档版本锚需同步更新修订记录。
 - `*Api.java` 类对外契约禁止擅自变更（本仓为 Python/FastAPI，对应地为对外 HTTP 契约与信封 schema——变更需先在方案层评审）。
-- 一次性验收/探针脚本（含测试凭据）不入仓库（见 .gitignore 纪律）。
+- 一次性验收脚本不入仓库（见 .gitignore 的 `backend/verify_*.py` 等模式）——指开发期临时写在 `backend/` 根目录、跑完即弃的那类。
+- **常驻集成测试**（`backend/tests/integration/*.py`）相反，**必须入库**：它们有前缀隔离 + 幂等清理 + 退出码，可反复运行，且 `ci.yml` 的 `probe` job 直接引用其中四个当真库门禁——删掉 CI 即断。判据是「**能否被 CI 反复执行**」，不是「是不是探针」（两类都叫探针，正是原措辞的歧义来源）。
+- 上述两类脚本里的「测试凭据」均指进程内构造的**假值**（如 `_MOCK_SECRET = "probe-claim-secret"`，仅为满足 `Settings` 的 jwt 长度校验），与 `.env` 注入的真实凭据无关；真实凭据严禁入库（见 .gitignore 首条）。
