@@ -1,7 +1,8 @@
 # agent-evaluation-online CI 骨架（T-0.5）。
 #
 # 同一条流水线对任意代码变更生效；产物不含 compose.infra.dev.yml（非交付物，不进 CI）。
-# 三段式：lint+pytest（backend）→ alembic migrate 冒烟（连 CI 临时 MySQL）→ 镜像构建。
+# 五段式：lint+pytest（backend）→ 前端 vitest → alembic migrate 冒烟（连 CI 临时 MySQL）
+#        → 真库探针（连 CI 临时 MySQL）→ 镜像构建。
 # 前端 Vue3+Vite 真构建已随 T-1.6 落地，内嵌于下方「镜像构建」job（frontend/Dockerfile 多阶段：
 # npm ci → npm run build = vue-tsc --noEmit 类型检查 + vite build 产 dist 静态镜像）；
 # 前端单测（vitest）另设独立 frontend-test job —— 镜像构建只证「能构建」，证不了「用例全绿」。
@@ -84,6 +85,79 @@ jobs:
           DB_USER: root
           DB_PASSWORD: root
         run: alembic upgrade head
+
+  # 真库探针：pytest 全跑在 _fakes.FakeAsyncSession 上，看不见 DB 层破坏（模型 / 迁移 /
+  # CAS 竞态 / 唯一键冲突）—— 这一层只有真库探针能拦。D-1~D-4 那批缺陷全出在这一带。
+  #
+  # 只搬 4 个探针，排除项各有硬理由（勿凭「漏了」补进来）：
+  #   d6_probe        需 Kafka + ES + 完整消费链 + 60s 心跳等待（S-2/S-3 投事件验消费）
+  #   smoke_4agents   需全栈 + 外部真实业务流量，否则没有断言对象
+  #   e2e_seed        纯造数、零断言 —— 它是浏览器 e2e 的素材，不是门禁
+  #
+  # 观察期：本 job 暂未纳入 branch protection 必需项（全绿历史尚短）。红了先判是不是
+  # flaky，稳 3~5 次再考虑转必需 —— 在那之前它只是信号，不是约束。
+  #
+  # 边界（别误读）：本 job 跑在全新空库上，assemble_probe 全局 run_assemble「顺带改写
+  # 他人数据」的副作用在此永不触发 —— 那是 dev 库那种多租户数据下才有的风险。
+  # CI 绿 = 单探针正确性，≠ 探针在多租户库上安全。
+  probe:
+    name: 真库探针（临时 MySQL）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # 默认 360 分钟：卡住能烧 6 小时
+    services:
+      mysql: # 照抄 migrate job 的配置（已由本仓既有 run 实证）
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: dev.obs
+          MYSQL_USER: obs_backend
+          MYSQL_PASSWORD: obs_ci_pw
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      APP_ENV: test # 跳过 _validate_secrets 的 JWT/FERNET 强校验（config.py:70-79）
+      RESOURCE_ENV: dev # 显式声明：否则靠默认值恰好是 dev 才对上 MYSQL_DATABASE
+      # 绝对路径：相对 "." 只在 working-directory 生效的前提下成立，某步一旦单独
+      # 写 working-directory 就会得到一条与业务无关的假红（ModuleNotFoundError: app）
+      PYTHONPATH: ${{ github.workspace }}/backend
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      # 显式清空迁移账号：本仓 backend/.env 里有 DB_MIGRATE_*（.env 被 gitignore，故 CI 里
+      # 本为空）。不清空则本地走 obs_migrate、CI 走 root —— 两条账号路径恰好都通，但排查
+      # 迁移问题时极易误判（config.py:122「成对时优先，缺省回退主账号」）。
+      DB_MIGRATE_USER: ""
+      DB_MIGRATE_PASSWORD: ""
+      # 冗余但无害：探针在进程内自注入 Settings（claim_probe.py:847-851），env 对它不生效；
+      # 真正读 env 的是 backflow.py:434。留着防「仓库根出现 .env」时 C-9 真发 HTTP。
+      OFFLINE_BASE_URL: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖（dev extra 含 ruff/pytest）
+        run: pip install -e ".[dev]"
+      - name: alembic upgrade head（建表）
+        run: alembic upgrade head
+      # 四个独立 step 而非 for 循环：失败时能在 UI 里一眼看出红在哪个探针
+      - name: cluster_probe（13 场景）
+        run: python tests/integration/cluster_probe.py
+      - name: claim_probe（15 场景）
+        run: python tests/integration/claim_probe.py
+      - name: pull_probe（13 场景）
+        run: python tests/integration/pull_probe.py
+      # 顺序约束：assemble_probe 的 A-8 走全局 run_assemble，是四个里唯一会写他人数据的
+      # 探针 —— 必须放最后，避免其副作用落进其它探针的断言窗口。
+      - name: assemble_probe（10 场景，必须最后）
+        run: python tests/integration/assemble_probe.py
 
   images:
     name: 镜像构建
