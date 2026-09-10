@@ -1,7 +1,10 @@
 """worker judge_scan_job 纯分支 + worker/main 生命周期单测（T-2.1，独立进程）。
 
 judge_scan DB 壳（扫批→decide→CAS→purge 实库行为）留集成探针（任务 #129，仿
-test_consumer_state「apply_event 留 D6 实库」先例）；本文件测：
+test_consumer_state「apply_event 留 D6 实库」先例）；**补测批起该壳已由 cluster_probe
+S-11~S-13 经真实 `run_judge_scan` 入口端到端覆盖**（含兜底吸收门控），故此处不再扩
+FakeAsyncSession 补一批弱化重复（FakeAsyncSession 无 scalars().all() / rowcount，
+扩了也只是测替身）。本文件测：
 - judge_scan_job 纯逻辑：_facts_from_row（行→TraceFacts）、_ctx_for（字典侧 gate 组装）；
 - worker/main：_sleep_until_next_hour 对齐、_wait_db_ready 守卫（成功/超时）、
   _judge_loop 单 job 异常自愈 + _stop 取消、_rollup_loop 异常自愈（不拖垮进程）。

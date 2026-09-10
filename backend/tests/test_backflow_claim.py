@@ -12,6 +12,9 @@
   非法状态·action·k 值域 → ERR_CLUSTER_0003；needs-review-resolve escalated = §16 只记录保留
   状态；batch resolve action 值域；run_recheck offline_base_url 空停轮。
   DB 写面语义（CAS/批事务/uk 幂等/回查收敛）留集成探针 claim_probe。
+- worker/main `_claim_ttl_loop` / `_recheck_loop` 生命周期（补测批补齐；另四个 loop 已在
+  各自 job 的测试文件覆盖。_recheck_loop 是唯一**带位置参数 settings** 调 job 的 loop，
+  签名漂移只能靠这条测出来）。
 """
 import asyncio
 from contextlib import contextmanager
@@ -425,3 +428,114 @@ def test_recheck_offline_unset_stops_round():
 
     # offline_base_url 空 → 停轮返回 0；engine=None 证明未触 DB
     assert _run(run_recheck(None, ns(offline_base_url=""))) == 0
+
+
+# ---------- worker/main：_claim_ttl_loop / _recheck_loop 生命周期 ----------
+# 六个 loop 中另四个（judge/cluster/assemble/rollup）已在各自 job 的测试文件里覆盖；
+# 这两个此前零用例。_recheck_loop 还多一层风险：它是唯一**带位置参数 settings** 调 job
+# 的 loop（`run_recheck(engine, settings, …)`），签名漂移只能靠这条测出来。
+
+
+def test_claim_ttl_loop_runs_until_stop_and_self_heals(monkeypatch):
+    from app.worker import main as worker_main
+
+    calls: list[int] = []
+
+    async def fake_run_claim_ttl(engine, *, logger, batch):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("DB 抖动模拟")  # 首轮异常 → 下轮自愈
+        return 0
+
+    monkeypatch.setattr(worker_main, "run_claim_ttl", fake_run_claim_ttl)
+    monkeypatch.setattr(worker_main, "CLAIM_TTL_INTERVAL_S", 0)
+
+    app = worker_main.WorkerApp(worker_main.get_settings())
+
+    async def main():
+        async def stopper():
+            while len(calls) < 3:
+                await asyncio.sleep(0)
+            app._stop.set()
+
+        await asyncio.gather(app._claim_ttl_loop(), stopper())
+
+    _run(main())
+    assert len(calls) >= 3  # 异常轮不退出，正常轮继续直到 stop
+    assert app._stop.is_set()
+
+
+def test_claim_ttl_loop_cancel_stops_cleanly(monkeypatch):
+    from app.worker import main as worker_main
+
+    async def fake_run_claim_ttl(engine, *, logger, batch):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(worker_main, "run_claim_ttl", fake_run_claim_ttl)
+    app = worker_main.WorkerApp(worker_main.get_settings())
+
+    async def main():
+        task = asyncio.create_task(app._claim_ttl_loop())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert _run(main()) is True
+
+
+def test_recheck_loop_passes_settings_positionally_and_self_heals(monkeypatch):
+    from app.worker import main as worker_main
+
+    seen: list[tuple] = []
+
+    async def fake_run_recheck(engine, settings, *, logger, batch):
+        # 位置参数顺序即契约：engine 在前、settings 次之（签名漂移在此炸）
+        seen.append((engine, settings, batch))
+        if len(seen) == 1:
+            raise RuntimeError("offline 抖动模拟")
+        return 0
+
+    monkeypatch.setattr(worker_main, "run_recheck", fake_run_recheck)
+    monkeypatch.setattr(worker_main, "RECHECK_INTERVAL_S", 0)
+
+    app = worker_main.WorkerApp(worker_main.get_settings())
+
+    async def main():
+        async def stopper():
+            while len(seen) < 3:
+                await asyncio.sleep(0)
+            app._stop.set()
+
+        await asyncio.gather(app._recheck_loop(), stopper())
+
+    _run(main())
+    assert len(seen) >= 3
+    assert seen[0][0] is app._engine  # 第 1 位置 = engine
+    assert seen[0][1] is app.settings  # 第 2 位置 = settings
+    assert seen[0][2] == worker_main.RECHECK_BATCH  # batch 关键字透传
+
+
+def test_recheck_loop_cancel_stops_cleanly(monkeypatch):
+    from app.worker import main as worker_main
+
+    async def fake_run_recheck(engine, settings, *, logger, batch):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(worker_main, "run_recheck", fake_run_recheck)
+    app = worker_main.WorkerApp(worker_main.get_settings())
+
+    async def main():
+        task = asyncio.create_task(app._recheck_loop())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert _run(main()) is True

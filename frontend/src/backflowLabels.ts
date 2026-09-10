@@ -27,11 +27,15 @@ export const INVALIDATE_REASON_NOTE: Record<string, string> = {
   manual_invalidate: '人工判无效',
 }
 
-// verify_status → 文案（pending 的「待 <fix_version> 回归 run」需 fix_version 上下文，见视图拼接）
+// verify_status → 文案（pending 的「待 <fix_version> 回归 run」需 fix_version 上下文，见视图拼接）。
+// 值域 = DDL link_verify_status 全 5 值：补齐 invalidated——它全仓零写入点、当下不可达，
+// 但缺键会兜底渲染英文原文（种子 e2e_seed 覆盖到后实测为裸值 `invalidated`），
+// 与同列其余 4 值的中文不一致；补全成本一行，漏掉则埋一个将来写点落地才暴露的 UI 缺口。
 export const VERIFY_STATUS_TEXT: Record<string, string> = {
   pending: '待回归',
   passed: '回归通过',
   failed: '回归失败',
+  invalidated: '已失效（invalidated）',
   superseded: '已让位（superseded）',
 }
 

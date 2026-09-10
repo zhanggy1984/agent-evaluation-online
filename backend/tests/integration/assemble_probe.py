@@ -16,10 +16,22 @@ uk_link_current 生成列唯一 / dict_config 真读 / JSON 列往返 / 列 serv
   A-5 uk_link_current 在库真在：同 cluster 二次组装 → IntegrityError（E-12 双实例吸收面）；
   A-6 cluster.fix_version 预置 → envelope versions.fix_version 带出组装即时值；
   A-7 非 open（fixed）cluster 不进扫描候选。
+  A-8/A-9 = E-17 **生产路径**（P2-4 claim 回归 fail 后回退 open，再组装出一条新 payload）。
+  A-1~A-7 全走 `assemble_cluster(cluster)` 直调，证的是**组件**；从没证过 job 级扫描谓词
+  会把「有旧终态 link 的 open cluster」选进候选、以及组装后窗口抑制能重新闭合：
+  A-8 建 open+快照 cluster + 一条**终态**（verify_status=failed）link → _scan_candidates
+      含之（三条判据逐条命中）→ `run_assemble` 生产入口真跑 → 新 pending link 且
+      payload_id ≠ 旧 link 的（uk_link_current 只占「现行」位，终态 link 不占位）；
+  A-9 **同一簇**组装后再验：掉出候选（窗口抑制恢复）∧ 仍恰 2 link（不重复组装）——
+      这是 A-8 的对照：没有 A-9，A-8 无法排除「E-17 放行 → 每 60s 无限重组装」这一
+      正是 §6.3 窗口守卫要防的失效模式。
 
 隔离：探针 agent 前缀 asm-（≤64 字符），开头按 asm-% 清理残留（agent/dict_config/cluster/
-link/conv 自 cluster 关联），结尾再清。不触发 run_assemble 全局扫（防把库内真实 open
-cluster 无差别组装出 link）——扫描候选语义由 A-2/A-7 经 _scan_candidates 判据核验。退出码全绿 0。
+link/conv 自 cluster 关联），结尾再清。
+**A-8 起会真调 `run_assemble` 全局扫**（原「不触发全局扫」约定作废）——这正是 E-17 生产
+路径的价值所在，靠 `_scan_candidates` 直调无法替代。副作用边界：全局扫会**顺带组装库内
+其它真实 open cluster**，但它们本就被 live worker 每 60s 组装一次，探针只是把该动作提前；
+不对它们做断言、也不清理（非本探针产物）。退出码全绿 0。
 """
 import asyncio
 import json
@@ -39,7 +51,7 @@ from app.core.config import Settings  # noqa: E402
 from app.models.agent import Agent  # noqa: E402
 from app.models.config import DictConfig  # noqa: E402
 from app.models.error_flow import ConversionRecord, ErrorCaseLink, ErrorCluster  # noqa: E402
-from app.worker.assemble_job import _scan_candidates  # noqa: E402
+from app.worker.assemble_job import _scan_candidates, run_assemble  # noqa: E402
 
 FAILURES: list[str] = []
 IFACE = "POST /api/probe/{id}"
@@ -276,6 +288,67 @@ async def a7_non_open_excluded(engine) -> None:
           f"cid={cid} 在候选中" if cid in await _scan_ids(engine) else "cid 已排除")
 
 
+async def _seed_terminal_link(engine, cid: int, *, verify_status: str = "failed") -> str:
+    """建终态 link（E-17 前置：claim 回归 fail 后 cluster 回退 open、旧 link 留终态）。
+
+    经 assemble_cluster 落库再 UPDATE 状态——复用现成组装路径拿齐 server_default 列
+    （assembled_ts / case_type / payload_json），避免手搓全列形态失真。
+    """
+    async with AsyncSession(engine) as s:
+        cluster = (await s.scalars(
+            select(ErrorCluster).where(ErrorCluster.id == cid))).one()
+        await assemble_cluster(s, cluster)
+        await s.commit()
+    async with AsyncSession(engine) as s:
+        lk = (await s.scalars(
+            select(ErrorCaseLink).where(ErrorCaseLink.cluster_id == cid))).one()
+        lk.verify_status = verify_status
+        payload_id = lk.payload_id
+        await s.commit()
+        return payload_id
+
+
+async def a8_e17_production_path(engine) -> None:
+    print("\n===== A-8 E-17 生产路径：终态 link 不占位 → run_assemble 出新 payload =====")
+    agent = "asm-a8"
+    await _seed_agent(engine, agent, words=["抱歉，暂时无法回答"], version=1)
+    cid = await _seed_cluster(engine, agent, snapshot='{"question": "q"}')
+    old_payload = await _seed_terminal_link(engine, cid, verify_status="failed")
+    check("A-8 有终态 link 的 open cluster **在**扫描候选中（uk_link_current 只占现行位）",
+          cid in await _scan_ids(engine), f"cid={cid}")
+    assembled = await run_assemble(engine)  # 生产入口（全局扫，见模块 docstring 边界）
+    links = await _links(engine, cid)
+    new_pending = [lk for lk in links if lk.verify_status == "pending"]
+    check("A-8 run_assemble 真跑（组装数 ≥1）", assembled >= 1, f"assembled={assembled}")
+    check("A-8 新增第 2 条 link 且为 pending（旧 failed 保留不动）",
+          len(links) == 2 and len(new_pending) == 1
+          and any(lk.verify_status == "failed" for lk in links),
+          f"n={len(links)} status={[lk.verify_status for lk in links]}")
+    check("A-8 新 payload_id ≠ 旧 payload_id（E-17 判据：确实换了一次 payload）",
+          bool(new_pending) and new_pending[0].payload_id != old_payload
+          and UUID_RE.match(new_pending[0].payload_id),
+          f"old={old_payload[:8]}… new={new_pending[0].payload_id[:8] if new_pending else None}…")
+    check("A-8 conv(action=assemble) 累计 2 条（每次组装各记一条审计）",
+          len(await _convs(engine, cid)) == 2,
+          f"convs={len(await _convs(engine, cid))}")
+
+
+async def a9_window_reclosed(engine) -> None:
+    print("\n===== A-9 对照：A-8 同一簇组装后窗口抑制重新闭合（防无限重组装） =====")
+    cid = await _cid_of(engine, "asm-a8")
+    check("A-9 组装后该簇掉出扫描候选（§6.3 窗口抑制恢复）",
+          cid not in await _scan_ids(engine), f"cid={cid}")
+    check("A-9 仍恰 2 link（不重复组装；若候选未闭合此处会持续增长）",
+          len(await _links(engine, cid)) == 2,
+          f"n={len(await _links(engine, cid))}")
+
+
+async def _cid_of(engine, agent: str) -> int:
+    async with AsyncSession(engine) as s:
+        return (await s.scalars(
+            select(ErrorCluster.id).where(ErrorCluster.agent == agent))).one()
+
+
 async def wl_read(engine) -> None:
     print("\n===== W-1 resolve_fallback_wordlist 真库读三态 =====")
     agent = "asm-w1"
@@ -300,6 +373,8 @@ async def main() -> None:
         await a5_unique_link(engine)
         await a6_fix_version_taken(engine)
         await a7_non_open_excluded(engine)
+        await a8_e17_production_path(engine)
+        await a9_window_reclosed(engine)
         await wl_read(engine)
     finally:
         await _reset(engine)
@@ -308,7 +383,7 @@ async def main() -> None:
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} 项失败 → {FAILURES}")
         sys.exit(1)
-    print("全绿：P2-2 组装 DB 壳 8 场景通过")
+    print("全绿：P2-2 组装 DB 壳 + E-17 生产路径 10 场景通过")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,10 @@
 - API 层：_cluster_item 带 first_trace_id；_open_batches 用 JSON_CONTAINS(link_refs,
   cluster_id 字面量) 且 item 形状钉死；detail 端点（HTTP 正例）响应含 reentry_observe
   （claim 态现算值 / open 态 None）+ open_batches。
+- 读面形状（补测批）：_link_item 八字段逐键；_cluster_links 的空 ids 短路 / pending 优先 /
+  无 pending 取末条 / 按 cluster 分组 / 无 link 不入结果；overview 响应形状 + 状态键零填充
+  + to_fix NULL→0；clusters 列表 page/page_size 钳位 + item 带 link 摘要。
+  **筛选/watch 的 SQL 组合语义不在此覆盖**（stub 不解释 where），由浏览器 e2e 对真实数据核验。
 - claim R-5 版本预检（_claim_warning）：offline 未配 → None；fix_version 未见于已见版本
   → 「已见版本：…」提示；已见且 generation≤1 → None；generation>1 命中 completed run →
   reentry 提示；读面抛 OfflineReadError → None（best-effort）。
@@ -21,7 +25,13 @@ from datetime import datetime, timedelta, timezone
 from _fakes import FakeAsyncSession, ns
 
 import app.api.backflow as backflow_api
-from app.api.backflow import _claim_warning, _cluster_item, _open_batches
+from app.api.backflow import (
+    _claim_warning,
+    _cluster_item,
+    _cluster_links,
+    _link_item,
+    _open_batches,
+)
 from app.backflow.recurrence import (
     _fixed_anchor,
     cluster_reentry_observe,
@@ -573,3 +583,178 @@ def test_claim_warning_generation_gt1_no_completed_none(monkeypatch):
 def test_claim_warning_offline_read_error_is_none(monkeypatch):
     _patch_claim_warning(monkeypatch, raise_err=OfflineReadError("boom"))
     assert _run(_claim_warning("agent-x", 1, "1.4.0")) is None
+
+
+# ---------- API 层：_link_item / _cluster_links（P2-6 列表 link 摘要） ----------
+# 此前该读面零单测：overview/clusters 的探针断言只到「键存在」级。_link_item 的字段名
+# 与 _cluster_links 的「pending 优先」选取是全仓无人钉的契约——前端批量操作按
+# link_id + verify_status 决策，字段漂移会静默打错目标。
+
+
+def _link(lid, *, cluster_id=10, verify_status="pending", offline_status="assembled",
+          payload_id="p-1", case_id=None, assembled_ts=None, invalidate_reason=None):
+    return ns(id=lid, cluster_id=cluster_id, payload_id=payload_id, case_id=case_id,
+              case_type="regression_error", offline_status=offline_status,
+              verify_status=verify_status, assembled_ts=assembled_ts,
+              invalidate_reason=invalidate_reason)
+
+
+def test_link_item_shape():
+    item = _link_item(_link(31, payload_id="p-abc", case_id="c-9",
+                            assembled_ts=_FIX, invalidate_reason="人工作废"))
+    assert item == {
+        "link_id": 31, "payload_id": "p-abc", "case_id": "c-9",
+        "case_type": "regression_error", "offline_status": "assembled",
+        "verify_status": "pending", "assembled_ts": _FIX.isoformat(),
+        "invalidate_reason": "人工作废",
+    }
+
+
+def test_link_item_none_ts_and_reason_passthrough():
+    item = _link_item(_link(32, assembled_ts=None, invalidate_reason=None))
+    assert item["assembled_ts"] is None and item["invalidate_reason"] is None
+
+
+def test_cluster_links_empty_ids_short_circuits():
+    class _Boom:
+        async def scalars(self, stmt, params=None):
+            raise AssertionError("空 cluster_ids 不应触 DB")
+
+    assert _run(_cluster_links(_Boom(), [])) == {}
+
+
+def test_cluster_links_prefers_pending_over_later_terminal():
+    # pending 占现行位 → 取 pending，而非「id 最大」（32 是终态、id 更大）
+    sess = _ObserveSession({ErrorCaseLink: [
+        _link(30, verify_status="failed"),
+        _link(31, verify_status="pending"),
+        _link(32, verify_status="inactive"),
+    ]})
+    out = _run(_cluster_links(sess, [10]))
+    assert out[10]["link_id"] == 31 and out[10]["verify_status"] == "pending"
+
+
+def test_cluster_links_falls_back_to_last_when_no_pending():
+    # 无 pending → 取末条（= order_by(cluster_id, id) 后的最新；order_by 本身由 DB 保证，
+    # 本 stub 供已排序行，只钉「取末不取首」这一选取分支）
+    sess = _ObserveSession({ErrorCaseLink: [
+        _link(30, verify_status="failed"),
+        _link(32, verify_status="inactive"),
+    ]})
+    out = _run(_cluster_links(sess, [10]))
+    assert out[10]["link_id"] == 32
+
+
+def test_cluster_links_groups_per_cluster():
+    sess = _ObserveSession({ErrorCaseLink: [
+        _link(30, cluster_id=10, verify_status="failed"),
+        _link(40, cluster_id=11, verify_status="pending"),
+    ]})
+    out = _run(_cluster_links(sess, [10, 11]))
+    assert out[10]["link_id"] == 30 and out[11]["link_id"] == 40
+
+
+def test_cluster_links_missing_cluster_absent_from_result():
+    # 无 link 的 cluster 不进结果（前端 link=None → 不渲染 link 摘要区）
+    sess = _ObserveSession({ErrorCaseLink: [_link(30, cluster_id=10)]})
+    out = _run(_cluster_links(sess, [10, 11]))
+    assert 10 in out and 11 not in out
+
+
+# ---------- API 层：overview / clusters 响应契约（P2-6 前端读面） ----------
+# 此前这两面只有「键存在」级断言 + 一个 401 负例。前端 overview 卡与列表逐字段消费
+# 这些键，漂移会静默渲染空白/NaN，故在此钉死形状。
+# **未覆盖**：筛选与 watch 的 SQL 组合语义（stub 不解释 where）——那部分由浏览器 e2e
+# 对真实数据核验，不在此假装。
+
+
+class _ReadStub(_DetailSession):
+    """overview/clusters 读面 stub：execute 按「目标表 + 选中列数」回 canned 聚合行。"""
+
+    def __init__(self, *, rows=None, users=(), cluster_counts=(), link_counts=(),
+                 agent_counts=(), count_scalar=0):
+        super().__init__(rows=rows, users=users)
+        self._cluster_counts = list(cluster_counts)
+        self._link_counts = list(link_counts)
+        self._agent_counts = list(agent_counts)
+        self._count_scalar = count_scalar
+
+    @staticmethod
+    def _table_name(stmt):
+        expr = stmt.column_descriptions[0].get("expr")
+        tbl = getattr(expr, "table", None)
+        return getattr(tbl, "name", None)
+
+    async def execute(self, stmt, params=None, execution_options=None):
+        tbl, ncols = self._table_name(stmt), len(stmt.column_descriptions)
+        if tbl == "error_cluster" and ncols == 2:
+            return _ScalarRows(self._cluster_counts)          # 状态分布
+        if tbl == "error_case_link" and ncols == 2:
+            return _ScalarRows(self._link_counts)             # verify 分布
+        if tbl == "error_cluster" and ncols == 3:
+            return _ScalarRows(self._agent_counts)            # by_agent
+        return await super().execute(stmt, params, execution_options)
+
+    async def scalar(self, stmt, params=None):
+        return self._count_scalar                             # to_fix / total
+
+
+def _overview_app(stub):
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: stub
+    return app
+
+
+def test_overview_response_shape_and_zero_fill():
+    stub = _ReadStub(
+        users=[_admin_user()],
+        cluster_counts=[("open", 3), ("claim", 1), ("needs_review", 2)],
+        link_counts=[("pending", 4), ("passed", 5)],
+        agent_counts=[("agent-a", "open", 2), ("agent-a", "claim", 1),
+                      ("agent-b", "open", 1)],
+        count_scalar=6,
+    )
+    from fastapi.testclient import TestClient
+    with TestClient(_overview_app(stub)) as c:
+        d = c.get("/api/v1/backflow/overview", headers=_token()).json()
+    assert set(d) == {"clusters", "links", "to_fix", "by_agent"}
+    assert set(d["clusters"]) == set(backflow_api._STATUSES)  # 全状态键齐 → 前端无需判空
+    assert d["clusters"]["open"] == 3 and d["clusters"]["claim"] == 1
+    assert d["clusters"]["fixed"] == 0                # 缺状态零填充（不丢键）
+    assert d["links"] == {"pending": 4, "passed": 5, "failed": 0,
+                          "invalidated": 0, "superseded": 0}
+    assert d["to_fix"] == 6
+    assert d["by_agent"] == [{"agent": "agent-a", "open": 2, "claim": 1},
+                             {"agent": "agent-b", "open": 1, "claim": 0}]
+
+
+def test_overview_to_fix_null_scalar_becomes_zero():
+    # COUNT 返回 NULL（空表）→ 0，不能把 None 透给前端
+    stub = _ReadStub(users=[_admin_user()], count_scalar=None)
+    from fastapi.testclient import TestClient
+    with TestClient(_overview_app(stub)) as c:
+        d = c.get("/api/v1/backflow/overview", headers=_token()).json()
+    assert d["to_fix"] == 0
+
+
+def test_clusters_list_shape_page_clamp_and_link_summary():
+    cluster = ns(id=10, agent="agent-a", interface="agent-a.iface", layer="L1",
+                 error_type="timeout", error_msg="m", input_hash="h", first_trace_id="tr-1",
+                 input_truncated=0, generation=1, count=2, status="open",
+                 first_ts=_FIX, latest_ts=_FIX, fix_version=None, claimed_by=None,
+                 claimed_at=None, claim_due_ts=None, claim_k=2, needs_review_reason=None)
+    stub = _ReadStub(
+        users=[_admin_user()], rows={ErrorCluster: [cluster],
+                                     ErrorCaseLink: [_link(30, cluster_id=10)]},
+        count_scalar=1,
+    )
+    from fastapi.testclient import TestClient
+    with TestClient(_overview_app(stub)) as c:
+        # page=0 抬到 1；page_size=500 压到 100（防前端一次拉爆）
+        d = c.get("/api/v1/backflow/clusters?page=0&page_size=500",
+                  headers=_token()).json()
+    assert set(d) == {"items", "total", "page", "page_size"}
+    assert d["page"] == 1 and d["page_size"] == 100 and d["total"] == 1
+    assert d["items"][0]["cluster_id"] == 10
+    assert d["items"][0]["first_trace_id"] == "tr-1"
+    assert d["items"][0]["link"]["link_id"] == 30      # link 摘要接线（_cluster_links）

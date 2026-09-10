@@ -22,8 +22,21 @@
       → 维持 P2-1 无条件照开 gen+1（无门控基础不咨询、亦不写 reentry conv，S-3 兼容）。
   S-11→ claim_probe C-14（E-10 终态只读显式守卫：本文件无 claim/verify 基建，回查链路在
       claim_probe 侧同构 C-3 基建处验，跨域脚手架不重复落）。
+  S-11/S-12/S-13 = T-3.10 兜底吸收门控的**真库端到端三连**（装载侧→判定→落库→归并全链，
+  与单测只打纯函数 decide() 互补）。三者构成一组**防假绿对照**：单看 S-11「零建簇」无从
+  判断是门控生效还是 gate 关停/装载失败，必须由 S-12/S-13 反证链路确实会建簇。走真实 job
+  入口 `run_judge_scan` + `run_cluster_merge`（非手搓 decide）：
+  S-11 兜底吸收（request ok + llm_call error）→ judgement_json.layer=none +
+      candidate_error_sets=[]，且归并后 processed=1（行被真消费，非跳过）∧ 该 agent 零簇；
+  S-12 对照组 root_status=error + root_error_type=llm_timeout → layer=L1 ∧ 建簇 1（证 S-11
+      的零簇不是「链路整体不建簇」）；
+  S-13 残 trace（root_ok=0/root_status NULL + 子节点 llm_timeout）→ layer=L1 ∧
+      evidence=subnode ∧ 建簇 1（证 T-3.10 未把残 trace 分支一并切掉）。
+  注：判据 gate 需 agent 存在且放行，故三场景各建一 cp-% 探针 agent 行（enable/backflow_allow
+  均 1、无 dict_config 行 → 缺键回退开），否则 gate 关停产 layer=none，S-11 会**假绿**。
 
-隔离：探针 agent 前缀 cp-（≤64 字符），开头按 LIKE cp-% 清理残留，结尾再清。退出码全绿 0。
+隔离：探针 agent 前缀 cp-（≤64 字符），开头按 LIKE cp-% 清理残留（含 agent 行），结尾再清。
+退出码全绿 0。
 """
 import asyncio
 import sys
@@ -37,12 +50,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E4
 
 from app.analyzer.cluster import merge_candidate  # noqa: E402
 from app.core.config import Settings  # noqa: E402
+from app.models.agent import Agent  # noqa: E402
 from app.models.error_flow import (  # noqa: E402
     ConversionRecord,
     ErrorCluster,
     TraceJudgeState,
 )
-from app.worker.cluster_job import _merge_row  # noqa: E402
+from app.worker.cluster_job import _merge_row, run_cluster_merge  # noqa: E402
+from app.worker.judge_scan_job import run_judge_scan  # noqa: E402
 
 FAILURES: list[str] = []
 IFACE = "POST /api/probe/{id}"
@@ -68,19 +83,39 @@ def _jj(layer="L1", error_type="llm_timeout"):
 
 
 def _probe_row(session, *, agent, trace_id, root_hash=H1, snapshot=None,
-               truncated=0, jj=None, err_summary=None):
+               truncated=0, jj=None, err_summary=None, root_ok=1,
+               root_status="error", root_error_type="llm_timeout",
+               judged=1, ttl_until=None):
+    """判定态探针行。默认值 = 既有 10 场景口径（root error + 已判）；S-11~S-13 需传
+    `judged=0`（未判 → 进 judge_scan 扫描位）与自定义 root 三态。
+
+    `judged=0` 时 judgement_json 落 NULL——真实未判行即无判定产物，塞默认 _jj() 会让
+    「判前本无产物」这一前提失真（S-11 要验的恰是**判后**产物为空）。
+    """
     row = TraceJudgeState(
-        agent=agent, trace_id=trace_id, root_ok=1, interface=IFACE,
-        root_status="error", root_error_type="llm_timeout",
+        agent=agent, trace_id=trace_id, root_ok=root_ok, interface=IFACE,
+        root_status=root_status, root_error_type=root_error_type,
         root_input_hash=root_hash, input_snapshot_clean=snapshot,
         input_truncated=truncated,
         err_summary_json=err_summary if err_summary is not None else _summary(),
-        llm_fact_ok=1, judged=1, processed=0, root_late_complement=0,
-        judgement_json=jj if jj is not None else _jj(),
-        ttl_until=NOW,
+        llm_fact_ok=1, judged=judged, processed=0, root_late_complement=0,
+        judgement_json=jj if jj is not None else (_jj() if judged else None),
+        ttl_until=ttl_until if ttl_until is not None else NOW,
     )
     session.add(row)
     return row
+
+
+async def _probe_agent(engine, name: str) -> None:
+    """建探针 agent 行（门控放行前提）。enable/backflow_allow 取模型 server_default=1、
+    不建 dict_config 行（fetch_backflow_flags 缺键回退开）= 白名单门全开。
+
+    必须真建行：agent 缺失时 `_ctx_for` 返 agent_exists=False → decide 短路 layer=none，
+    S-11 的「零候选」会与被验门控无关地成立（假绿），S-12/S-13 则直接失败。
+    """
+    async with AsyncSession(engine) as s:
+        s.add(Agent(name=name, display_name=name))
+        await s.commit()
 
 
 async def _reset(engine) -> None:
@@ -90,6 +125,7 @@ async def _reset(engine) -> None:
         csub = select(ErrorCluster.id).where(ErrorCluster.agent.like("cp-%"))
         await s.execute(delete(ConversionRecord).where(ConversionRecord.cluster_id.in_(csub)))
         await s.execute(delete(ErrorCluster).where(ErrorCluster.agent.like("cp-%")))
+        await s.execute(delete(Agent).where(Agent.name.like("cp-%")))
         await s.commit()
 
 
@@ -395,6 +431,94 @@ async def s10_no_gate_regression(engine) -> None:
           f"action={action_b} n={len(cb)}")
 
 
+async def _row_of(engine, agent: str, trace_id: str) -> TraceJudgeState:
+    async with AsyncSession(engine) as s:
+        return (await s.scalars(select(TraceJudgeState).where(
+            TraceJudgeState.agent == agent, TraceJudgeState.trace_id == trace_id))).one()
+
+
+async def _seed_and_run(engine, agent: str, trace_id: str, **row_kw) -> TraceJudgeState:
+    """建 agent + 未判行 → 跑真实 job 链（judge_scan → cluster_merge）→ 回读行。
+
+    走 job 入口而非手搓 decide/_merge_row：正是要覆盖「装载侧 `_facts_from_row`/`_ctx_for`
+    → 判定 → judgement_json 落库 → 归并消费」这条单测打不到的壳链路。
+    """
+    await _probe_agent(engine, agent)
+    async with AsyncSession(engine) as s:
+        _probe_row(s, agent=agent, trace_id=trace_id, **row_kw)
+        await s.commit()
+    await run_judge_scan(engine)
+    await run_cluster_merge(engine)
+    return await _row_of(engine, agent, trace_id)
+
+
+async def s11_absorbed_no_candidate(engine) -> None:
+    print("\n===== S-11 兜底吸收（request ok + 子节点 llm_call error）→ 零候选零建簇 =====")
+    agent, trace = "cp-absorb", "cp-absorb-1"
+    row = await _seed_and_run(
+        engine, agent, trace,
+        judged=0, root_ok=1, root_status="ok", root_error_type=None,
+    )
+    jj = row.judgement_json or {}
+    check("S-11 judge_scan 真判了该行（judged=1 + judgement_json 落库）",
+          bool(row.judged) and isinstance(row.judgement_json, dict),
+          f"judged={row.judged} has_jj={isinstance(row.judgement_json, dict)}")
+    check("S-11 layer=none ∧ candidate_error_sets=[]（§6.1 L826 兜底吸收不产候选）",
+          jj.get("layer") == "none" and jj.get("candidate_error_sets") == [],
+          f"layer={jj.get('layer')} cands={jj.get('candidate_error_sets')!r}")
+    check("S-11 root 快照如实落库（ok=True/status=ok/error_type=None）",
+          jj.get("root") == {"ok": True, "status": "ok", "error_type": None},
+          f"root={jj.get('root')!r}")
+    check("S-11 gate 快照 = 放行（证零候选非 gate 关停所致）",
+          jj.get("gate", {}).get("agent_exists") is True
+          and jj.get("gate", {}).get("backflow_allow") is True,
+          f"gate={jj.get('gate')!r}")
+    check("S-11 归并后 processed CAS=1（行被真消费，非静默跳过）",
+          bool(row.processed), f"processed={row.processed}")
+    check("S-11 该 agent 零 error_cluster（不触发 offline 回归）",
+          len(await _clusters(engine, agent)) == 0, "不应建簇")
+
+
+async def s12_root_error_control(engine) -> None:
+    print("\n===== S-12 对照组：root 自身 error → L1 建簇（证链路确实会建簇） =====")
+    agent, trace = "cp-rooterr", "cp-rooterr-1"
+    row = await _seed_and_run(engine, agent, trace, judged=0)
+    jj = row.judgement_json or {}
+    check("S-12 layer=L1 ∧ 候选 evidence=root（同 error_type root+子节点双现归并单候选）",
+          jj.get("layer") == "L1"
+          and [(c.get("error_type"), c.get("evidence"))
+               for c in jj.get("candidate_error_sets") or []] == [("llm_timeout", "root")],
+          f"layer={jj.get('layer')} cands={jj.get('candidate_error_sets')!r}")
+    clusters = await _clusters(engine, agent)
+    # 簇 count = **trace 出现次数**（本场景 1 行 =1），非候选级 count（=3，见上行断言）：
+    # 两个粒度，`_merge_row` 调 merge_candidate 不传候选 count（S-1 同口径已钉死）。
+    check("S-12 归并建簇 1 个（L1/llm_timeout，簇 count=1=trace 出现次数）",
+          len(clusters) == 1 and clusters[0].layer == "L1"
+          and clusters[0].error_type == "llm_timeout" and clusters[0].count == 1
+          and clusters[0].first_trace_id == trace,
+          f"n={len(clusters)} "
+          f"{[(c.layer, c.error_type, c.count) for c in clusters]}")
+
+
+async def s13_residual_control(engine) -> None:
+    print("\n===== S-13 对照组：残 trace（root 未达）→ 子节点候选 L1 建簇 =====")
+    agent, trace = "cp-residual", "cp-residual-1"
+    row = await _seed_and_run(
+        engine, agent, trace,
+        judged=0, root_ok=0, root_status=None, root_error_type=None,
+    )
+    jj = row.judgement_json or {}
+    check("S-13 layer=L1 ∧ evidence=subnode（T-3.10 未误切残 trace 分支）",
+          jj.get("layer") == "L1"
+          and [(c.get("error_type"), c.get("evidence"))
+               for c in jj.get("candidate_error_sets") or []] == [("llm_timeout", "subnode")],
+          f"layer={jj.get('layer')} cands={jj.get('candidate_error_sets')!r}")
+    clusters = await _clusters(engine, agent)
+    check("S-13 归并建簇 1 个（簇 count=1=trace 出现次数，非候选级 2）",
+          len(clusters) == 1 and clusters[0].layer == "L1" and clusters[0].count == 1,
+          f"n={len(clusters)} {[(c.layer, c.count) for c in clusters]}")
+
+
 async def main() -> None:
     settings = Settings()
     engine = create_async_engine(settings.sqlalchemy_url)
@@ -410,6 +534,9 @@ async def main() -> None:
         await s8_sameday_blocked(engine)
         await s9_early_blocked(engine)
         await s10_no_gate_regression(engine)
+        await s11_absorbed_no_candidate(engine)
+        await s12_root_error_control(engine)
+        await s13_residual_control(engine)
     finally:
         await _reset(engine)
         await engine.dispose()
@@ -417,7 +544,8 @@ async def main() -> None:
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} 项失败 → {FAILURES}")
         sys.exit(1)
-    print("全绿：P2-1 聚类归并 + P2-5 §7.5 reentry 门控 DB 壳 10 场景通过")
+    print("全绿：P2-1 聚类归并 + P2-5 §7.5 reentry 门控 + T-3.10 兜底吸收门控 "
+          "DB 壳 13 场景通过")
 
 
 if __name__ == "__main__":

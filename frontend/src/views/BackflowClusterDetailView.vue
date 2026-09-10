@@ -170,6 +170,9 @@ async function submitClaim(): Promise<void> {
   }
   const k = claimForm.value.k === '1' ? 1 : 2
   claimForm.value.open = false
+  // 软提示不能在 fn 里写 actionMsg：runAction 随后会用 okText 覆盖同一 ref（D-2）。
+  // 改为闭包带出，成功后再追加——两段文案都不丢。
+  let warn: string | null = null
   await runAction(
     async () => {
       const r = await claimCluster(clusterId, {
@@ -177,10 +180,11 @@ async function submitClaim(): Promise<void> {
         k,
         note: claimForm.value.note.trim() || null,
       })
-      if (r.warning) actionMsg.value = r.warning   // R-5/R-7 软提示直接透传
+      warn = r.warning
     },
     `已认领（K=${k}），复核窗开启`,
   )
+  if (warn) actionMsg.value += `；${warn}`
 }
 
 function doIgnore(): void {
@@ -315,7 +319,9 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <p v-if="actionMsg" class="ok-text">{{ actionMsg }}</p>
 
       <!-- 操作区（按 §9.4 状态门控） -->
-      <section v-if="canClaim || canIgnore || canReopen || needsReview || (isClaim && isAdmin)" class="panel ops">
+      <!-- 分支顺序敏感：claim ∧ admin 必须先于 canIgnore（canIgnore 值域 ⊇ claim，
+           排在前面会把复核动作整块吃掉——D-1 即此） -->
+      <section v-if="canClaim || canIgnore || canReopen || needsReview" class="panel ops">
         <template v-if="canClaim">
           <button v-if="!claimForm.open" class="btn" type="button" :disabled="busy" @click="openClaimForm">
             认领并复核
@@ -332,6 +338,11 @@ const rows = computed(() => detail.value?.conversions ?? [])
           </form>
           <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略</button>
         </template>
+        <template v-else-if="isClaim && isAdmin">
+          <button class="btn" type="button" :disabled="busy" @click="doFixedReview(true)">通过复核（→fixed）</button>
+          <button class="btn-ghost" type="button" :disabled="busy" @click="doFixedReview(false)">驳回（→open）</button>
+          <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略（先回退）</button>
+        </template>
         <template v-else-if="canIgnore">
           <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">
             忽略（复核中，先回退再忽略）
@@ -347,11 +358,6 @@ const rows = computed(() => detail.value?.conversions ?? [])
             v-if="hasBatch" class="btn" type="button" :disabled="busy"
             @click="doBatch"
           >处置整批（batch#{{ openBatch?.batch_id }}，run {{ openBatch?.run_id }}，{{ openBatch?.ref_count }} link）</button>
-        </template>
-        <template v-else-if="isClaim && isAdmin">
-          <button class="btn" type="button" :disabled="busy" @click="doFixedReview(true)">通过复核（→fixed）</button>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doFixedReview(false)">驳回（→open）</button>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略（先回退）</button>
         </template>
       </section>
 

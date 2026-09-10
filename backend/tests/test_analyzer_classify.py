@@ -2,7 +2,7 @@
 
 纯函数层：构造 TraceFacts/AgentContext 直测 decide / root_late_decision / effective_llm_fact /
 build_judgement_json。覆盖 L1/L2 分支、OR 门控、cc 白名单关停、残 trace 子节点判定、
-timeout 不带 error_type 出口、多候选归并、root-late 单事件补判。
+timeout 不带 error_type 出口、多候选归并、root-late 单事件补判、root_late_payload 落库形状。
 """
 from app.analyzer.classify import (
     AgentContext,
@@ -254,3 +254,34 @@ def test_root_late_timeout_no_error_type_misses():
         _facts(root_ok=1, root_status="timeout", root_error_type=None), _ctx()
     )
     assert r.hit is False and r.layer == "none"
+
+
+# ---------- root_late_payload 落库形状（R-21，consumer 内联写 judgement_json.root_late） ----------
+
+
+def test_root_late_payload_shape_hit():
+    """命中形状逐键断言：此前只经 build_judgement_json(root_late=None) 间接覆盖。
+
+    该 dict 由 consumer 内联写入、T-3.6 聚类按 `hit/layer/error_type` 取数——字段名漂移
+    不会让任何既有用例变红，故单列直测。
+    """
+    from app.analyzer.classify import root_late_payload
+
+    r = root_late_decision(_facts(root_error_type="llm_timeout"), _ctx())
+    p = root_late_payload(r, "error", now_ms=1_700_000_000_000)
+    assert set(p) == {"hit", "layer", "error_type", "status", "at"}
+    assert p["hit"] is True and p["layer"] == "L1" and p["error_type"] == "llm_timeout"
+    assert p["status"] == "error"
+    assert isinstance(p["at"], str) and p["at"].startswith("2023-11-14")  # now_ms 冻结可复现
+
+
+def test_root_late_payload_shape_miss_keeps_status_verbatim():
+    """未命中：hit=False + layer=none + error_type=None；status 原样带出（审计留 root 态）。"""
+    from app.analyzer.classify import root_late_payload
+
+    r = root_late_decision(_facts(root_status="timeout", root_error_type=None), _ctx())
+    p = root_late_payload(r, "timeout", now_ms=1_700_000_000_000)
+    assert p["hit"] is False and p["layer"] == "none" and p["error_type"] is None
+    assert p["status"] == "timeout"
+    # 同一 now_ms 入参 → 同一时刻串（at 可复现，非 now()）
+    assert p["at"] == root_late_payload(r, "timeout", now_ms=1_700_000_000_000)["at"]
