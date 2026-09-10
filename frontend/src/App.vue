@@ -20,10 +20,15 @@ const MENUS = [
   { name: 'anomalies', label: '异常' },
   { name: 'llm-failures', label: 'LLM 失败' },
   { name: 'traces', label: '链路查询' },
+  { name: 'backflow', label: '回流看板' },  // P2-6：第六个一级菜单（detail §9.1 登记）
 ]
 
-// 详情页/链路查询共用 traces 高亮（trace-detail 落在链路查询下）
-const activeName = computed(() => (route.name === 'trace-detail' ? 'traces' : route.name))
+// 详情页下钻共用父菜单高亮（trace-detail → 链路查询；backflow-cluster → 回流看板）
+const activeName = computed(() => {
+  if (route.name === 'trace-detail') return 'traces'
+  if (route.name === 'backflow-cluster') return 'backflow'
+  return route.name
+})
 
 function isActive(name: string): boolean {
   return activeName.value === name

@@ -41,3 +41,38 @@ export function fmtInt(v: number | null | undefined): string {
   if (v === null || v === undefined) return '-'
   return v.toLocaleString('en-US')
 }
+
+// ---- 回流看板（P2-6）：后端 _iso 的 naive-UTC 无后缀字符串 + claim_due_ts 的 Z 后缀，统一解析 ----
+
+// naive（无时区后缀）按 UTC 补 Z 再解析；无法解析 → null
+export function parseISODate(v: string | null | undefined): Date | null {
+  if (!v) return null
+  const s = /(Z|[+-]\d{2}:?\d{2})$/.test(v) ? v : `${v}Z`
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+// 表列 ISO → 本地 YYYY-MM-DD HH:mm:ss（与 fmtDT 同展示口径）
+export function fmtISO(v: string | null | undefined): string {
+  const d = parseISODate(v)
+  if (!d) return '-'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 截止时刻倒计时：`X 天 HH:MM:SS`；已过 → 「已超时」
+export function fmtCountdownMs(untilMs: number | null, nowMs: number): string {
+  if (untilMs === null || untilMs === undefined) return '-'
+  const diff = untilMs - nowMs
+  if (diff <= 0) return '已超时'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const days = Math.floor(diff / 86400000)
+  const rem = diff - days * 86400000
+  const h = Math.floor(rem / 3600000)
+  const m = Math.floor((rem % 3600000) / 60000)
+  const s = Math.floor((rem % 60000) / 1000)
+  return days > 0
+    ? `${days} 天 ${pad(h)}:${pad(m)}:${pad(s)}`
+    : `${pad(h)}:${pad(m)}:${pad(s)}`
+}

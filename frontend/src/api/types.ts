@@ -189,3 +189,129 @@ export interface MetricsAgents {
   truncated: boolean
   agents: string[]
 }
+
+// ---------- 回流看板（P2-6 T-3.7 / detail §9.2；GET /backflow/* 响应镜像，字段级钉死） ----------
+
+export interface BackflowOverviewClusters {
+  open: number
+  claim: number
+  fixed: number
+  inactive: number
+  needs_review: number
+}
+
+export interface BackflowOverviewLinks {
+  pending: number
+  passed: number
+  failed: number
+  invalidated: number
+  superseded: number
+}
+
+export interface BackflowByAgent {
+  agent: string
+  open: number
+  claim: number
+}
+
+export interface BackflowOverview {
+  clusters: BackflowOverviewClusters
+  links: BackflowOverviewLinks
+  // to_fix = 本地镜像近似值（本平台无 offline 权威集，§9.3 caption 标注）
+  to_fix: number
+  by_agent: BackflowByAgent[]
+}
+
+// 现行 link 摘要（list 侧每个 cluster 一个：verify pending 优先，无则最新）
+export interface BackflowLink {
+  link_id: number
+  payload_id: string | null
+  case_id: string | null
+  case_type: string | null
+  offline_status: string
+  verify_status: string
+  assembled_ts: string | null
+  invalidate_reason: string | null
+}
+
+export interface BackflowCluster {
+  cluster_id: number
+  agent: string
+  interface: string | null
+  layer: string | null
+  error_type: string
+  error_msg: string | null
+  input_hash: string | null
+  first_trace_id: string | null   // 代表 trace（列表跳 trace 详情源，P2-6 B3）
+  input_truncated: number
+  generation: number
+  count: number
+  status: string
+  first_ts: string | null
+  latest_ts: string | null
+  fix_version: string | null
+  claimed_by: string | null
+  claimed_at: string | null
+  claim_due_ts: string | null
+  claim_k: number
+  needs_review_reason: string | null
+  link: BackflowLink | null
+}
+
+export interface BackflowVerifyRun {
+  record_id: number
+  run_id: string | null
+  bound_version: string | null
+  case_pass: number
+  run_status: string | null
+  verified_ts: string | null
+  excluded_hit: boolean
+}
+
+export interface BackflowConversion {
+  record_id: number
+  action: string
+  detail: string | null
+  closed_by: string | null
+  actor_user_id: number | null
+  ts: string | null
+}
+
+// blocked/claim 同键复发观察（仅 claim/fixed 态现算，否则 detail 返回 null）
+export interface ReentryObserve {
+  count: number
+  latest_version: string | null
+  since_ts: string
+  mode: 'fixed' | 'claim'
+}
+
+// unclean_run 批（link_refs 含本 cluster 的 open 批；「处置整批」目标）
+export interface BackflowBatch {
+  batch_id: number
+  run_id: string
+  agent: string
+  bound_version: string
+  error_type: string
+  ref_count: number
+}
+
+export interface BackflowClusterDetail extends BackflowCluster {
+  links: BackflowLink[]
+  verify_runs: BackflowVerifyRun[]
+  conversions: BackflowConversion[]
+  waiting_days: number
+  reentry_observe: ReentryObserve | null
+  open_batches: BackflowBatch[]
+}
+
+export interface BackflowClustersResult extends Page<BackflowCluster> {}
+
+export interface BackflowQuery {
+  agent?: string
+  interface?: string
+  layer?: string
+  status?: string
+  watch?: string
+  page?: number
+  page_size?: number
+}

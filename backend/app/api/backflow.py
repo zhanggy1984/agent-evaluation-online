@@ -10,6 +10,7 @@ P2-4（新增，viewer 为主 / admin 单独 fixed-review）：
 - 全写端点：cluster/link 不存在 → ERR_CLUSTER_0001(404)；非法迁移 → ERR_CLUSTER_0003(400)；
   CAS 竞态落空 → ERR_CLUSTER_0002(409，带当前状态)——detail §8.9 语义，P2-4 激活。
 """
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import AdminUser, ViewerUser
 from app.backflow import batches as batch_flow
 from app.backflow import claim as claim_flow
+from app.backflow import recurrence as recurrence_flow
 from app.backflow import requeue as requeue_flow
 from app.backflow.requeue import MANUAL_INVALIDATE_REASON
 from app.core.config import get_settings
@@ -28,7 +30,13 @@ from app.core.db import get_session
 from app.core.errors import AppError
 from app.core.log import get_logger
 from app.core.offline_client import OfflineClient, OfflineReadError
-from app.models.error_flow import ConversionRecord, ErrorCaseLink, ErrorCluster, VerifyRunRecord
+from app.models.error_flow import (
+    ConversionRecord,
+    ErrorCaseLink,
+    ErrorCluster,
+    NeedsReviewBatch,
+    VerifyRunRecord,
+)
 
 router = APIRouter(prefix="/backflow", tags=["backflow"])
 logger = get_logger("app.api.backflow")
@@ -167,7 +175,8 @@ def _cluster_item(cluster: ErrorCluster, link: dict | None) -> dict:
         "cluster_id": cluster.id, "agent": cluster.agent,
         "interface": cluster.interface, "layer": cluster.layer,
         "error_type": cluster.error_type, "error_msg": cluster.error_msg,
-        "input_hash": cluster.input_hash, "input_truncated": int(cluster.input_truncated),
+        "input_hash": cluster.input_hash, "first_trace_id": cluster.first_trace_id,
+        "input_truncated": int(cluster.input_truncated),
         "generation": int(cluster.generation), "count": int(cluster.count),
         "status": cluster.status, "first_ts": _iso(cluster.first_ts),
         "latest_ts": _iso(cluster.latest_ts), "fix_version": cluster.fix_version,
@@ -205,6 +214,30 @@ async def _cluster_links(session: AsyncSession, cluster_ids: list[int]) -> dict[
         rep = current if current is not None else links[-1]
         picked[cid] = _link_item(rep)
     return picked
+
+
+async def _open_batches(session: AsyncSession, cluster_id: int) -> list[dict]:
+    """未决 unclean_run 批：status=open 且 link_refs JSON 含该 cluster_id（P2-6 挂起徽标源）。
+
+    link_refs = [{link_id, cluster_id, case_id}]（batches.py 写），cluster_id 为 numeric → 构造
+    字面量 JSON 安全。批量处置端点 POST /needs-review-batches/{id}/resolve 由前端直调。"""
+    batches = list((await session.scalars(
+        select(NeedsReviewBatch).where(
+            NeedsReviewBatch.status == "open",
+            func.json_contains(
+                NeedsReviewBatch.link_refs, json.dumps({"cluster_id": cluster_id})
+            ),
+        )
+    )).all())
+    out: list[dict] = []
+    for b in batches:
+        refs = b.link_refs if isinstance(b.link_refs, list) else []
+        out.append({
+            "batch_id": b.id, "run_id": b.run_id, "agent": b.agent,
+            "bound_version": b.bound_version, "error_type": b.error_type,
+            "ref_count": len(refs),
+        })
+    return out
 
 
 # ---------- 读面（§8.4 L1084-1086，viewer；P2-6 前端回流页消费） ----------
@@ -306,9 +339,10 @@ async def list_clusters(
 async def get_cluster_detail(
     user: ViewerUser, session: _Session, cluster_id: int
 ) -> dict:
-    """cluster 详情：元数据 + links + verify_run_record 版本时间线 + conversion 审计 + 已待天数。
+    """cluster 详情：元数据 + links + verify 时间线 + conversion 审计 + 已待天数 + 复发观察/挂起批。
 
-    响应 {…cluster 元数据, links[], verify_runs[], conversions[], waiting_days}。"""
+    响应 {…cluster 元数据, links[], verify_runs[], conversions[], waiting_days,
+    reentry_observe（claim/fixed 现算复发观察，其余态 None）, open_batches[]}。"""
     logger.debug("backflow cluster 详情 入参: viewer=%s cluster_id=%s", user.username, cluster_id)
     cluster = await _load_cluster(session, cluster_id)
     links = list((await session.scalars(
@@ -343,12 +377,17 @@ async def get_cluster_detail(
         }
         for c in convs
     ]
+    observe = await recurrence_flow.cluster_reentry_observe(session, cluster)
+    open_batches = await _open_batches(session, cluster_id)
     item = _cluster_item(cluster, _link_item(links[0]) if links else None)
     item.update({
         "links": [_link_item(lk) for lk in links],
         "verify_runs": verify_items,
         "conversions": conv_items,
         "waiting_days": waiting_days,
+        "reentry_observe": None if observe is None
+        else {**observe, "since_ts": _iso(observe["since_ts"])},
+        "open_batches": open_batches,
     })
     return item
 
@@ -369,24 +408,28 @@ async def claim_cluster_endpoint(
         user.username, cluster_id, body.fix_version, body.k,
     )
     cluster = await _load_cluster(session, cluster_id)
+    agent = cluster.agent
+    generation = int(cluster.generation)
     result = await claim_flow.claim_cluster(
         session, cluster, fix_version=body.fix_version, note=body.note,
         k=body.k, actor_id=user.id,
     )
-    warning = None
-    if int(cluster.generation) > 1:  # R-7 软提示：同版本已完成 run 命中（best-effort）
-        warning = await _reentry_warning(session, cluster.agent, result["fix_version"])
-    await session.commit()
+    await session.commit()  # claim 先落库：软提示查询不拖慢/不随读面异常回滚认领
+    warning = await _claim_warning(agent, generation, result["fix_version"])  # R-5/R-7
     out = ClaimResponse(**result, warning=warning)
     logger.debug("claim 出参: cluster_id=%s claim_k=%s due=%s", cluster_id,
                  out.claim_k, out.claim_due_ts)
     return out
 
 
-async def _reentry_warning(session: AsyncSession, agent: str, fix_version: str) -> str | None:
-    """generation>1 且 fix_version 命中已 completed run → 软提示。
+async def _claim_warning(agent: str, generation: int, fix_version: str) -> str | None:
+    """claim 软提示（best-effort，非硬拦；offline 未配/读面不可达 → 退 None）。
 
-    不强判（硬闸属 P2-5 reentry job）；offline 未配置/读面不可达 → 退 None（best-effort）。
+    - R-5 版本预检（P2-6 做全，detail §9.3）：fix_version 未见于 offline 已见版本
+      （agents/{agent}/versions 读面）→ 「未观测到…可能未发版或字面量不匹配，已见版本：…」
+      ——防字面量 typo；与 verify.judge_link 的 versions 面门控同口径（trim 后精确成员）。
+    - R-7 reentry（沿用）：generation>1 且 fix_version 命中已 completed run → 提示同版本
+      重试命中 reentry。
     """
     settings = get_settings()
     if not settings.offline_base_url:
@@ -394,13 +437,24 @@ async def _reentry_warning(session: AsyncSession, agent: str, fix_version: str) 
     client = OfflineClient(settings.offline_base_url,
                            secret=settings.evaluator_service_secret, timeout_s=3)
     try:
-        runs = await client.list_runs(agent=agent, version=fix_version)
-        if any(r.get("status") == "completed" for r in runs):
-            return (f"注意：{agent}@{fix_version} 已存在 completed run（generation>1 同版本"
-                    f"重试命中 reentry）——是否确为新修复？verify 回查按实际判定；硬闸属 P2-5")
+        face = await client.agent_versions(agent=agent)
+        seen = [str(it.get("version") or it.get("name") or "") for it in face]
+        seen = list(dict.fromkeys(s for s in seen if s))
+        fv = claim_flow.normalize_fix_version(fix_version)
+        if seen and fv not in seen:
+            shown = "、".join(sorted(seen)[:12])
+            if len(seen) > 12:
+                shown += f" 等 {len(seen)} 个"
+            return (f"注意：未观测到 {agent}@{fv} 评测 run——可能未发版或字面量"
+                    f"不匹配，已见版本：{shown}")
+        if generation > 1:
+            runs = await client.list_runs(agent=agent, version=fv)
+            if any(r.get("status") == "completed" for r in runs):
+                return (f"注意：{agent}@{fv} 已存在 completed run（generation>1 同版本"
+                        f"重试命中 reentry）——是否确为新修复？verify 回查按实际判定；硬闸属 P2-5")
         return None
     except OfflineReadError as exc:
-        logger.warning("claim reentry 软提示查询失败（忽略）", extra={"err": str(exc)})
+        logger.warning("claim 软提示查询失败（忽略）", extra={"err": str(exc)})
         return None
     finally:
         await client.aclose()

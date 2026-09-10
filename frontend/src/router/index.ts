@@ -6,6 +6,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import { accessToken } from '../api/client'
 import AnomaliesView from '../views/AnomaliesView.vue'
+import BackflowClusterDetailView from '../views/BackflowClusterDetailView.vue'
+import BackflowView from '../views/BackflowView.vue'
 import InterfacesView from '../views/InterfacesView.vue'
 import LlmFailuresView from '../views/LlmFailuresView.vue'
 import LoginView from '../views/LoginView.vue'
@@ -47,6 +49,14 @@ const router = createRouter({
       path: '/traces/:agent/:traceId',
       name: 'trace-detail',
       component: TraceDetailView,
+      meta: { requiresAuth: true },
+    },
+    // 回流看板（P2-6 T-3.7）：列表 + 独立详情壳（detail §9.2 独立路由形态）
+    { path: '/backflow', name: 'backflow', component: BackflowView, meta: { requiresAuth: true } },
+    {
+      path: '/backflow/clusters/:clusterId',
+      name: 'backflow-cluster',
+      component: BackflowClusterDetailView,
       meta: { requiresAuth: true },
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
