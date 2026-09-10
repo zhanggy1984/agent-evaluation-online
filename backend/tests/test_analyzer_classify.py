@@ -120,6 +120,45 @@ def test_residual_subnode_l2_requires_fact_or_dict():
     assert closed.layer == "none"
 
 
+# ---------- 兜底吸收：request ok 时子节点错误已被业务吸收，不回流（T-3.10，§6.1） ----------
+
+
+def test_ok_request_absorbed_llm_err_not_candidate():
+    # 兜底吸收现场（request ok + llm_call error）→ 不产 L1/L2 候选（L3 二期，§6.1）
+    d = decide(
+        _facts(root_status="ok", root_error_type=None, entries=[_entry("llm_timeout")]),
+        _ctx(),
+    )
+    assert d.layer == "none"
+    assert d.candidates == []
+
+
+def test_ok_request_absorbed_l2_err_not_candidate():
+    # 兜底吸收不止 llm 一类：L2 值域的 DB 子错即使过 OR 门也不产候选
+    d = decide(
+        _facts(
+            root_status="ok",
+            root_error_type=None,
+            llm_fact=1,
+            entries=[_entry("db_error")],
+        ),
+        _ctx(interface_llm=True),
+    )
+    assert d.layer == "none"
+    assert d.candidates == []
+
+
+def test_timeout_root_subnode_still_candidate():
+    # 防修过头：门控只切 root_status=="ok"，timeout root 的子节点候选维持既有行为
+    # （§6.1 step5 与 step4 的交界歧义 = T-3.10 显式标注未决、本批不触碰）
+    d = decide(
+        _facts(root_status="timeout", root_error_type=None, entries=[_entry("llm_timeout")]),
+        _ctx(),
+    )
+    assert d.layer == "L1"
+    assert d.candidates[0].evidence == "subnode"
+
+
 # ---------- 出口：非回流值域 / timeout 无 error_type ----------
 
 

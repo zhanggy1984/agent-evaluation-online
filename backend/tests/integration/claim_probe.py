@@ -27,6 +27,10 @@ batch 落库 + CAS 收口。E-7/E-8 真 offline 端到端留阶段 4 环 2。
   C-12 excluded_case_ids 命中 → record excluded_hit + case_pass NULL + 不迁移（保持 claim/pending）
   C-13 recheck_job 编排：驱动真 worker _run_recheck_cycle 扫 claim+pending → 逐簇独立事务收口
        fixed_auto（C-3 是 judge_link 直连单簇，本场景补编排路径 wiring）
+  C-15 **E-17（T-3.10 补）**：fail 回退 open → 改 fix_version 再 claim → 组装出**新 link + 新
+      payload_id**（非复用旧 link）→ 新版本回归 passed → cluster fixed，且**旧 failed 的
+      verify_run_record 时间线保留**。组装用新助手 `_assemble_new_link`（不复用 `_activate`：
+      其取 link 用 `.one()` 且不筛 pending，旧终态 link 在场会 MultipleResultsFound）。
   C-14 E-10（P2-5 S-11 归属）：passed/fixed 终态后再调 judge_link（link 已非 pending）→ 显式
        守卫 no_progress；即便 offline 出现同 bound_version 迟到 fail run 亦不追加不覆写
        （guard 先于版本扫描短路——reentry 门控探针见 cluster_probe S-7~S-10）
@@ -156,6 +160,26 @@ async def _activate(engine, cluster_id: int, case_id: str) -> int:
         lid = link.id
         await s.commit()
         return lid
+
+
+async def _assemble_new_link(engine, cluster_id: int, case_id: str) -> tuple[int, str]:
+    """E-17 专用：在**已有终态旧 link** 的 cluster 上组装新 link 并置 active。
+
+    不复用 `_activate`——其取 link 用 `.one()` 且不筛 verify_status，旧失败 link 仍在场时
+    会匹配多行抛 MultipleResultsFound。返回 (link_id, payload_id)。
+    """
+    async with AsyncSession(engine) as s:
+        cluster = (await s.scalars(
+            select(ErrorCluster).where(ErrorCluster.id == cluster_id))).one()
+        await assemble_cluster(s, cluster)
+        link = (await s.scalars(
+            select(ErrorCaseLink).where(ErrorCaseLink.cluster_id == cluster_id,
+                                        ErrorCaseLink.verify_status == "pending"))).one()
+        link.offline_status = "active"
+        link.case_id = case_id
+        got = (link.id, link.payload_id)
+        await s.commit()
+        return got
 
 
 async def _claim_cluster(engine, client, viewer_token, *, agent, snapshot, fv,
@@ -386,6 +410,66 @@ async def c4_fail_reopen(engine, client, viewer_token) -> None:
               f"{summary} status={c.status}")
     finally:
         await fake.aclose()
+
+
+async def c15_reclaim_new_link_e17(engine, client, viewer_token) -> None:
+    print("\n===== C-15 E-17：fail 回退 open → 改 fv 再 claim → 新 link 新 payload_id =====")
+    cid = await _claim_cluster(engine, client, viewer_token, agent="clm-c15",
+                               snapshot='{"q": "c15"}', fv="5.0.0", case_id="case-c15", k=1)
+    link1 = await _pending_link(engine, cid)
+    payload1 = link1.payload_id
+    fake_fail = _fake_offline(
+        versions=["5.0.0"],
+        by_version={"5.0.0": [_run_item("c15r1")]},
+        results={"c15r1": [_case_row("case-c15", "c15r1", x_pf="fail",
+                                     error_type="assertion_shape")]},
+    )
+    try:
+        s1 = await _run_judge(engine, fake_fail, cid)
+        c = await _cluster(engine, cid)
+        recs1 = await _records(engine, link1.id)
+        check("C-15 第一段：回归 fail → cluster 回退 open + 旧 link failed",
+              s1["outcome"] == "reopened" and c.status == "open"
+              and len(recs1) == 1 and recs1[0].case_pass == 0,
+              f"{s1} status={c.status} old_records={len(recs1)}")
+    finally:
+        await fake_fail.aclose()
+
+    # 改 fix_version 再 claim（E-17 核心之一：新版本重新认领）
+    status, resp = await _post(client, f"clusters/{cid}/claim", viewer_token,
+                               {"fix_version": "5.1.0", "k": 1})
+    c = await _cluster(engine, cid)
+    check("C-15 第二段：reopen 后再 claim（fv 5.0.0→5.1.0）→ 200 + cluster 改 version",
+          status == 200 and c.fix_version == "5.1.0" and c.status == "claim",
+          f"http={status} fv={c.fix_version} status={c.status} resp={resp}")
+
+    # 组装新 link（生产侧由 assemble_job 扫 open∧无现行 pending link 完成）
+    link2_id, payload2 = await _assemble_new_link(engine, cid, "case-c15")
+    check("C-15 第三段：再 claim 后组装出**新 link + 新 payload_id**（非复用旧 link）",
+          link2_id != link1.id and payload2 != payload1,
+          f"link1={link1.id}/{payload1[:8]} link2={link2_id}/{payload2[:8]}")
+
+    fake_pass = _fake_offline(
+        versions=["5.1.0"],
+        by_version={"5.1.0": [_run_item("c15r2")]},
+        results={"c15r2": [_case_row("case-c15", "c15r2", x_pf="pass")]},
+    )
+    try:
+        s2 = await _run_judge(engine, fake_pass, cid)
+        c = await _cluster(engine, cid)
+        recs_old = await _records(engine, link1.id)
+        recs_new = await _records(engine, link2_id)
+        check("C-15 第四段：新版本回归 passed → cluster fixed + 新 link passed",
+              s2["outcome"] == "fixed_auto" and c.status == "fixed"
+              and len(recs_new) == 1 and recs_new[0].case_pass == 1
+              and "auto_fixed" in await _conv_actions(engine, cid),
+              f"{s2} status={c.status} new_records={len(recs_new)}")
+        old_pf = recs_old[0].case_pass if recs_old else None
+        check("C-15 第五段：旧 failed 时间线保留（不覆写、不迁移）",
+              len(recs_old) == 1 and recs_old[0].case_pass == 0,
+              f"old_records={len(recs_old)} case_pass={old_pf}")
+    finally:
+        await fake_pass.aclose()
 
 
 async def c5_unclean_batch(engine, client, viewer_token) -> None:
@@ -792,6 +876,7 @@ async def main() -> None:
             await c14_terminal_readonly_e10(engine, client, viewer_token)
             await c13_recheck_orchestration(engine, client, viewer_token)
             await c4_fail_reopen(engine, client, viewer_token)
+            await c15_reclaim_new_link_e17(engine, client, viewer_token)
             await c5_unclean_batch(engine, client, viewer_token)
             await c6_batch_resolve(engine, client, viewer_token)
             await c7_na_needs_review(engine, client, viewer_token)
@@ -807,7 +892,8 @@ async def main() -> None:
     if FAILURES:
         print(f"FAIL: {len(FAILURES)} 项失败 → {FAILURES}")
         sys.exit(1)
-    print("全绿：P2-4 claim 状态机 + verify 回查收口 + P2-5 E-10 终态守卫 14 场景通过")
+    print("全绿：P2-4 claim 状态机 + verify 回查收口 + P2-5 E-10 终态守卫 + E-17 再 claim 新 link"
+          " 15 场景通过")
 
 
 if __name__ == "__main__":

@@ -14,10 +14,16 @@ judge_scan_job（worker）与 consumer root-late 补判共用本层。
    字面写 "request 根事件"，但 §4.3 残 trace "按已有子节点判定" 要求子节点也能产候选——否则残
    trace（root 未达）的纯 LLM 失败（如 llm_call 直接透传 llm_timeout）无层可归漏回流。故 L1
    值域判定放开到 root ∪ 子节点，evidence 记 root/subnode 来源（修订记录 v1.12 回填）。
+   **该扩展的范围界定（T-3.10 落地）**：子节点取候选以 `root_status != "ok"` 为前提——请求
+   成功返回答时子节点错误已被业务吸收，v1 不回流（§6.1 "兜底吸收现场（request ok + llm_call
+   error）不产 L1/L2 候选（L3 二期）"）。本仓原实现未设此门致兜底吸收误回流，T-3.10 修正。
 4. **L2**：候选 error_type ∈ L2_ERR_TYPES（root 或子节点）∧（llm_fact ∨ interface 字典
    `interface.llm==1`）——OR 门控（§6.1 step4）。
 5. **timeout 事件不带 error_type**（§2.1 schema：仅 status=error 允许 error_type）→ 不产候选
-   （P2 error-only；timeout 红显但不回流）。
+   （P2 error-only；timeout 红显但不回流）。**已知未决歧义（T-3.10 显式标注、本批不触碰）**：
+   本条只说 timeout 事件自身不产候选，对"timeout root 的子节点 error 是否参与"沉默；§6.1 step4
+   又写 L2 判定用 "request **或**子节点"。故 timeout root 的子节点候选**维持 T-3.10 前的既有
+   行为**（仍参与），待真实流量数据再定，勿凭两条互斥原文硬猜。
 6. **layer**：任一 L1 候选 → L1（高层优先）；否则任一 L2 → L2；否则 none。同一 error_type
    root+子节点双现 → 单候选（evidence=root、count=root1+子节点 count）。
 """
@@ -117,6 +123,11 @@ def _collect_candidates(
 
     同一 error_type root+子节点双现 → 单候选：layer 由值域唯一决定（L1/L2 值域互斥）、
     evidence=root 优先、count = root 1 + 子节点 count。
+
+    **兜底吸收门控（T-3.10，§6.1 L826）**：root 终态 ok 时**不取子节点候选**——请求成功
+    返回答 = 子节点错误已被业务吸收（v1 不回流，L3 二期）；该 trace 仍可被维度 1 查询、
+    其 llm_call error 仍进指标（§2.4 前提）。仅 root 侧候选保留（root ok 时按 §2.1 自带
+    error_type 不可能非空，实际等价于不产候选）。
     """
     aggr: dict[str, dict] = {}
 
@@ -133,8 +144,17 @@ def _collect_candidates(
 
     if facts.root_ok and facts.root_error_type:
         _consider(facts.root_error_type, is_root=True, add_count=1)
-    for e in facts.err_entries:
-        _consider(e.get("error_type"), is_root=False, add_count=int(e.get("count") or 1))
+    # 兜底吸收（T-3.10，§6.1 L826）：request 终态 ok = 子节点错误已被业务吸收，不产候选。
+    # 判据只取 root_status —— 刻意不叠加 root_ok：root_status 全仓唯一写点 = consumer/state.py
+    # `state.update(root_ok=1, …, root_status=event.status, …)`（root 到达同一条语句同时置位），
+    # 故 root_status == "ok" ⟹ root_ok == 1，合取项恒真、可证冗余；留单条件 = 只押「root 终态」
+    # 一个语义，不与派生布尔标志的将来定义漂移耦合。
+    # 判据不用"root_error_type 为空"——后者会把 timeout root 一并切掉（§6.1 step5 timeout 事件
+    # 不带 error_type），属本批未讨论的第二处行为变更，刻意不碰。
+    # 残 trace（root_status 恒 NULL，detail §5.1⑩）/ error / timeout 三类行为保持不变。
+    if facts.root_status != "ok":
+        for e in facts.err_entries:
+            _consider(e.get("error_type"), is_root=False, add_count=int(e.get("count") or 1))
     return [
         ErrorCandidate(
             error_type=et,
