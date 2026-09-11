@@ -38,7 +38,7 @@
 |---|---|---|
 | online 平台 | FastAPI backend + Vue3 frontend 完整实现细节 | 本文件全章 |
 | agent 接入 | 4 个存量 agent（gq/cs/sp/cc）的 obs-sdk 埋点/接入契约 | 本文件 §11 |
-| offline 依赖边界 | D19/D20 信封 + pull 传输 + 回写/回查的 **online 侧**实现 | §7 + §8.7 |
+| offline 依赖边界 | D19/D20 信封 + pull 传输 + 回写/**结果接收**的 **online 侧**实现 | §7 + §8.7 |
 | offline 内部 | 只到「依赖契约 + 期望行为」；实现归 **Task #4**（独立方案、独立评审） | §7.3「offline 期望行为」 |
 
 **回流一期 = error-only**：只回流 L1/L2 error（`case_type=regression_error` 一种），回流 agent 白名单 = {gq, cs, sp}（cc 不回流，D18）。
@@ -123,19 +123,19 @@ agent-evaluation-online/
 │   │   ├── converter/
 │   │   │   ├── envelope.py       # D19 信封构造（schema_version / evidence / assert 区，§6.3）
 │   │   │   ├── no_fallback_cfg.py# 组装时固化 fallback_utterance 词表快照（§6.3 step3/§7.1）
-│   │   │   └── backflow.py       # pull-API 服务端 + 激活/驳回/回查 回写处理（§8.7）
+│   │   ├── backflow/             # 回流域包（§7/§8.4）：claim.py / verify.py（判定内核）/ batches.py / ack.py / requeue.py / recurrence.py
+│   │   │   （**v1.23**：原 `converter/backflow.py` 从未落地；平台间接收面在 `api/backflow.py` + `api/pull.py`，**判定链零出站**）
 │   │   ├── worker/
 │   │   │   ├── judge_scan_job.py # 判定执行方：扫 judged=0 ∧ ttl_until≤now → classify → judged=1（§4.3/§6.1）；顺带清理过期判定行（§4.3/§10.1 purge）
-│   │   │   ├── cluster_job.py    # 周期聚类扫描：judged=1 ∧ processed=0 进聚类（§6.2）
+│   │   │   ├── cluster_job.py    # 周期聚类扫描：judged=1 ∧ processed=0 进聚类（§6.2）；**reentry 版本门控内联本 job**（无独立 reentry_job，§7.5）
 │   │   │   ├── assemble_job.py   # cluster→payload 组装（§6.3）
-│   │   │   ├── requeue_job.py    # invalidated→assembled 复位（admin 触发；刷新 assembled_ts，§7.4）
 │   │   │   ├── claim_ttl_job.py  # claim 复核窗超窗回退 open（§7.6）
-│   │   │   ├── recheck_job.py    # claim 后按 fix_version 轮询 offline run → 单错级回查（§7.6/§8.7）
-│   │   │   ├── rollup_job.py     # 7d 小时级指标 rollup（§5.3）
-│   │   │   └── reentry_job.py    # 观察哨位复发反馈（版本门控，§7.5）
+│   │   │   ├── rejudge_job.py    # 本地补判安全网：扫 claim 簇重放已落库结果行（**零 outbound**，§7.6/§8.7）
+│   │   │   └── rollup_job.py     # 7d 小时级指标 rollup（§5.3）
+│   │   │   （无 requeue_job：invalidated→assembled 复位由 admin/offline **请求驱动**，落 `app/backflow/requeue.py`，§7.4）
 │   │   └── api/                  # 路由（§8 全集）；无 HTTP ingest——上报只走 Kafka（§3.3）
-│   │       ├── auth.py  ├── trace.py  ├── metrics.py  ├── clusters.py
-│   │       ├── cases.py ├── agents.py ├── config.py   └── offline.py   # 平台间 pull/回写（受信凭证）
+│   │       ├── auth.py  ├── trace.py  ├── metrics.py  └── backflow.py  # 回流 API 全集（§8.4）+ 平台间读面
+│   │       ├── pull.py  ├── deps.py   ├── schemas.py  └── router.py    # pull-API 服务端 + 受信凭证（§8.7）
 │   ├── tests/                    # 单测 + 冒烟（§14）
 │   └── docker/                   # Dockerfile
 ├── sdk/
@@ -149,7 +149,7 @@ agent-evaluation-online/
 
 ### 1.3 端到端数据流（一条链看懂）
 
-> 时间驱动 job 周期（均【实现约定】，单飞见 §5.3/§7.6；**周期以 `backend/app/worker/main.py` 常量为唯一事实源**，本行为 v1.22 对齐后的实现实态）：judge_scan 60s；cluster 15s；assemble 60s；claim_ttl 60s；recheck 60s（轮询 offline run；`offline_base_url` 空 = 停轮）；rollup 每小时对齐整点（+5s 抖动）；**无独立 reentry job**（同键再现归并由 cluster_job 内联，见 §7.5）；requeue 仅 admin/offline 触发，不设周期。多实例部署时 job 需分布式锁/CAS 抢单飞，防 rollup/recheck/聚类双写。
+> 时间驱动 job 周期（均【实现约定】，单飞见 §5.3/§7.6；**周期以 `backend/app/worker/main.py` 常量为唯一事实源**，本行为 v1.22 对齐后的实现实态）：judge_scan 60s；cluster 15s；assemble 60s；claim_ttl 60s；rejudge 60s（**本地补判，零 outbound**——判定已由结果推送端点同步驱动，见 §7.6/§8.7）；rollup 每小时对齐整点（+5s 抖动）；**无独立 reentry job**（同键再现归并由 cluster_job 内联，见 §7.5）；requeue 仅 admin/offline 触发，不设周期。多实例部署时 job 需分布式锁/CAS 抢单飞，防 rollup/聚类双写。
 ```
 agent 业务 → obs_sdk 打点(内存有界队列) → Kafka obs.agent.<name>
    → consumer(校验/脱敏复核) ──┬──→ ES 事件+日志 index（_id 幂等, ILM30d）
@@ -159,7 +159,7 @@ agent 业务 → obs_sdk 打点(内存有界队列) → Kafka obs.agent.<name>
        → error_case_link offline_status=assembled (payload_id 幂等)
    → offline pull-API 拉取 assembled → 建 draft
    → offline 结构自检 → 回写 active/invalidated(rejected)
-   → offline 回归 run → run_results 回查 → verify_status passed/failed 单错级
+   → offline 回归 run → POST /backflow/regression-results（落 verify_run_record + 同事务判定）→ verify_status passed/failed 单错级
    → passed 触发线上 claim/fixed 流转（§7.6）
 ```
 
@@ -195,7 +195,7 @@ agent 业务 → obs_sdk 打点(内存有界队列) → Kafka obs.agent.<name>
 ```
 P0(骨架): models+migrate → consumer(校验/脱敏/ES分派) → ES 索引 → api/trace 查询 → sdk 雏形 → 链路冒烟
 P1(两维): analyzer 判定态+ES 实时 agg+metrics API → 看板+全站纵览前端 → gq/cs/sp 接 SDK（cc 仅 HTTP 层）
-P2(回流): analyzer 聚类/去重 → converter 信封+落库 → offline pull-API/回写/回查 → 前端回流页
+P2(回流): analyzer 聚类/去重 → converter 信封+落库 → offline pull-API/回写/结果推送 → 前端回流页
           → worker(jobs) → 端到端回归闭环验收 + 兜底吸收基础可见性验收
 ```
 
@@ -634,7 +634,7 @@ CREATE TABLE `verify_run_record` (
   verified_ts   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE KEY uk_verify_run (link_id, run_id)
 ) COMMENT='回归 run 单错级结果（终态只读：已定 passed/failed/superseded 不被迟到 run 改写，见 §7.6）';
--- 消费注（v1.4，B-11/R6；v1.5 R-1/R-2 修订）：verify_run_record = 跨版本稳定序列 K 的逐版本时间线载体（§7.6 判定语义 v1.5）——每「claimed case 纯净可判」版 error run 终态判定后追加一行（run_status=该版终态字面量）；K 读 claim 固化值 `claim_k`（cluster.claim_k，claim 生命周期内不可变、同 link 时间线共享同值 → 不加逐行快照列，R6 载体承诺保持）；纯净性由 recheck 从「该 case 行 + run 内 na 行的 error_type 影响域（环境/case）」派生，run 级 na_case 不再直接作判据（保留读面：展示/审计/告警）
+-- 消费注（v1.4，B-11/R6；v1.5 R-1/R-2 修订）：verify_run_record = 跨版本稳定序列 K 的逐版本时间线载体（§7.6 判定语义 v1.5）——每「claimed case 纯净可判」版 error run 终态判定后追加一行（run_status=该版终态字面量）；K 读 claim 固化值 `claim_k`（cluster.claim_k，claim 生命周期内不可变、同 link 时间线共享同值 → 不加逐行快照列，R6 载体承诺保持）；纯净性由判定内核从「该 case 行 + run 内 na 行的 error_type 影响域（环境/case）」派生（**v1.23：数据源 = 本 link 已落的 `raw_json` 载荷原样留档**，非 offline 读面），run 级 na_case 不再直接作判据（保留读面：展示/审计/告警）
 
 -- ⑦ conversion_record 回流/人工审计
 CREATE TABLE `conversion_record` (
@@ -933,9 +933,9 @@ CREATE TABLE `trace_judge_state` (
 
 **offline 期望行为（Task #4 输入，online 侧依赖不变式）**：
 1. pull 拉取后**不改写 case 内容**；发现内容缺口不就地编辑补全 → 驳回 rejected + 回写 invalidated，由 online 修正现场重推（§7.4）——防内容与线上现场漂移。
-2. `list_runs` 需支持按 `agent + version + status` 过滤回归 run 且**按含 case_id 过滤**；`run_results` 返回 `case_id + case_type + pass_fail`。
+2. ~~`list_runs` 需支持按 `agent + version + status` 过滤回归 run 且**按含 case_id 过滤**；`run_results` 返回 `case_id + case_type + pass_fail`。~~ **（v1.23 作废：online 不再调这两个读面——offline 改为「run 终态后主动推 `POST /backflow/regression-results`」，载荷自带 `cases[]`（`case_id + case_type + case_pass`），§8.7 载荷表。）**
 3. 回归 run 不占互斥槽、不参与 max_active_runs；对回归 run 设独立保留档（pinned/豁免 cleanup），清理先归档 pass_fail 终态（归档前保留终态字面量 + na 计数，Task #4-② B-6）。
-4. error-only run 的 `pass_fail` = executor 技术判定 ∧ verifier no_fallback 合成，由 verifier 阶段落终值（不经 SCORING、不产 agent_score）——online 回查对 error 生效依赖此语义。
+4. error-only run 的 `pass_fail` = executor 技术判定 ∧ verifier no_fallback 合成，由 verifier 阶段落终值（不经 SCORING、不产 agent_score）——online 判定对 error 生效依赖此语义。
 
 ### 7.4 invalidated / rejected 重推（自愈闭环，online 侧落点）
 
@@ -950,7 +950,7 @@ CREATE TABLE `trace_judge_state` (
 
 **invalidate reason 结构化码（驳回与人工统一）**：`offline_cap_gap`（offline adapter/判定器缺）→ 归 offline 重扫自愈（本表上行）；`online_content_gap`（payload 内容缺，reason 指明缺项）→ 归 online admin 重推（本表下行）；`manual_invalidate`（admin 人工判无效，可附补充理由）。code 随 §8.7 ack/聚类详情透出，前端按码出文案（§9.3）。
 
-### 7.5 reentry：线上观察哨位（worker/reentry_job.py）
+### 7.5 reentry：线上观察哨位（**内联于 cluster_job，无独立 job**——原 `worker/reentry_job.py` 从未存在）
 
 - 观察键 = error 去重键（agent+interface+error_type+input_hash，与 §6.2 同源）。
 - 触发：cluster 已 claim/fixed 后，同键错误**线上再现**（judged 为 L1/L2 的新事件）。**版本门控（v1.1，序比较语义 Task #4-② B-5 细化见下）**：仅当新现事件版本与 `cluster.fix_version` 满足**等值+日期前缀门控**（修复确已上线、回归有据）才开 reentry；修复上线中/未上线再现 → 只按 §6.2 窗口 `count+1`，不开新 cluster（防修复落地前反复抖 cluster、空转回归）。**reentry 产物 cluster（generation>1）后续 claim 受 R7 约束（§7.6 v0.6.1 判定）**：claim 版本若 = 该 (agent,version) 已有 completed 回归 run 的版本 → 回查旧 run pass 不 auto-fixed、转 needs_review（reason=`reentry_same_version`）。
@@ -981,23 +981,23 @@ CREATE TABLE `trace_judge_state` (
 | invalidated | offline 驳回/人工判无效 | — | pending（**重推位**：requeue §7.4）；弃用位置 `superseded`（释放现行占位，§5.1 注） |
 
 - `verify_status`：pending（含"待 &lt;version&gt; 回归 run"）/ passed / failed / invalidated / superseded。**终态只读**：已定 passed/failed/superseded 的 link 不被迟到 run 改写（只追加 `verify_run_record` 时间线；§7.6 单错级回查/终态只读）。
-- **单错级回查规则（solution §10.5；auto-fixed 判定语义 v1.5 = claim 固化 `claim_k` + claimed-case 级纯净判据，见下 v1.5 blockquote）**：回查锚定 = **claim 填的 fix_version** 起该 (agent,case) 的回归 run 序列，逐版取 `run_results.pass_fail` 判定；**不取乱序 run**（防多版本先后触发拿错 run）；该 case 纯净可判版 pass → 计入 K（计满 `claim_k` → verify passed → cluster fixed，闭环）；run 内他错仍红不阻塞本错 closed（na 影响域归类见下 v1.5）。
+- **单错级判定规则（solution §10.5；auto-fixed 判定语义 v1.5 = claim 固化 `claim_k` + claimed-case 级纯净判据，见下 v1.5 blockquote）**：**判定数据源（v1.23 第 3 刀）= 本 link 已落的 `verify_run_record` 行集**（载荷 `raw_json` **原样留档**，逐 case 行/发版水位/前序指针全从这里重派生）+ cluster 字段，**不再是 offline 只读面**；判定锚定 = **claim 填的 fix_version** 起该 (agent,case) 的**已收**回归 run 序列，逐版取行内 `case_pass` 判定；**不取乱序 run**（防多版本先后触发拿错 run）；该 case 纯净可判版 pass → 计入 K（计满 `claim_k` → verify passed → cluster fixed，闭环）；run 内他错仍红不阻塞本错 closed（na 影响域归类见下 v1.5）。**触发点 = 结果推送端点内**（`api/backflow.py:record_regression_result`，`flush` 后 `commit` 前**同事务**跑 `verify.judge_link`）+ **`rejudge_job` 本地补判兜底**（60s，**零 outbound**）——**判定链不含任何 offline 出站调用**（§8.7）。
 
 > **回归 run 判定语义（Task #4-② 契约修订 B-1(a)/B-1(b)，2026-09-03）**：
-> - **判定源限定**：recheck 只消费 offline error_regression run 终态 `status ∈ {completed, partial_failed, timeout, cancelled}`，**绝不含 running/pending**（半态先落库的部分 pass 行不可作终值，防 premature fixed）。
-> - **同 (agent,version) 多 run 选取序**：锚定 claim fix_version 后，该 (agent,version) 若存在多条 run（崩溃重跑/坏终态重建产物），优先最近 `completed`；无 completed 取最近可判终态（`status ∉ {pending, running}`）。claim 未 closed 期间每次回查取「当前最近可判 run」判定、有推进即更新（未定前用新 run；不覆写已 closed）。
-> - **per-case 值域映射**（`run_results.pass_fail`；auto-fixed 触发在**纯净 run 前提 + K 稳定序列**下执行——v0.6.1 精化见下，本条保留 pass/fail/na/缺行四值语义）：`pass` → 该 case 该版判定**通过**（纯净可判版内计入 K；置 verify passed 需 K 满，非纯净 run 内 pass 不触发 verify passed、转 needs_review(`unclean_run`)）；`fail` → error 仍在（verify failed → 即时 reopen，cluster 回退 open、K 清零）；`na` 行（携带 `error_type`）→ 该 case infra 无法判定 → claimed cluster 置 needs_review（reason=`na`，同 run 同 error_type 聚合为批，见下）；case 在该 run **无结果行（缺行）≠ na** → 无终值，继续轮询至 claim TTL 超窗回退 open（K 不计数不终止），不触发 needs_review。
+> - **判定源限定**：recheck 只消费 offline error_regression run 终态 `status ∈ {completed, partial_failed, timeout, cancelled}`，**绝不含 running/pending**（半态先落库的部分 pass 行不可作终值，防 premature fixed）。**【v1.23 取代】拉取型 recheck 已整删；「结果源」= offline 推送的 `POST /backflow/regression-results` 载荷（**仅终态 run 才推**，故「绝不含 running/pending」自动成立），判定在推送端点内同事务执行（§8.7）。**
+> - **同 (agent,version) 多 run 选取序**：锚定 claim fix_version 后，该 (agent,version) 若存在多条 run（崩溃重跑/坏终态重建产物），优先最近 `completed`；无 completed 取最近可判终态（`status ∉ {pending, running}`）。claim 未 closed 期间每次回查取「当前最近可判 run」判定、有推进即更新（未定前用新 run；不覆写已 closed）。**【v1.23 取代】推送源下同一 (agent,version) 的多个 run 由 offline **各推一笔**、逐笔落库（`uk_verify_run(link_id, run_id)` 幂等）；「多 run 选取序」不再需要——`_pick_run` 已删（v1.23 修订记录 ⑬(b)）。**
+> - **per-case 值域映射**（`run_results.pass_fail`；auto-fixed 触发在**纯净 run 前提 + K 稳定序列**下执行——v0.6.1 精化见下，本条保留 pass/fail/na/缺行四值语义）：`pass` → 该 case 该版判定**通过**（纯净可判版内计入 K；置 verify passed 需 K 满，非纯净 run 内 pass 不触发 verify passed、转 needs_review(`unclean_run`)）；`fail` → error 仍在（verify failed → 即时 reopen，cluster 回退 open、K 清零）；`na` 行（携带 `error_type`）→ 该 case infra 无法判定 → claimed cluster 置 needs_review（reason=`na`，同 run 同 error_type 聚合为批，见下）；case 在该 run **无结果行（缺行）≠ na** → 无终值，继续轮询至 claim TTL 超窗回退 open（K 不计数不终止），不触发 needs_review。**【v1.23 取代】`run_results.pass_fail` → 载荷 `cases[].case_pass`；「轮询」→ 「保持 `pending`，等后续推送或 `rejudge` 补判」；并新增 `gap`（`prev_terminal_version` 缺行 → **中断不累计 K**，§8.7）。**
 
 > **na 批量聚合载体（Task #4-② 契约修订 B-4，2026-09-03）**：同 run 同 error_type 的多个 `na` case 只生成**单条 review 批**——载体 `needs_review_batch`（run_id + agent + bound_version + error_type + 引用 case/link 列表 + status(open/resolved) + created_ts/closed_ts/closed_by 审计），不逐 case 置 needs_review；被引用各 claimed cluster **保持 claim**、由该批处置统一收口（批量 reopen → 各 cluster 回退 open 走 reopen；或补证据/升级），claim TTL 超窗仍兜底回退 open。单 case na（无同批）走上表 cluster 级 needs_review。处置入口：批量 `POST /backflow/needs-review-batches/{id}/resolve`（§8.4）；单 case na（无同批）走 cluster 级既有 `needs-review-resolve`。DDL §5.1 ⑦b。**（v1.4：本表亦承载 `unclean_run` 批，reason 值域 = {na, unclean_run}，聚合归属/撞键规避见下 v0.6.1 精化 blockquote。）**【v1.5 修订：批纯化 = 仅 unclean_run 批，na 退批改 cluster 级单点处置（§7.6 v1.5 ④）——本条 B-4 na 聚合不再适用。】**
 >
 > **处置语义（v1.3 排查补正）**：resolve 动作集 = {`reopen_cluster`（引用各 cluster CAS `claim→open`，conversion_record action=needs_review_resolve、detail 带批 id + reason；旧 link 已终态自动让出 cur_key 走 reopen 条）、`escalated`（超时升级走 §16 既有通道，批置 resolved，引用 cluster 由人工后续处置）}；**整批同动作、单事务原子**，不支持部分处置（同 run 同 error_type 同因，拆开无意义）；引用各 cluster 在批处置前保持 claim、不逐 case 置 needs_review。单 case 级处置动作同上、以 cluster 为单位。**【v1.6 R-9 放宽：语义化跳过非 claim 引用 cluster】** resolve(reopen_cluster) 事务内逐引用 cluster CAS `claim→open`；CAS 失败读当前态分流——已 open（claim TTL 超窗/回归 failed 自然回退）→ 目标态已达成，计 `skipped_already_open` 幂等跳过（非部分处置——处置目标「该错不再被 claim 锁死」已达成）；fixed（极端：K 满 auto-fixed 提前收敛）→ 计 `skipped_fixed`（错误确已修不再 reopen）；其余不可预期态 → 该 cluster 不处置、返回明细待人工复核。批整体仍**单事务**置 resolved；批级 CAS（status open→resolved）仍防双 admin 并发（后到者 409）；重试幂等安全。conversion_record 记逐 cluster 结果（reopened / skipped_already_open / skipped_fixed / manual_review）。
 
 > **auto-fixed 判据重构落字（v1.4：纯净 run + 跨版本稳定序列，Task #4-② R5-R7 = offline `error-backflow-phase2.md` v0.6.1，2026-09-07 终审通过）**——B-1 语义「单 run pass→fixed」不再单独作 auto-fixed 依据，auto-fixed 仅在下列收敛条件下置：**【v1.5 修订指针：本条目 ① K 取值、② 纯净判据粒度、③ 聚合归属中 na 批部分已被下一条 v1.5 blockquote 修订，读取以 v1.5 为准；reentry(B-12) 与 K-TTL 收敛终点不变。】**
-> - **K 稳定序列（B-11/R6）**：该 case 自 claim fix_version 起、**连续 K 个「纯净可判」版本 run 均无 fail** 才置 verify passed（K=2 默认、可配【实现约定】dict_config；fix_version 自身为第 1 版确认；K=1 兼容 v1.3 单版行为）。fail 任一版本 → verify failed、即时 reopen、K 清零；逐版判定追加 `verify_run_record` 时间线（载体为既有表，**不加纯净性列、不加 offline 字段**——纯净性由 recheck 从关联 run 的 `na_case==0` 派生，R6 载体承诺保持）。
+> - **K 稳定序列（B-11/R6）**：该 case 自 claim fix_version 起、**连续 K 个「纯净可判」版本 run 均无 fail** 才置 verify passed（K=2 默认、可配【实现约定】dict_config；fix_version 自身为第 1 版确认；K=1 兼容 v1.3 单版行为）。fail 任一版本 → verify failed、即时 reopen、K 清零；逐版判定追加 `verify_run_record` 时间线（载体为既有表，**不加纯净性列、不加 offline 字段**——纯净性由 recheck 从关联 run 的 `na_case==0` 派生，R6 载体承诺保持）。**【v1.23 取代】纯净性由判定内核从本 link **已落结果行**（载荷 `cases[]`）+ run 内环境级 na 现场重派生——**不读任何 offline 读面**；判定触发改推送端点（§8.7）。**
 > - **纯净 run 前提（B-10/R5）**：含技术性 na（`na_case>0`，error_type ∈ 技术失败域）的 run = 复现环境不可靠 → 其内 **pass 行不触发 verify passed**、转 needs_review；fail 行不受影响（强证据即时 reopen）；不纯净 run 不计 K 不清零（中断观察，非否定）。
 > - **reason 值域与聚合归属（v0.6.1 定义①）**：needs_review reason 值域 = {`na`（error run na 结果行）、`unclean_run`（含技术 na run 内 pass 行）、`reentry_same_version`（R7）}；判分 na/会话快照不足等二期源不入值域。聚合：`na` 与 `unclean_run` 共用 `needs_review_batch`（聚合键 run_id+error_type），**同 (run, error_type) 至多一条、不撞 uk_batch_agg**——不纯净 run 该 error_type 同时含 na+pass 行时并入**单条 reason=`unclean_run` 批**（link_refs 引两类 case、reason 附技术 na error_type 明细），仅 na 无 pass 走 reason=`na` 批（沿 B-4）；`reentry_same_version` → **claim 级单条、不产批**（走 cluster 级 `POST /backflow/clusters/{id}/needs-review-resolve`）。resolve 动作集 {reopen_cluster, escalated}/整批单事务/处置前引用 cluster 保持 claim，均沿 B-4（§8.4）。
 > - **reentry 同版本禁 auto-fixed（B-12/R7）**：generation>1（reentry 产物）cluster claim 填的 fix_version = 该 (agent,version) 已有 completed run 的版本 → 旧 run pass 属修复前证据 → **不得 auto-fixed**、转 needs_review（reason=`reentry_same_version`，处置详情提示「升级验证需人工或升版」）；改填新版本 → 新 run 走纯净 run + K 正常判据。§7.5「completed 不重建」守卫不放开（重建通道引入同版复验振荡、成本高收益低）。
-> - **K-TTL 收敛终点（v0.6.1 定义③）**：verify passed 仅 K 满时置；收敛 = **两时钟先到者**——K 满 → cluster fixed（TTL 停钟）/ claim TTL(14d) 超窗 → 回退 open（K 观察中止、下轮 claim 重计）；TTL 自认领起算，K 观察/回查推进不重置、不延长 TTL；缺行/不纯净中断观察继续轮询至 K 满或 TTL 到期，无无限期挂起。
+> - **K-TTL 收敛终点（v0.6.1 定义③）**：verify passed 仅 K 满时置；收敛 = **两时钟先到者**——K 满 → cluster fixed（TTL 停钟）/ claim TTL(14d) 超窗 → 回退 open（K 观察中止、下轮 claim 重计）；TTL 自认领起算，K 观察/回查推进不重置、不延长 TTL；缺行/不纯净中断观察继续轮询至 K 满或 TTL 到期，无无限期挂起。**【v1.23 取代】不再有「轮询轮次」——「继续观察」= 等后续结果推送到达即补判（`rejudge_job` 兜底，§8.7）；**K-TTL 两时钟收敛终点不变**。**
 >
 > **auto-fixed 判定语义 v1.5（R-1 claim_k + R-2 claimed-case 级纯净判据，2026-09-07 评审拍板落字）**——修订上 v1.4 ① K 取值、② 纯净判据粒度、③ 聚合归属三处，其余（判定源限定、多 run 选取序、reentry B-12 同版本禁 auto-fixed、K-TTL 收敛终点）沿 v1.4 不变：
 > - **① K 取 claim 固化 `claim_k`（R-1/A1）**：claim 时将 K 固化为 `error_cluster.claim_k`（值域 {1,2}，claim CAS 同批写；claim API 可选入参 `k`、超域 400，缺省取 dict_config `auto_fixed_k_default`=2 并**写死固化值**）；verify passed = 「自 claim fix_version 起连续 **claim_k** 个纯净可判版本 run 均无 fail」。K **只读 claim 固化值、不实时读全局键**（防观察期改全局键致已攒序列验收标准漂移）。`claim_k=1` = fix_version 纯净可判版 pass 即 verify passed（等价 v1.3 单版判，判据仍含纯净 run + 判定产物体系，比 v1.3 严）。
@@ -1015,7 +1015,7 @@ CREATE TABLE `trace_judge_state` (
 > - **⑤ reason 值域不变、触发与聚合收窄（R-2 评审②③）**：reason 值域 {`na`, `unclean_run`, `reentry_same_version`} 不变；`unclean_run` 触发从「含技术 na run 内 pass 行」窄化为「含**环境级 na** run 内 pass 行」；`needs_review_batch` **纯化 = 仅承载 unclean_run 批**（同 run 同环境级 error_type 下多个 pass 行 cluster 聚为单条批，沿 uk_batch_agg）；**纯 na cluster 退批** → cluster 级单点 `needs-review-resolve`（动作 reopen_cluster / escalated，或保持 claim 等下轮 error run 自然补判）；撞键裁定收窄 = v1.4「na+pass 并入单条 unclean_run 批」仅适用于**多个 unclean（pass 行）cluster** 之间，na cluster **不再被并入批**无辜批量 reopen。运行级 `na_case` 读面保留（展示/审计/告警），不再直接作纯净判据。
 >
 > **v1.6 修订（R-4 缺行成因诊断 + R-10 截断证据降级 + reason 值域 3→4，2026-09-07 R-3~R-10 评审拍板落字；offline 依据 error-backflow-phase2.md v0.7）**：
-> - **① 缺行成因诊断（R-4）**：claimed case 持续缺行（自 fix_version 起无该版本 run 终值、按 ⑤ 轮询）时，claim 详情给出成因诊断入口——可能成因 = offline cap 截断挤出（newest-active-first 挡在 run 外）或未达终态。**v1.8 R-16（自动核对升级）**：recheck 判缺行时自动 GET runs?agent=&version= 拉该版 run、判 `case_id ∈ excluded_case_ids`（R-4 溢出 case 列表字段，落 list/detail 位置留 Phase B 核对）——∈ → 自动判**「窗口外欠测」**（非修复失败）→ 走错误量治理 / 人工 fixed；∉ → 维持「未达终态/其他」并引导人工去 offline 平台 `excluded-cases` 只读面兜底核对（§9.3）。判定维持：不自动 reopen、不进 needs_review、不计 K 不清零（维持 ⑤ 无终值轮询至 TTL）。不跨端保窗口（phase2 v0.6 L111 拍板维持）。
+> - **① 缺行成因诊断（R-4）**：claimed case 持续缺行（自 fix_version 起无该版本 run 终值、按 ⑤ 轮询）时，claim 详情给出成因诊断入口——可能成因 = offline cap 截断挤出（newest-active-first 挡在 run 外）或未达终态。**v1.8 R-16（自动核对升级）**：recheck 判缺行时自动 GET runs?agent=&version= 拉该版 run、判 `case_id ∈ excluded_case_ids`（R-4 溢出 case 列表字段，落 list/detail 位置留 Phase B 核对）——∈ → 自动判**「窗口外欠测」**（非修复失败）→ 走错误量治理 / 人工 fixed；∉ → 维持「未达终态/其他」并引导人工去 offline 平台 `excluded-cases` 只读面兜底核对（§9.3）。判定维持：不自动 reopen、不进 needs_review、不计 K 不清零（维持 ⑤ 无终值轮询至 TTL）。不跨端保窗口（phase2 v0.6 L111 拍板维持）。**【v1.23 作废】本条 R-4 整条取消——`excluded_case_ids` 读面、`recheck` 自动 GET runs 均不存在（推送为**全量对账**，run 跑过的每个 case 都在 `cases[]` 里，无「缺行 → 轮询」场景，§8.7 作废清单）。缺行语义改由载荷 `prev_terminal_version` 单值指针承载（缺行 → `gap` 中断、保持 `pending`）。**
 > - **② 截断复现证据降级（R-10）**：复现输入源原始 input >8K 被截断（`error_cluster.input_truncated=1`，§5.1④）→ 该 claimed case 相关 run 的 pass **不计 K、不置 verify passed** → needs_review(reason=`input_truncated`，claim 级单条、不产批)；fail 强证据不变（即时 reopen）；缺行不变。
 > - **③ reason 值域 3→4（R-10）**：{`na`, `unclean_run`, `reentry_same_version`} + **`input_truncated`**（v1.5 R-2 钉死值域的有意扩展；聚合归属 = claim 级单条不产批，走 cluster 级单点 needs-review-resolve 同 reentry_same_version 通道）；`needs_review_batch` **仍仅承载 unclean_run 批**（input_truncated 不入批）。
 >
@@ -1023,7 +1023,7 @@ CREATE TABLE `trace_judge_state` (
 > - **① R-13 截断判定位窗口化（接 v1.6 ②）**：`error_cluster.input_truncated` 语义从「首现只置不清」改 **当前判定态**——同键窗口内新现 trace 判定态到达（消费 step4）开簇/回填时**刷新**（单 trace 即刷：≤8K 判定态 0 → 清 0、>8K → 置 1，§6.2）；cluster 已 closed 不刷新（终态只读、迟到截断 trace 不推翻已 fixed）。效果：同键首现截断后，后续小输入纯净 trace 到达 → 位清 → 该 claim 观察窗内对应 run pass **可计 K**（escape 可达）；首现截断历史留已产出 needs_review(input_truncated) 产物 + cluster 详情警示，不因清位抹除。K 判据读位不变，仅位取值随判定态刷新。§6.2 同簇刷新复制 = online 机制代码新增，Phase B 立项。
 > - **② R-14 unclean_run 载体口径归一（接 v1.5 ⑤/状态机表）**：unclean_run = 存疑非否定 → **只经 needs_review_batch 载体处置**，批引 cluster **保持 claim、不入 needs_review 态**（状态机 claim 迁移 reason 列已收窄剔除 unclean_run）；批引用期间 cluster 详情/列表**实时派生「被未决 unclean_run 批 Bx 挂起（该 run 环境级 na、pass 存疑、K 观察中断）」标注**（join 未 resolved 批 link_refs、JSON_CONTAINS cluster_id，免加列）；TTL 不豁免——批引用属不纯净中断观察，TTL 到期照常回退 open，批 resolve 时 R-9 skipped_already_open 幂等覆盖（处置目标「该错不再被 claim 锁死」已达成）。
 > - **③ R-15 双通道优先级 = input_truncated 优先（接判定映射 ③/v1.6 ②）**：claimed case X 行 pass 同 run 同时满足「cluster input_truncated=1（截断证据）」+「R 存在环境级 na」→ 走 **input_truncated 单条**通道（cluster 级 needs-review-resolve，处置 = 人工复核/小输入重测治本），**不并入**该 run 的 unclean_run 批——批聚合 link_refs **排除自身截断的 cluster**；同 run 其余无截断 pass cluster 照常走批；reason=input_truncated、note 附「同版 run 含环境级 na」。依据 = 截断为该 case **纵向跨 run 固有**证据缺陷 > unclean_run 为该 run **横向单次**环境脏，横向批量归因不吞纵向个案治本。
-> - **④ R-16 缺行成因诊断自动核对（接 v1.6 ① R-4）**：`excluded_case_ids`（offline run 只读面溢出列表）核对从「UI 引导人工」升级为**自动**——recheck 判 claimed case 在 bound_version run 缺行时自动 GET runs?agent=&version=、判 case_id ∈ excluded_case_ids：∈ 自动标「窗口外欠测」（cap 挤出、非修复失败）；∉ 维持未达终态并人工兜底。字段落 runs list/detail 位置 = Phase B 实现核对项。
+> - **④ R-16 缺行成因诊断自动核对（接 v1.6 ① R-4）**：`excluded_case_ids`（offline run 只读面溢出列表）核对从「UI 引导人工」升级为**自动**——recheck 判 claimed case 在 bound_version run 缺行时自动 GET runs?agent=&version=、判 case_id ∈ excluded_case_ids：∈ 自动标「窗口外欠测」（cap 挤出、非修复失败）；∉ 维持未达终态并人工兜底。字段落 runs list/detail 位置 = Phase B 实现核对项。**【v1.23 作废】R-16 整条取消：`excluded_case_ids` 只读面 + 自动 GET runs 均不存在（§8.7 作废清单）。**
 > - **⑤ R-17 K 序列版本锚 = versions 读面（接 v1.4/v1.5 K 判据）**：候选版本序列从「出现过 error run 的版本序」改 **R-5 versions 读面（agent 已见 manual/held_out 版本全集 = 发版拓扑权威）取 ≥ fix_version 的全版本序**（window_days 默认覆盖 claim TTL 14d）逐版判：versions 有该版且 error run 有终值 → 判 K；versions 有该版但无 error run → **缺行中断**（下一可见 error run 不续缺环——中间版丢 run 时不得 v1(pass)+v3(pass) 假连续 → K 满 false-fixed）；该版 error run 迟到补建（R-3 差集）终态到达 → 补判推进。error run 由 manual/held_out 终态触发 → error run version ⊆ versions 全集，versions 恰补「有发版无 error run」维度。**v1.23 改（第 3 刀）：versions 读面整组作废**（§8.7 作废清单）——「有发版无 error run」这一维度**推送源无法枚举**（offline 只带单值水位 `agent_latest_version` + 单值前序指针 `prev_terminal_version`），故中断判据改由后者对照**该 agent 的已收版本全集**承载，**语义目标（杜绝中间版丢 run 的假连续 false-fixed）不变**，只是证据来源从「版本全集差集」降为「单值指针缺行」；「迟到补建 → 补判推进」在推送源下 = 迟到的结果推送到达即补判（判定在推送端点内**逐笔**执行，不再有轮询轮次）。
 >
 > **v1.9 修订（R-22 收尾回填 na 统一 + R-23 timeout 三层语义分界 + R-21 root-late 幂等标记，2026-09-07 R-20~R-24 评审拍板落字）**：
@@ -1238,7 +1238,7 @@ CREATE TABLE `trace_judge_state` (
 | claim 行 | 展示复核窗口剩余时间 + 固化 K（claim_k）取值；表单含 k 选择（1/2，缺省取全局默认）+ 版本活跃度动态提示 + claim 前 fix_version 软校验告警「未观测到该 agent 该版本评测 run——可能未发版或字面量不匹配，已见版本：…」（数据源 = offline `agent 已见版本`读面 §8.7，v1.6 R-5 兑现，非硬拦；**v1.20 做全**：P2-6 claim 端点前置查 `agent_versions(agent, window_days)` 读面 best-effort——fix_version 未见于已见版本 → 行内告警列出已见版本，offline 未配置/读面不可达 → 返 None 沿用既有 generation>1 软提示；**仍非硬拦**，正常新 fix 尚未跑回归时可能亮属 informational）；超窗回退提示 | §7.6/§8.4 |
 | claim/fixed 同键复发 caption（v1.20 新增钉定措辞） | `mode=fixed`（count>0 才显）：「同键新版本 &lt;latest&gt; 复发 N 次（judge 保留窗内现算；版本未过 reentry 门控未开新簇）；若非属本 fix 请 re-claim / reopen」；`mode=claim`：「自认领起同键线上再现 N 次（已计入观察计数），最新版本 &lt;latest&gt;」——读数 = 后端 `reentry_observe`（§7.5 现算口径，非 ES 派生）；保留窗 `trace_judge_purge_days`（默认 7d）外 blocked 行物理消失、计数回退属预期，caption 已标「保留窗内」 | §7.5 v1.20/§8.4 |
 | 未决 unclean_run 批挂起 + 处置整批（v1.20 前端兑现） | 批引 cluster 详情/操作区显「被未决批 B&lt;id&gt; 挂起」徽标 + 「处置整批」按钮（调 `needs-review-batches/{id}/resolve`，整批同动作）；读面 = detail 响应 `open_batches`（`link_refs` JSON 关联，v1.8 R-14 的实时派生口） | §7.6 v1.8（R-14）/§8.4 |
-| claim 回查持续缺行（无该版本 run 终值） | 诊断「可能 = offline cap 截断挤出（newest-active-first 挡在 run 外）或未达终态」+ 引导核对 offline 平台 `excluded-cases` 只读面；确认为挤出 → 标「窗口外欠测，非修复失败」→ 错误量治理/人工 fixed（不自动 reopen、不进 needs_review、轮询至 TTL） | §7.6 v1.6（R-4）/offline 只读面 |
+| ~~claim 回查持续缺行（无该版本 run 终值）~~ **（v1.23 作废）** | **整条作废**：`excluded_case_ids` 只读面与「轮询至 TTL」场景均已取消——推送为全量对账，缺行由 `gap`（`prev_terminal_version` 缺行）承载，保持 `pending` 不误判（§7.6 v1.6 ① v1.23 作废注 / §8.7） | §7.6/§8.7 |
 | assembled 已待 N 天超阈值 | 提示性标记「offline 疑似停摆，人工核查」（非告警、不设时钟） | §7.2/§13.5 |
 | link invalidated 驳回（reason 码区分） | `offline_cap_gap`→「offline 能力补齐后自动恢复（重扫自愈）」；`online_content_gap`→「现场已修正，待 admin 重推」；`manual_invalidate`→「已人工判无效，可重推或弃用」 | §7.4/§8.7 |
 | invalidated 列表批量重推 | 「批量重推」动作 + 可愈性标注（空词表/字段缺=可愈可勾选；版本不识别=禁勾、强确认才放行）+ 结果逐行回显 | §7.4/§8.4 v1.6（R-7） |
@@ -1375,7 +1375,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | # | 项 | 现状 | 建议 |
 |---|---|---|---|
 | O-1 | 全站 1h/24h 实时档无 agent 过滤的全量扫描护栏（性能评审 F-2） | **已裁定（v1.1）**：默认护栏 = agent 缺省「全站」档实时 agg 强制走结果缓存 `metric_agg_cache_ttl_s=60` + agg 查询超时 `metric_agg_timeout_ms=3000`（§8.3/§10.1/§14.4）；24h 档另提供「按 agent 维度」切换缩小扫描面 | P1 看板实现即落地，勿再拖（§12.2 不再视为开放） |
-| O-2 | `fix_version` 组装时序（组装先于 claim 时 link 不含 fix_version） | **已裁定（v1.1）**：组装（§6.3）不写 fix_version；claim 后回查锚定 `cluster.fix_version`（§7.6 recheck_job + §5.1 verify_run_record.bound_version）；requeue 重推复用 payload_id | 与 Task #4 对账仅剩 offline 侧 run 绑定版本解析 |
+| O-2 | `fix_version` 组装时序（组装先于 claim 时 link 不含 fix_version） | **已裁定（v1.1）**：组装（§6.3）不写 fix_version；claim 后判定锚定 `cluster.fix_version`（§7.6 判定内核 `judge_link`——推送端点内 + `rejudge_job` 补判两处调用；+ §5.1 verify_run_record.bound_version）；requeue 重推复用 payload_id | 与 Task #4 对账仅剩 offline 侧 run 绑定版本解析 |
 | O-3 | 现行 link 唯一索引对「终态后再生成」的支持 | **已裁定（v1.1）**：改生成列 `cur_key`（仅 `verify_status='pending'` 占位），终态自动释放 → reopen / 回归 failed 后再 claim 可在同 cluster 生成新 link（新 payload_id，§5.1 注/§7.6） | — |
 | O-4 | 7d 小时级 rollup 的 t-digest 库选型 | **已落地（2026-09-08，裁定变更）**：自研纯 Python t-digest（`backend/app/store/tdigest.py`）——原拍板引 PyPI `tdigest`，其 C 依赖（accumulation-tree）在无 MSVC 的 Windows 上只能源码编译（pip 实测失败）、本环境索引无纯 Python 替包 → **改自研**（用户确认）。JSON-base64 序列化（`{v:1, c:[[mean,weight],…]}`），只喂去重带权样本 + 超 K 单遍压缩 + 确定性（同输入同输出、跨平台无外部依赖） | 跨小时合并 vs 全量重算 p95 误差 <1%（§14.4 rollup 用例）；真实 rollup data 实测偏差 p50 0.35% / p95 0.04% / p99 0.17% 达标 |
 | O-5 | agent 路由自动发现扫描器实现（仅 FastAPI/OpenAPI 可枚举 agent） | cc/cs 枚举方式待核实 | Step 2.2 时定 |
@@ -1413,7 +1413,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 ### 13.5 审计与平台间
 
 - config/词表变更、人工操作（claim/ignore/invalidate/requeue/fixed-review）、auto 动作（assemble/activate/reentry）→ `conversion_record`（actor_user_id / system）。**config/词表变更的 detail 记到 `config_key` 粒度**（哪个 agent 的哪个 key、旧值摘要→新值摘要、操作人），审计列表可按 key/操作人筛选。
-- 平台间：offline 专用服务账号（evaluator）+ 独立凭证 + 端点白名单 + 双向认证；pull-API `case_type` 白名单 + `schema_version`；响应 evidence 二期字段恒 null 契约（§8.7）。online→offline 回查凭证轮换同步。
+- 平台间：offline 专用服务账号（evaluator）+ 独立凭证 + 端点白名单 + 双向认证；pull-API `case_type` 白名单 + `schema_version`；响应 evidence 二期字段恒 null 契约（§8.7）。~~online→offline 回查凭证轮换同步~~ **（v1.23 作废：online 已零出站，无 online→offline 调用即无该凭证链；`BACKFLOW_INBOUND_SECRET`/`scope=platform:readonly` 一并作废，§8.8。）**
 
 ---
 
@@ -1421,7 +1421,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 
 ## 14. 测试与验收用例（指导 tests/ 编写与阶段验收）
 
-> 单测覆盖核心逻辑（Service/analyzer/converter 分支）；Controller/Repository/工具不强制（项目质量规范）。单测聚焦：L1/L2 判定、去重归一、聚类窗口、信封构造、词表快照、claim CAS、回查守卫、幂等。
+> 单测覆盖核心逻辑（Service/analyzer/converter 分支）；Controller/Repository/工具不强制（项目质量规范）。单测聚焦：L1/L2 判定、去重归一、聚类窗口、信封构造、词表快照、claim CAS、判定守卫、幂等。
 
 ### 14.1 冒烟用例（P0~P1，可手工/脚本执行）
 
@@ -1443,7 +1443,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | E-4 | 7d 窗口内同键再现 | 只 count+1，不重复生成 link |
 | E-5 | 词表 fail-closed | dict_config fallback_utterance 置空 → 组装信封照建但结构自检不通过（offline 驳回 invalidated 回写）；词条命中 → no_fallback fail（§7.1） |
 | E-6 | invalidated 重推 | offline 驳回（能力缺 reason）→ online 展示重推状态；admin requeue（内容缺 reason）→ 复位 assembled 重新可拉（复用 payload_id） |
-| E-7 | claim → 单错级回查 | claim 填 fix_version → offline 回归 run（含该 case）→ run_results 该 case pass → verify=passed → cluster fixed（closed_by=auto_regression）；同 run 他错仍红不阻塞 |
+| E-7 | claim → 单错级判定 | claim 填 fix_version → offline 回归 run（含该 case）终态 → **offline 推 `POST /backflow/regression-results`** → 载荷该 case `case_pass=true` 落 `verify_run_record` + 同事务判定 → verify=passed → cluster fixed（closed_by=auto_regression）；同 run 他错仍红不阻塞（**v1.23：触发由「online 轮询拉」改「offline 推」，判定内核与结论不变**）|
 | E-8 | claim TTL 超窗 | 自动回退 open + conversion_record |
 | E-9 | reentry | claim/fixed 后同键线上再现 → 新 cluster + conversion_record「线上仍复发」提示 |
 | E-10 | 终态只读 | verify=passed 后迟到 run 结果不覆盖；只追加时间线 |
@@ -1462,7 +1462,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | E-23 | R-13 同键截断→小输入洗白 | 同键首现 input>8K（input_truncated=1、该版不计 K）→ claim 观察窗内同键 ≤8K 纯净 trace 到达 → cluster 位刷新清 0 → 对应版 run pass 计 K、escape 可达；已 fixed cluster 迟到截断 trace 不翻案（终态只读） |
 | E-24 | R-14 unclean_run 批引 claim 挂起标注 | 环境级 na 污染 run 下 claim cluster pass 存疑 → 聚 unclean_run 批、cluster 保持 claim + 详情实时显「被未决批挂起」；批未 resolve 期间 TTL 照走（到期回退 open）；批 resolve 时已 open → skipped_already_open 幂等 |
 | E-25 | R-15 双通道优先级 | 同 run 同 cluster 同时 input_truncated=1 + 环境级 na → 走 input_truncated 单条处置（reason 截断）、不并入批；同 run 其他无截断 pass cluster 照常走批 |
-| E-26 | R-16 缺行自动核对 excluded | claim 缺行 → recheck 自动拉该版 run → case_id ∈ excluded_case_ids → 自动标「窗口外欠测」不自动 reopen；∉ → 人工兜底 |
+| E-26 | ~~R-16 缺行自动核对 excluded~~ **（v1.23 取消，本用例作废）** | **整条作废**：`excluded_case_ids` 只读面与 `recheck` 自动拉 run 均不存在（§8.7 作废清单 / §7.6 v1.8 ④ v1.23 作废注）。**等价语义由 E-27 的 `gap` 中断承担**（缺行 → `gap`、保持 `pending`，不自动 reopen）；**验收时不得再测「excluded_case_ids / 窗口外欠测」**——该字段与读面在实现内已归零 |
 | E-27 | R-17 K 序列锚（**v1.23 第 3 刀改判据**） | 中间版 v2 丢 error run（洪峰拒建 / 结果推送三次全败）→ online 以载荷 `prev_terminal_version` 对照**该 agent 已收版本全集**（本批由 link 级改全局）**见缺行 → 中断**，v1+v3 不假连续 K 满；v2 结果迟到到达即**补判**触发 reopen，不出现 false-fixed。**原判据「recheck 以 versions 读面见 v2 有发版无 run」已随读面作废**（§8.7 作废清单 / §7.6 v1.8 ⑤ v1.23 改注）；online 侧已由 `push_probe` S-14/S-15 实测（含反假绿对照），真 offline 汇合留阶段 4 |
 | E-28 | R-21 root-late 补判 | 残 trace 已按子节点判定（judged=1、root_error 未聚类）后 root 迟到（root_status=error、root_error_type ∈ L1/L2 值域）→ step4 补一次 root 级候选：同键已有 open cluster → count+1（缺快照可补组装）；异键 → 开新 cluster 组装；同键已 closed（fixed/inactive）→ 跳过不翻案；root_late_complement 置 1，重放/多实例不重复补（§4.3④/§4.4/§6.2） |
 | E-29 | R-24 requeue guard 状态域 | fixed/inactive cluster 的 pending invalidated link → requeue 拒（409，提示走 superseded+reopen 重建）；open/claim/needs_review cluster 的 pending invalidated link → requeue 复位 assembled、**fix_version/claim_k/TTL 锚点不变**、回查仍以现 claim 锚定（§7.4/§9.4） |
@@ -1478,7 +1478,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 - rollup：迟到事件（≤6h）重算幂等不双计；缺桶回退实时 + 页面标注；**t-digest 跨小时合并 ≈ 全量重算 p95（误差 <1%）**（O-4 验证）。
 - 检索/看板：慢查询熔断/限流 + 单 trace 日志懒加载分页（§8.2 大 trace 防护）。
 - **O-1 护栏已裁定（§12.2，含数值判据）**：agent 缺省=全站 1h/24h 实时 agg 强制结果缓存 `metric_agg_cache_ttl_s=60` + agg 超时 `metric_agg_timeout_ms=3000`；全站 24h agg P95 ≤5s；trace 检索超时 `trace_query_timeout_ms=3000`、命中 ≤200 上限。
-- **写侧/后台判据**：判定态表单行 upsert P95 ≤10ms；rollup 每小时任务完成 ≤2min；judge_scan/cluster/assemble/claim_ttl/recheck 各时间驱动 job 单飞无重复执行（§1.3）；requeue 防抖 ≥5min 生效。
+- **写侧/后台判据**：判定态表单行 upsert P95 ≤10ms；rollup 每小时任务完成 ≤2min；judge_scan/cluster/assemble/claim_ttl/rejudge 各时间驱动 job 单飞无重复执行（§1.3）；requeue 防抖 ≥5min 生效。
 
 ### 14.5 集成异常与边界用例（task.md 阶段 4 T-4.13/T-4.14 编号化，X 系列）
 
