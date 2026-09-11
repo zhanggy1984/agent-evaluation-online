@@ -947,7 +947,7 @@ CREATE TABLE `trace_judge_state` (
 
 **requeue 守卫（v1.9 R-24 状态域精确化）**：仅 `offline_status=invalidated` 且 **`cluster.status ∈ {open, claim, needs_review}`** 可复位——**fixed/inactive（已 closed）禁 requeue**（需重测走 superseded+reopen 重建新 link/新 payload_id，防对已收敛证据翻案）；claim / needs_review 态**允许**（供 claim 回归 run / needs-review-resolve 补充证据的拉取复位，§7.6）。**锚点保护**：requeue 仅复位 link（invalidated→assembled，复用 payload_id + 重填 payload_json + 刷新 `assembled_ts`），**不动 cluster 锚点**——fix_version / claim_k / TTL 保留，run 判定仍以现 claim 锚定（§7.6）；复位不改 `verify_status`（保持 pending → 仍占现行位，§5.1 注）。**verify 兜底**：仅 `verify_status=pending` 的 invalidated link 走此路（已推进 passed/failed/superseded 的不在此路）。防抖限流：同一 link 人工重推间隔 ≥【实现约定】5 分钟。
 
-**批量 requeue（v1.6 R-7）**：`POST /backflow/links/requeue-batch`（§8.4）——admin 筛选 `offline_status=invalidated + invalidate_reason='online_content_gap'`（可加 agent/缺项过滤）批量复位，逐行复用本守卫 + 防抖 ≤N/min【实现约定 20】。**可愈性标注**：按 invalidate detail 缺项区分「补齐+重推可愈」（字段缺/词表空，补齐 `no_fallback_config` 即愈）vs「requeue 不愈」（版本不识别：schema_version 非 1.0 / case_type 新白名单值，需 offline 升级/联调同步才愈，phase1 §6.3 同源语义）——批量 UI 对不愈行**默认禁勾（强确认才放行）**，防误导 admin 反复重推。**（v1.23 反查订正：本段所述可愈性标注 + 不愈行禁勾/强确认门控未交付** —— 实现仅落批量端点，`requeue.py` docstring 把可愈性改写为「可愈性 = 补齐现场即愈」的机制描述；**register R-7 原拍板含标注并否决了备选 B「仅批量端点不加标注」**）返回逐行结果（requeued / skipped+原因）并记 conversion_record（actor、筛选条件、逐行结果）。
+**批量 requeue（v1.6 R-7）**：`POST /backflow/links/requeue-batch`（§8.4）——admin 筛选 `offline_status=invalidated + invalidate_reason='online_content_gap'`（可加 agent/缺项过滤）批量复位，逐行复用本守卫 + 防抖 ≤N/min【实现约定 20】。**可愈性标注**：按 invalidate detail 缺项区分「补齐+重推可愈」（字段缺/词表空，补齐 `no_fallback_config` 即愈）vs「requeue 不愈」（版本不识别：schema_version 非 1.0 / case_type 新白名单值，需 offline 升级/联调同步才愈，phase1 §6.3 同源语义）——批量 UI 对不愈行**默认禁勾（强确认才放行）**，防误导 admin 反复重推。**（v1.23 反查订正：本段所述可愈性标注 + 不愈行禁勾/强确认门控未交付** —— 实现仅落批量端点，`requeue.py` docstring 把可愈性改写为「可愈性 = 补齐现场即愈」的机制描述；**register R-7 原拍板含标注并否决了备选 B「仅批量端点不加标注」**）；**（2026-09-11 改判：换判据、单 link 路径交付）** 原判据经查不可实现（**不是「不可实现」**：一半 = 「版本不识别」**不落 invalidated 行**、**无承载对象**；另一半 = 细分码须**跨端扩 `REASON_CODES` 词表**、属**欠债**；改判理由是成本/收益不划算），改以**行为数据**为判据——该 link 历史重推次数（`requeue_count`，口径**不含本次**）≥2 时前端详情页转**双次强确认**（`BackflowClusterDetailView.vue:SUSPECT_REQUEUE_THRESHOLD`）；`requeue_link` 返回值与该判据同源（`requeue.py:163`，查在 `session.add` **之前**）。**注意：以上交付落在单 link 路径；本段所述的批量路径标注仍未交付**返回逐行结果（requeued / skipped+原因）并记 conversion_record（actor、筛选条件、逐行结果）。
 
 **invalidate reason 结构化码（驳回与人工统一）**：`offline_cap_gap`（offline adapter/判定器缺）→ 归 offline 重扫自愈（本表上行）；`online_content_gap`（payload 内容缺，reason 指明缺项）→ 归 online admin 重推（本表下行）；`manual_invalidate`（admin 人工判无效，可附补充理由）。code 随 §8.7 ack/聚类详情透出，前端按码出文案（§9.3）。
 
@@ -1100,7 +1100,7 @@ CREATE TABLE `trace_judge_state` (
 | `POST /backflow/clusters/{id}/fixed-review` | admin | admin 复核置 fixed：`{approve:true}` → fixed(closed_by=admin_review)；`approve:false` → reopen |
 | `POST /backflow/links/{id}/invalidate` | admin | **仅 offline_status∈{assembled,draft}** 可人工 invalidate（`{reason}`；active 后不提供——废弃走 superseded+reopen） |
 | `POST /backflow/links/{id}/requeue` | admin | invalidated→assembled 复位重推（复用 payload_id；§7.4 守卫 + 防抖） |
-| `POST /backflow/links/requeue-batch` | admin | **批量 requeue（v1.6 R-7）**：body `{filter:{agent?, invalidate_reason:'online_content_gap'}}` → 逐行 §7.4 守卫 + 防抖 → 返回逐行结果 + skipped 原因（~~含可愈性标注，不愈行需 force 确认~~ **v1.23 反查订正：未交付** —— 无 `force` 参、无逐行标注；且「`force`」本身是文档笔误：设计定位为**前端 UI 强确认门控**（register R-7），非后端 body 参数；前端批量重推 UI 整块未做） |
+| `POST /backflow/links/requeue-batch` | admin | **批量 requeue（v1.6 R-7）**：body `{filter:{agent?, invalidate_reason:'online_content_gap'}}` → 逐行 §7.4 守卫 + 防抖 → 返回逐行结果 + skipped 原因（~~含可愈性标注，不愈行需 force 确认~~ **v1.23 反查订正：未交付** —— 无 `force` 参、无逐行标注；且「`force`」本身是文档笔误：设计定位为**前端 UI 强确认门控**（register R-7），非后端 body 参数；前端批量重推 UI 整块未做）**；**（**2026-09-11 改判**）可愈性标注已以行为数据判据在**单 link 端点**交付（`POST /backflow/links/{id}/requeue` 返回 `requeue_count`）；本批量端点**仍未加标注**（批量审计 `link_id=None`，不可按 link 归因） |
 
 ### 8.5 Agent 与接口字典（admin；solution §12.1 Agent 管理 → 本文件 §9.2）
 
@@ -1248,7 +1248,7 @@ CREATE TABLE `trace_judge_state` (
 | ~~claim 回查持续缺行（无该版本 run 终值）~~ **（v1.23 作废）** | **整条作废**：`excluded_case_ids` 只读面与「轮询至 TTL」场景均已取消——推送为全量对账，缺行由 `gap`（`prev_terminal_version` 缺行）承载，保持 `pending` 不误判（§7.6 v1.6 ① v1.23 作废注 / §8.7） | §7.6/§8.7 |
 | assembled 已待 N 天超阈值 | 提示性标记「offline 疑似停摆，人工核查」（非告警、不设时钟） | §7.2/§13.5 |
 | link invalidated 驳回（reason 码区分） | `offline_cap_gap`→「offline 能力补齐后自动恢复（重扫自愈）」；`online_content_gap`→「现场已修正，待 admin 重推」；`manual_invalidate`→「已人工判无效，可重推或弃用」 | §7.4/§8.7 |
-| invalidated 列表批量重推 | 「批量重推」动作 + ~~可愈性标注（空词表/字段缺=可愈可勾选；版本不识别=禁勾、强确认才放行）~~ **（v1.23 反查订正：未交付）**+ 结果逐行回显 | §7.4/§8.4 v1.6（R-7） |
+| invalidated 列表批量重推 | 「批量重推」动作 + ~~可愈性标注（空词表/字段缺=可愈可勾选；版本不识别=禁勾、强确认才放行）~~ **（v1.23 反查订正：未交付）**（**2026-09-11 改判**：已改以行为数据判据交付于**详情页单 link 重推**——`requeue_count≥2` 转双次强确认；**本行所述「invalidated 列表批量重推」整块 UI 仍未做**，故该处标注仍未交付）+ 结果逐行回显 | §7.4/§8.4 v1.6（R-7） |
 | cluster status=needs_review | reason 值域 {`na`（该 case infra 无法判定，cluster 级单点处置）、`unclean_run`（环境级 na 污染下 pass 存疑，批量处置）、`reentry_same_version`（同版本旧 run pass，需人工/升版）、`input_truncated`（复现输入截断证据不可信，需人工复核或小输入重测，v1.6 R-10）}：补充证据回 open / 升级（v1.6 口径） | §7.6 |
 | 词表空 | 配置页/组装提示「空词库守卫不生效（fail-closed）」 | §10.1/§7.1 |
 | 历史通过被 superseded | 展示「历史通过于 V_x / 现又复发」 | §6.2 |

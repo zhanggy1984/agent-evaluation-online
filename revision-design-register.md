@@ -30,7 +30,7 @@
 | R-4 | cap 截断 newest-active-first 饿死最老 case：高错误率 agent 下队尾 case 永不进 run，其 cluster 永等不到终值 | phase2 §6.1 注1（cap 估算、newest-active-first、case_truncated 仅诚实标记） | online 语义/可见性 + offline 只读面透出 | 已拍板（方案 1：online 可见性 + 人工收敛） | approved → **landed**（2026-09-07：detail v1.6 §7.6 缺行成因诊断 + §9.3 excluded-case 只读面；solution v3.5.6；phase2 v0.7 §9.3 溢出透出 + §11.2 场景 18；不跨端保窗口维持）**【v1.23 已作废】`excluded_case_ids` 只读面取消**（推送为全量对账，无「缺行→轮询」场景）；缺行语义改由载荷必填 `prev_terminal_version` 承载（缺行 → `gap` 保持 `pending`）。见 detail §8.7 作废清单 / §7.6 v1.6① 的 v1.23 作废注。 |
 | R-5 | fix_version 三方字符串相等无硬校验：claim 填未发布/错版本 → offline 无该 version run → 空轮询满 14d | detail §8.4（claim 端点）、§7.5（版本字面量域 B-5）；phase2 风险 17（双向 mismatch） | online 交互/告警 + offline 只读面（数据源） | 已拍板（软校验 + agent 已见版本新读面） | approved → **landed**（2026-09-07：detail v1.6 §8.7 agent 已见版本读面 + §9.3 claim 表单软校验告警；solution v3.5.6 §10.4；phase2 v0.7 §9.3 读面数据源）**【v1.23 已改锚】「agent 已见版本」只读面整体作废**（§8.7 作废清单）——守卫所需最小信息改由载荷必填 `agent_latest_version`（单值水位）承载；claim 表单软校验**数据源消失**、降级为「online 已收结果的版本集」（仍为只提示不拦，**语义确已弱化**，detail §8.4/§8.7/§9.3）。 |
 | R-6 | L2 子节点 error_type 原值还原精度：err_summary_json 未钉 schema，若存分类非原值 → §6.2 原值去重粒度漂移 | detail §5.1⑩（err_summary 聚合字段）、§6.2（error_type 原值去重） | online schema 钉死 + 环2 用例 | 已拍板（钉死原值域） | approved（实现前钉死点） → **landed**（2026-09-07：随 detail v1.6 §4.3/§5.1 err_summary_json DDL schema 钉死落字，不独立占版本；solution/phase2 零改动） |
-| R-7 | online_content_gap（含**空词表**）无批量自愈：配置补齐后需 admin 逐个 requeue | detail §7.4（requeue、reason 码 online_content_gap）；phase1 §6.3/§6.5 | online（批量工具） | 已拍板（批量端点 + 可愈性标注） | approved → **landed**（2026-09-07：detail v1.6 §7.4/§8.4/§9.3 批量 requeue + 可愈性标注；solution v3.5.6 §10.3；online 环 2 场景 → detail v1.6 §14；phase2 零改动） |
+| R-7 | online_content_gap（含**空词表**）无批量自愈：配置补齐后需 admin 逐个 requeue | detail §7.4（requeue、reason 码 online_content_gap）；phase1 §6.3/§6.5 | online（批量工具） | 已拍板（批量端点 + 可愈性标注） | approved → **landed**（2026-09-07：detail v1.6 §7.4/§8.4/§9.3 批量 requeue + 可愈性标注；solution v3.5.6 §10.3；online 环 2 场景 → detail v1.6 §14；phase2 零改动）**；2026-09-11 改判（换判据）**：原判据（按 `reject_detail` 缺项分可愈/不愈）经查**不成立**（**注意措辞：「不成立」≠「不可实现」**）——分两层：① **一半无承载对象**：「版本不识别」类**根本不落 invalidated 行**（`REASON_CODES` 无版本码，`schema_version != 1.0` → `ERR_PULL_0004` 拒单），无判定对象；② **另一半须跨端扩词表**：ack 线路上**有 `reason` 槽**（`api/pull.py:63`），但值域被 `REASON_CODES`（`backflow/ack.py:25`）卡在 3 个粗码，细分码须双端契约扩展 = **欠债、非不可能**。**改判理由是「成本 vs 收益不划算」**（实害路径当前关闭；批量端点已实现但无 UI 入口），**不是「做不了」**。改用**行为数据判据**（该 link 历史重推次数 ≥ 阈值仍被打回 ⇒ 疑似不可自愈），范围 = **单 link 路径**（`requeue_count` + 前端双次强确认）；可愈性「**意图**」（防 admin 反复无效重推）**保留、判据替换**，但**门控强度实为降档**（见改判记录）。**批量侧标注仍未交付**（批量审计 `link_id=None` 不可按 link 归因）。register 原备选 C（定时自动 requeue job）**仍否决**。 |
 | R-8 | cap_gap 每小时自愈对**已 acked 闭环** rejected 行也重扫：映射持续缺时每小时重发无效 invalidated ack（online 200 幂等兜底，纯噪音） | phase1 §6.5（cap_gap 自愈未限定 ack_status） | offline 节流 | 已拍板（探测态节流） | approved → **landed**（2026-09-07：phase2 v0.7 §6.5 节流修正注记 + §11.2 场景 20 + phase1 §6.5 引用修订；offline 机制代码单独立项 code_detail；online 零改动 = detail v1.6 依据注 + solution v3.5.6） |
 | R-9 | needs_review_batch 整批 resolve 与 TTL job 并发 CAS 冲突：引用 cluster 处置瞬间被回退 open → 整批事务回滚，重试语义未定义 | detail §7.6（batch resolve 前提"引用 cluster 保持 claim"）、§8.4 | online 并发语义 | 已拍板（语义化跳过非 claim） | approved → **landed**（2026-09-07：detail v1.6 §7.6 处置语义 + §8.4 per-cluster 结果 + 整批单事务/批级 CAS；solution v3.5.6 §10.4；phase2 零改动） |
 | R-10 | 复现 input 截断/归一保真：evidence.input ≤8K 截断代表事件，长输入尾部依赖型错误可能复现假 pass → 假 fixed | detail §5.1④（input_snapshot ≤8K vs input_hash normalize 4096）；phase1 §2.1/§6.3（超长判定未定义） | online 语义 + offline 边界 | 已拍板（截断标记 + 禁用 + 新 reason input_truncated） | approved → **landed**（2026-09-07：detail v1.6 §5.1 input_truncated 列 + §7.6/§8.4/§9.3 + reason 值域 3→4 + input_hash normalize 4096→8192；solution v3.5.6 §10.2/§10.4；phase2 v0.7 注记 + §11.2 场景 21） |
@@ -206,6 +206,41 @@
 - ① **采纳批量端点 + 可愈性标注**。落字范围：detail §7.4（批量 requeue + 逐行 §7.4 守卫复用 + 防抖）、§8.4（新批量端点返回 per-row 结果）、§9.3（invalidated 筛选/批量重推/结果回显 UI）；solution §10.4/§12.1 权威同步。
 - ② 可愈性标注数据源 = `invalidate_reason/reject_detail` 缺项：空词表/字段缺 → 可愈可勾；「版本不识别」→ 不愈行默认禁勾、强确认才放行（复用 phase1 §6.3 L322 区分语义，避免误导 admin 反复重推）。
 - ③ 环 2 补「批量 requeue → 逐行重拉重处理建 case」用例（随 R-11）；offline 零机制确认。
+
+**改判记录（2026-09-11 用户拍板：换判据；非采纳备选 A/B/C 任一）**
+
+设计与实现分离核查发现，本 R-7 的**原判据（评审记录 ② = 按 `reject_detail` 缺项分可愈/不愈）
+在实现层面不成立**（**注意：「不成立」≠「不可实现」**——改判理由是成本/收益不划算，不是做不了），三层事实：
+
+1. **细分码须跨端扩词表（属欠债，非不可能）**：ack 线路**并非没有载体**——`PullAckRequest.reason: str | None` 槽位就在（`api/pull.py:63`），只是值域被 `REASON_CODES`（`backflow/ack.py:25` = `offline_cap_gap` / `online_content_gap` / `manual_invalidate`）卡在 3 个粗码。要拿到「字段缺 / 词表空 / 版本不识别」粒度，须**双端扩词表**——是**工作量**，不是「做不了」。
+2. **目标类别不可达**：判为「不愈」的「版本不识别」**根本不产生 invalidated 行**——
+   `schema_version != 1.0` 在收单期即被拒（`ERR_PULL_0004`，`app/api/backflow.py:962` /
+   offline `pull.py:88`），走不到 requeue。即「不愈行」这类对象在 requeue 的输入集合里**不存在**。
+3. **实害路径当前关闭**：前端**零批量重推入口**（「批量重推」UI 整块未做），故「被无差别
+   批量复位」这一失败模式当前不可达。⚠️ 但**批量端点已实现**（`requeue-batch`），
+   若将来接上批量 UI，该路径会**重新打开**。
+
+**改判结论**：不补「缺项预判」，改用**行为数据判据**——以该 link **历史被 requeue 的次数**
+（`conversion_record` 审计链，`action='requeue'`）为信号：已重推 ≥ 阈值仍被打回 ⇒ 疑似不可自愈
+⇒ 前端**双次强确认**。
+
+**⚠️ 门控强度实为降档，勿写「形态保留」**：原设计 = 不愈行**默认禁勾**（default-deny，且覆盖**批量勾选**）；本实现 = 所有行默认可点、≥阈值才弹两次确认（**default-allow + warn**），**且仅覆盖单 link 路径、不禁止任何勾选**。触发条件由「按缺项预判」换成「按行为事实」，但**默认态相反**。
+
+- **范围 = 单 link 路径**（本轮只做这条）：`requeue_link` 返回 `requeue_count`；读面
+  `_cluster_links` / `get_cluster_detail` **一次 `GROUP BY link_id` 成批取**（防 N+1）。
+  **批量路径不做**——`requeue_batch` 写 `link_id=None` 的聚合审计行，行为不可按 link 归因，
+  逐行化被**主动推迟**（待真接批量入口时一并做）。
+- **阈值**当前取 2（**无数据支撑**，属拍定值；上线后按真实 `conversion_record` 分布调，
+  前端与后端有**双份硬编码常量须同步改**：`app/backflow/requeue.py:SUSPECT_REQUEUE_THRESHOLD`
+  与 `BackflowClusterDetailView.vue:SUSPECT_REQUEUE_THRESHOLD`）。
+- **批量侧标注（评审记录 ① ②）仍为未交付**，detail §7.4/§8.4/§9.3 三处划删注已同步为
+  「批量路径仍未交付」。**备选 B 的否决结论不变**（批量路径仍应带标注，只是判据待定）。
+- **已知局限 ①（固有噪声，未解决）**：`requeue_count` 数的是**失败次数**——重推**成功**即自愈、
+  不进计数，只有反复失败才累积。故它**区分不了**「确实不可自愈」与「admin 手快、现场尚未补完就推」。
+  **现有数据无法证伪这一点**，属该判据的固有噪声，本轮未解决、亦无法以测试发现。
+- **已知局限 ②（阈值语义的派生后果）**：口径 = 历史次数（**不含本次**），故历史 0 / 1 / 2 对应
+  **第 1 / 2 / 3 次**重推 ⇒ **第 3 次才触发**强确认。若期望「第 2 次即拦」，须把常量改为 1
+  或把比较改为 `> threshold`。**当前实现 = 第 3 次**，勿按「第 2 次」理解。
 
 ### R-8（cap_gap 自愈对已 acked 闭环行重发无效 invalidated ack）— 设计 v0.1（2026-09-07）
 
