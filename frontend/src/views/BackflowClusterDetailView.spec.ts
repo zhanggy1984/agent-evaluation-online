@@ -33,7 +33,8 @@ function link(over: Partial<BackflowLink> = {}): BackflowLink {
   return {
     link_id: 1, payload_id: 'p-1', case_id: 'c-1', case_type: 'replay',
     offline_status: 'assembled', verify_status: 'pending',
-    assembled_ts: '2026-09-10T00:00:00', invalidate_reason: null, ...over,
+    assembled_ts: '2026-09-10T00:00:00', invalidate_reason: null,
+    requeue_count: 0, ...over,
   }
 }
 
@@ -251,6 +252,51 @@ describe('link 行内 admin 动作门控', () => {
     await btn(w, '失效')!.trigger('click')
     await Promise.resolve()
     expect(apiMock.linkInvalidate).not.toHaveBeenCalled()
+  })
+
+  // R-7 可愈性标注：requeue_count ≥ 2（已重推过阈值次数仍被打回）→ 强确认（两次 confirm）
+  const invalidated = { offline_status: 'invalidated', verify_status: 'pending' }
+
+  it('requeue_count≥2：两次确认才发请求，首次文案含次数与「疑似不可自愈」', async () => {
+    const confirmMock = vi.fn((_msg: string) => true)
+    vi.stubGlobal('confirm', confirmMock)
+    const w = await mountWith(mk({
+      status: 'open', links: [link({ link_id: 42, requeue_count: 2, ...invalidated })],
+    }))
+    await btn(w, '重推')!.trigger('click')
+    await flush()
+    expect(confirmMock).toHaveBeenCalledTimes(2)          // 强确认 = 两次
+    expect(String(confirmMock.mock.calls[0][0])).toContain('已重推 2 次')
+    expect(String(confirmMock.mock.calls[0][0])).toContain('疑似不可自愈')
+    expect(String(confirmMock.mock.calls[1][0])).toContain('二次确认')
+    expect(apiMock.linkRequeue).toHaveBeenCalledWith(42)
+  })
+
+  it('requeue_count≥2 且二次确认取消 → 不发请求', async () => {
+    const confirmMock = vi.fn((_msg: string) => true)
+      .mockReturnValueOnce(true)      // 第一次：仍要继续
+      .mockReturnValueOnce(false)     // 第二次（二次确认）：取消
+    vi.stubGlobal('confirm', confirmMock)
+    const w = await mountWith(mk({
+      status: 'open', links: [link({ link_id: 42, requeue_count: 3, ...invalidated })],
+    }))
+    await btn(w, '重推')!.trigger('click')
+    await flush()
+    expect(confirmMock).toHaveBeenCalledTimes(2)
+    expect(apiMock.linkRequeue).not.toHaveBeenCalled()
+  })
+
+  it('requeue_count<2：沿用原单次确认（不弹二次确认）', async () => {
+    const confirmMock = vi.fn((_msg: string) => true)
+    vi.stubGlobal('confirm', confirmMock)
+    const w = await mountWith(mk({
+      status: 'open', links: [link({ link_id: 42, requeue_count: 1, ...invalidated })],
+    }))
+    await btn(w, '重推')!.trigger('click')
+    await flush()
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(String(confirmMock.mock.calls[0][0])).toContain('确认重推 link#42')
+    expect(apiMock.linkRequeue).toHaveBeenCalledWith(42)
   })
 })
 

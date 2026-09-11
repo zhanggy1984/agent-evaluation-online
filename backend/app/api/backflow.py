@@ -83,6 +83,8 @@ class RequeueLinkResponse(BaseModel):
     payload_id: str
     offline_status: str
     assembled_ts: str  # ISO8601 UTC（刷新后的增量锚）
+    # R-7 可愈性标注：本次重推**之前**的历史重推次数（不含本次；前端据此转强确认）
+    requeue_count: int
 
 
 class RequeueBatchFilter(BaseModel):
@@ -247,13 +249,15 @@ def _cluster_item(cluster: ErrorCluster, link: dict | None) -> dict:
     }
 
 
-def _link_item(link: ErrorCaseLink) -> dict:
+def _link_item(link: ErrorCaseLink, requeue_count: int = 0) -> dict:
+    """link 序列化；requeue_count 由调用方成批查好后传入（勿在此单查 → N+1）。"""
     return {
         "link_id": link.id, "payload_id": link.payload_id, "case_id": link.case_id,
         "case_type": link.case_type, "offline_status": link.offline_status,
         "verify_status": link.verify_status,
         "assembled_ts": _iso(link.assembled_ts),
         "invalidate_reason": link.invalidate_reason,
+        "requeue_count": requeue_count,
     }
 
 
@@ -269,12 +273,13 @@ async def _cluster_links(session: AsyncSession, cluster_ids: list[int]) -> dict[
     out: dict[int, list[ErrorCaseLink]] = {}
     for link in rows:
         out.setdefault(link.cluster_id, []).append(link)
-    picked: dict[int, dict] = {}
-    for cid, links in out.items():
+    reps = []
+    for links in out.values():
         current = next((lk for lk in links if lk.verify_status == "pending"), None)
-        rep = current if current is not None else links[-1]
-        picked[cid] = _link_item(rep)
-    return picked
+        reps.append(current if current is not None else links[-1])
+    # R-7 可愈性标注：本屏所有 link 的重推次数一次成批取（逐项单查即 N+1）
+    counts = await requeue_flow.requeue_counts(session, [rep.id for rep in reps])
+    return {rep.cluster_id: _link_item(rep, counts.get(rep.id, 0)) for rep in reps}
 
 
 async def _open_batches(session: AsyncSession, cluster_id: int) -> list[dict]:
@@ -593,9 +598,12 @@ async def get_cluster_detail(
     open_batches = await _open_batches(session, cluster_id)
     overdue = await _result_overdue(session, cluster, links, runs, convs)
     gap_suspected = await _result_gap_suspected(session, cluster, links)
-    item = _cluster_item(cluster, _link_item(links[0]) if links else None)
+    # R-7 可愈性标注：本簇全部 link 的重推次数一次成批取（逐项单查即 N+1）
+    counts = await requeue_flow.requeue_counts(session, [lk.id for lk in links])
+    link_items = [_link_item(lk, counts.get(lk.id, 0)) for lk in links]
+    item = _cluster_item(cluster, link_items[0] if link_items else None)
     item.update({
-        "links": [_link_item(lk) for lk in links],
+        "links": link_items,
         "verify_runs": verify_items,
         "conversions": conv_items,
         "waiting_days": waiting_days,

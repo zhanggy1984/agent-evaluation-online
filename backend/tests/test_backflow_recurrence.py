@@ -22,7 +22,13 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from _fakes import FakeAsyncSession, ns
+from _fakes import (
+    FakeAsyncSession,
+    FakeRows,
+    aggregate_requeue_counts,
+    ns,
+    requeue_count_link_ids,
+)
 
 import app.api.backflow as backflow_api
 from app.api.backflow import (
@@ -262,7 +268,11 @@ class _ScalarRows:
 
 
 class _ObserveSession:
-    """scalars 按目标实体回查（列级 select 与整实体都经 column_descriptions entity）。"""
+    """scalars 按目标实体回查（列级 select 与整实体都经 column_descriptions entity）。
+
+    execute 只认 R-7 的成批 requeue 计数查询（见 _fakes.requeue_count_link_ids）——
+    由该查询返回的 link 摘要行真算次数；其它形态不假装支持，直接报错。
+    """
 
     def __init__(self, by_entity):
         self._by = by_entity
@@ -272,6 +282,12 @@ class _ObserveSession:
         if stmt is not None:
             ent = stmt.column_descriptions[0].get("entity")
         return _ScalarRows(self._by.get(ent, []))
+
+    async def execute(self, stmt, params=None, execution_options=None):
+        ids = requeue_count_link_ids(stmt)
+        if ids is None:
+            raise AssertionError(f"_ObserveSession 不支持的查询形态: {stmt}")
+        return FakeRows(aggregate_requeue_counts(self._by.get(ConversionRecord, []), ids))
 
 
 def _raw_judged(ts, *, agent="agent-x", interface="agent-x.iface", ihash="hash-1",
@@ -434,6 +450,13 @@ class _DetailSession(FakeAsyncSession):
                         None)
         return await super().get(model, pk)
 
+    async def execute(self, stmt, params=None, execution_options=None):
+        # R-7 可愈性标注：读面成批 requeue 计数 → 按注册的 ConversionRecord 行真算（其余形状照旧）
+        ids = requeue_count_link_ids(stmt)
+        if ids is not None:
+            return FakeRows(aggregate_requeue_counts(self._rows.get(ConversionRecord, []), ids))
+        return await super().execute(stmt, params, execution_options)
+
 
 def _detail_claim_cluster_rows():
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -489,6 +512,25 @@ def test_detail_claim_response_carries_reentry_observe_and_open_batches():
     assert d["conversions"][0]["action"] == "claim"
     assert d["waiting_days"] == 2
     assert d["first_trace_id"] == "tr-t1"
+
+
+def test_detail_links_carry_requeue_count():
+    # R-7 可愈性标注：详情读面 links[] 与 cluster.link 同值带 requeue_count（成批一次取）
+    rows, claimed_at = _detail_claim_cluster_rows()
+    rows[ConversionRecord] = rows[ConversionRecord] + [
+        ns(id=90, link_id=30, cluster_id=10, action="requeue", detail="重推 1",
+           closed_by=None, actor_user_id=1, ts=claimed_at),
+        ns(id=91, link_id=30, cluster_id=10, action="requeue", detail="重推 2",
+           closed_by=None, actor_user_id=1, ts=claimed_at),
+    ]
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: _DetailSession(
+        users=[_admin_user()], rows=rows)
+    from fastapi.testclient import TestClient
+    with TestClient(app) as c:
+        d = c.get("/api/v1/backflow/clusters/10", headers=_token()).json()
+    assert d["links"][0]["link_id"] == 30 and d["links"][0]["requeue_count"] == 2
+    assert d["link"]["requeue_count"] == 2      # cluster.link 摘要同源同值
 
 
 def test_detail_open_cluster_reentry_observe_none():
@@ -602,7 +644,12 @@ def test_link_item_shape():
         "case_type": "regression_error", "offline_status": "assembled",
         "verify_status": "pending", "assembled_ts": _FIX.isoformat(),
         "invalidate_reason": "人工作废",
+        "requeue_count": 0,  # R-7 可愈性标注：缺省 0（由调用方成批查好后传入）
     }
+
+
+def test_link_item_requeue_count_passthrough():
+    assert _link_item(_link(33), 2)["requeue_count"] == 2
 
 
 def test_link_item_none_ts_and_reason_passthrough():
@@ -654,6 +701,22 @@ def test_cluster_links_missing_cluster_absent_from_result():
     sess = _ObserveSession({ErrorCaseLink: [_link(30, cluster_id=10)]})
     out = _run(_cluster_links(sess, [10, 11]))
     assert 10 in out and 11 not in out
+
+
+def test_cluster_links_carries_requeue_count_per_link():
+    # R-7 可愈性标注数据源：成批计数（造 N 条 action=requeue 行 → N），按 link 分组不串号
+    sess = _ObserveSession({
+        ErrorCaseLink: [_link(30, cluster_id=10, verify_status="failed"),
+                        _link(40, cluster_id=11, verify_status="pending")],
+        ConversionRecord: [
+            ns(link_id=30, action="requeue"), ns(link_id=30, action="requeue"),
+            ns(link_id=40, action="requeue"),
+            ns(link_id=30, action="invalidate"),   # 非 requeue 不计
+            ns(link_id=99, action="requeue"),      # 非本屏 link 不计
+        ],
+    })
+    out = _run(_cluster_links(sess, [10, 11]))
+    assert out[10]["requeue_count"] == 2 and out[11]["requeue_count"] == 1
 
 
 # ---------- API 层：overview / clusters 响应契约（P2-6 前端读面） ----------

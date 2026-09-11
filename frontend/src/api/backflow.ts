@@ -133,6 +133,8 @@ export interface LinkRequeueResult {
   payload_id: string
   offline_status: string
   assembled_ts: string
+  // R-7 可愈性标注：本次之前的重推次数（不含本次），与后端 requeue_link 返回同口径
+  requeue_count?: number
 }
 
 // admin：invalidated∧verify pending∧cluster∈{open,claim,needs_review} 的重推（复用 payload 增量锚）

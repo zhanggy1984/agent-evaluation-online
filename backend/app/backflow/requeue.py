@@ -12,12 +12,14 @@
   逐行复用守卫 + 防抖，单行 savepoint 隔离；汇总 conversion_record(action=requeue)。
 - `invalidate_link`：admin 人工失效，仅 offline_status ∈ {assembled, draft}（active 后不
   提供 → superseded+reopen，§7.3 人工 invalidate 行）。
+- `requeue_counts`（成批）/ `requeue_count`（单点）：R-7「可愈性标注」换判据后的数据源 =
+  行为数据（该 link 历史被重推次数，不含本次），供前端在 ≥SUSPECT_REQUEUE_THRESHOLD 时转强确认。
 - reason 码（§7.4）：offline_cap_gap / online_content_gap / manual_invalidate。
 """
 import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backflow.ack import iso_utc
@@ -29,6 +31,10 @@ from app.models.error_flow import ConversionRecord, ErrorCaseLink, ErrorCluster
 REQUEUE_DEBOUNCE_MINUTES = 5          # §7.4：同一 link 人工重推间隔 ≥5min（锚 = assembled_ts）
 REQUEUE_ALLOWED_CLUSTER = ("open", "claim", "needs_review")   # R-24：fixed/inactive closed 禁
 MANUAL_INVALIDATE_REASON = "manual_invalidate"
+# R-7 可愈性标注（换判据 = 行为数据）：已重推过 ≥该次数仍 invalidated 回来 = 疑似不可自愈
+# （如版本不识别 / 配置长期未补齐），前端据此转强确认（二次确认）。该值系拍定、无数据支撑，
+# 上线后按真实 conversion_record 分布调；前端 BackflowClusterDetailView.vue 有同值常量。
+SUSPECT_REQUEUE_THRESHOLD = 2
 
 
 # ---------- 纯守卫（单测直打） ----------
@@ -57,6 +63,34 @@ def requeue_guard_errors(link, cluster, *, now: datetime) -> str | None:
             f"（{idle.total_seconds():.0f}s，锚 = assembled_ts，§7.4）"
         )
     return None
+
+
+# ---------- requeue 计数（R-7 可愈性标注的数据源：行为数据） ----------
+
+
+async def requeue_counts(session: AsyncSession, link_ids: list[int]) -> dict[int, int]:
+    """批量取各 link **历史** requeue 次数 → {link_id: count}（读面用）。
+
+    成批一次 GROUP BY：读面一屏多个 link，逐 link 单查 COUNT 就是 N+1。
+    口径 = 不含本次（只数已落库的 conversion_record(action=requeue) 行），故正在
+    requeue_link 里 add 而未落库的那条不计入。返回只含命中 link，未命中者由调用方取 0。
+    """
+    if not link_ids:  # 空入参不发查询
+        return {}
+    rows = (await session.execute(
+        select(ConversionRecord.link_id, func.count())
+        .where(
+            ConversionRecord.link_id.in_(link_ids),
+            ConversionRecord.action == "requeue",
+        )
+        .group_by(ConversionRecord.link_id)
+    )).all()
+    return {link_id: int(cnt) for link_id, cnt in rows}
+
+
+async def requeue_count(session: AsyncSession, link_id: int) -> int:
+    """单点便捷（供 requeue_link 用）：复用成批实现，口径同上 = 历史次数（不含本次）。"""
+    return (await requeue_counts(session, [link_id])).get(link_id, 0)
 
 
 # ---------- 单点 requeue（CAS 复位 + 审计） ----------
@@ -124,6 +158,9 @@ async def requeue_link(
         state = f"offline_status={cur.offline_status}" if cur else "link 已不存在"
         raise AppError("ERR_CLUSTER_0003", f"requeue 状态已变（{state}），请刷新重试", http=400)
 
+    # 历史次数（不含本次）必须在 add 本次记录**之前**查：查完再 add，
+    # 口径即「本次之前已重推过几次」（供前端判 ≥SUSPECT_REQUEUE_THRESHOLD 仍被打回）
+    hist_requeue_count = await requeue_count(session, link_id)
     session.add(
         ConversionRecord(
             cluster_id=cluster_id,
@@ -142,6 +179,8 @@ async def requeue_link(
         "payload_id": payload_id,
         "offline_status": "assembled",
         "assembled_ts": iso_utc(now_naive),
+        # 口径 = 历史次数（不含本次）
+        "requeue_count": hist_requeue_count,
     }
 
 

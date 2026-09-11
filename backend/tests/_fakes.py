@@ -178,6 +178,61 @@ def ns(**kw):
     return SimpleNamespace(**kw)
 
 
+class FakeRows:
+    """`.all()` 语义的成批行结果（GROUP BY 计数等；FakeResult 只有单行语义）。"""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def all(self):
+        return self._items
+
+
+def requeue_count_link_ids(stmt) -> list[int] | None:
+    """识别 R-7 的「按 link_id IN (…) 分组计 action=requeue 行数」查询 → 返回 in 列表。
+
+    非该形态返回 None（stub 据此让其它分支继续判）。识别依据 = whereclause 里同时有
+    `ConversionRecord.link_id IN (字面量列表)` 与 `action == 'requeue'` 等值条件——不解释
+    SQL，只够 stub 真按行聚合出计数（口径与真库实现一致：只数 requeue 行、按 link 分组）。
+    """
+    from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+    from sqlalchemy.sql.operators import eq, in_op
+
+    wc = getattr(stmt, "whereclause", None)
+    if wc is None or not isinstance(wc, BooleanClauseList):
+        return None
+    ids = None
+    has_action = False
+    for node in wc.get_children():
+        if not isinstance(node, BinaryExpression):
+            continue
+        key = getattr(node.left, "key", None)
+        if node.operator is in_op and key == "link_id":
+            value = getattr(node.right, "value", None)
+            if isinstance(value, (list, tuple)):
+                ids = [int(v) for v in value]
+        elif node.operator is eq and key == "action" and node.right.value == "requeue":
+            has_action = True
+    return ids if (ids is not None and has_action) else None
+
+
+def aggregate_requeue_counts(conv_rows, link_ids) -> list[tuple[int, int]]:
+    """按注册的 conversion_record 行真算计数 → [(link_id, count)]（stub 版 GROUP BY）。
+
+    只数 action='requeue' ∧ link_id ∈ link_ids 的行——与 requeue.py 的 SQL 过滤同义，
+    故「造 N 条 → 断言 N」测的是真实口径而非 canned 值。
+    """
+    from collections import Counter
+
+    wanted = set(link_ids)
+    hit = Counter(
+        row.link_id for row in conv_rows
+        if getattr(row, "action", None) == "requeue"
+        and getattr(row, "link_id", None) in wanted
+    )
+    return sorted(hit.items())
+
+
 class FakeES:
     """录调用的 ES 查询 client：search 返回 canned、options 记录 request_timeout。
 

@@ -225,8 +225,18 @@ function doInvalidateLink(lk: BackflowLink): void {
   void runAction(() => linkInvalidate(lk.link_id, null), 'link 已失效')
 }
 
+// 疑似不可自愈阈值（R-7 可愈性标注，判据 = 该 link 历史重推次数）：与后端
+// app/backflow/requeue.py:SUSPECT_REQUEUE_THRESHOLD 同值，改一处要改两处
+const SUSPECT_REQUEUE_THRESHOLD = 2
+
 function doRequeueLink(lk: BackflowLink): void {
-  if (!window.confirm(`确认重推 link#${lk.link_id}（复用 payload_id 重建）？`)) return
+  if (lk.requeue_count >= SUSPECT_REQUEUE_THRESHOLD) {
+    // 强确认：已重推过阈值次数仍被打回 → 疑似不可自愈，连弹两次确认（防手滑无脑重推）
+    const warn = `⚠️ 该 link 已重推 ${lk.requeue_count} 次仍被驳回，疑似不可自愈`
+      + `（如版本不识别/配置长期未补齐）；继续重推可能无效。仍要继续？`
+    if (!window.confirm(warn)) return
+    if (!window.confirm(`二次确认：确认重推 link#${lk.link_id}？`)) return
+  } else if (!window.confirm(`确认重推 link#${lk.link_id}（复用 payload_id 重建）？`)) return
   void runAction(() => linkRequeue(lk.link_id), 'link 已重推')
 }
 

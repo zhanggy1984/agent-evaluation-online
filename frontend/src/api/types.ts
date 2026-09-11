@@ -232,6 +232,9 @@ export interface BackflowLink {
   verify_status: string
   assembled_ts: string | null
   invalidate_reason: string | null
+  // R-7 可愈性标注（判据 = 行为数据）：该 link 历史被重推次数（不含本次）；
+  // ≥ SUSPECT_REQUEUE_THRESHOLD 时详情页重推转强确认（二次确认）
+  requeue_count: number
 }
 
 export interface BackflowCluster {

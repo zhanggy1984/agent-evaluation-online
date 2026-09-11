@@ -266,7 +266,7 @@ describe('字段与边界', () => {
       items: [row({ link: {
         link_id: 1, payload_id: 'p', case_id: 'c', case_type: 'replay',
         offline_status: 'invalidated', verify_status: 'pending',
-        assembled_ts: null, invalidate_reason: null,
+        assembled_ts: null, invalidate_reason: null, requeue_count: 0,
       } })],
     })
     expect(w.text()).toContain('现行 link')

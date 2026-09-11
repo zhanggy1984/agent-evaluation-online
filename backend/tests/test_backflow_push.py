@@ -23,7 +23,13 @@ _IdBackfillSession（仅补 flush 回填，其余同 Fake）。真实写面语�
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from _fakes import FakeAsyncSession, ns
+from _fakes import (
+    FakeAsyncSession,
+    FakeRows,
+    aggregate_requeue_counts,
+    ns,
+    requeue_count_link_ids,
+)
 
 import app.api.backflow as backflow_api
 from app.api.backflow import (
@@ -639,6 +645,13 @@ class _DetailSession(FakeAsyncSession):
             return next((r for r in self._rows[model]
                          if getattr(r, "id", None) == pk), None)
         return await super().get(model, pk)
+
+    async def execute(self, stmt, params=None, execution_options=None):
+        # R-7 可愈性标注：读面成批 requeue 计数 → 按注册行真算（其余形状照旧）
+        ids = requeue_count_link_ids(stmt)
+        if ids is not None:
+            return FakeRows(aggregate_requeue_counts(self._rows.get(ConversionRecord, []), ids))
+        return await super().execute(stmt, params, execution_options)
 
 
 def _detail_rows(assembled_ts):
