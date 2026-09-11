@@ -1137,7 +1137,7 @@ CREATE TABLE `trace_judge_state` (
 
 | Method & Path | 说明 |
 |---|---|
-| `POST /backflow/regression-results` | offline 在 `error_regression` run 终态 commit 后**主动推送**结果。鉴权 `scope=backflow:report`（§8.8）；幂等键 = `uk_verify_run(link_id, run_id)`，重复推送 → 200 + `duplicated:true`；响应 `{accepted, duplicated, run_record_id, links_advanced[], cases_dropped}`。online **收到即同步**落 `verify_run_record` 并重算该 link 判定（§7.3/§7.6，判定内核原样） |
+| `POST /backflow/regression-results` | offline 在 `error_regression` run 终态 commit 后**主动推送**结果。鉴权 = evaluator 静态预共享 secret（§8.8，**v1.23 无 scope 分置、非 JWT**）；幂等键 = `uk_verify_run(link_id, run_id)`，重复推送 → 200 + `duplicated:true`；响应 `{accepted, duplicated, run_record_id, links_advanced[], cases_dropped}`。online **收到即同步**落 `verify_run_record` 并重算该 link 判定（§7.3/§7.6，判定内核原样） |
 
 载荷字段规则（online 校验面）：
 
@@ -1414,7 +1414,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 ### 13.5 审计与平台间
 
 - config/词表变更、人工操作（claim/ignore/invalidate/requeue/fixed-review）、auto 动作（assemble/activate/reentry）→ `conversion_record`（actor_user_id / system）。**config/词表变更的 detail 记到 `config_key` 粒度**（哪个 agent 的哪个 key、旧值摘要→新值摘要、操作人），审计列表可按 key/操作人筛选。
-- 平台间：offline 专用服务账号（evaluator）+ 独立凭证 + 端点白名单 + 双向认证；pull-API `case_type` 白名单 + `schema_version`；响应 evidence 二期字段恒 null 契约（§8.7）。~~online→offline 回查凭证轮换同步~~ **（v1.23 作废：online 已零出站，无 online→offline 调用即无该凭证链；`BACKFLOW_INBOUND_SECRET`/`scope=platform:readonly` 一并作废，§8.8。）**
+- 平台间：offline 专用服务账号（evaluator）+ 独立凭证 + 端点白名单 + **单向凭证**（offline→online 持 secret；v1.23 后 online 零出站、无反向凭证链，§8.8）；pull-API `case_type` 白名单 + `schema_version`；响应 evidence 二期字段恒 null 契约（§8.7）。~~online→offline 回查凭证轮换同步~~ **（v1.23 作废：online 已零出站，无 online→offline 调用即无该凭证链；`BACKFLOW_INBOUND_SECRET`/`scope=platform:readonly` 一并作废，§8.8。）**
 
 ---
 

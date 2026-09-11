@@ -184,8 +184,9 @@ class RegressionResultsRequest(BaseModel):
     agent_latest_version: str = Field(max_length=64)
     # 本次 run 之前、该 agent 最近一个已到终态 run 的版本（与上面两个水位字段同一次查询产出）。
     # **必填但值可为 null**：null = 该 agent 此前没有任何终态 run（首次），此时无前序可查、
-    # 不中断；非空而 online 本地（本 link 的 verify_run_record 行集）无该版本记录 = 上一笔
-    # 结果推送丢失 → gap 中断不累计 K（见 verify.judge_link 缺行中断判据）。
+    # 不中断；非空而 online 本地（**该 agent 已收版本全集**，v1.23 第 4 批由「本 link 行集」
+    # 改全局，见 `verify._agent_versions`）无该版本记录 = 上一笔结果推送丢失 → gap 中断不
+    # 累计 K（见 `verify.judge_link` 缺行中断判据）。
     prev_terminal_version: str | None = Field(max_length=64)
     trigger_signal_id: int | None = None  # = 信封 source.cluster_id，回关联 cluster_id
     finished_ts: str  # run 终态时刻（ISO8601 UTC）
