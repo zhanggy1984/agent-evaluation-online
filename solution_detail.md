@@ -1155,6 +1155,8 @@ CREATE TABLE `trace_judge_state` (
 
 **响应字段口径**：`links_advanced` = 本次**真正发生终态迁移的 link**（`passed`/`failed`/`superseded` 三者之一；**v1.23 第 3 刀语义升级**——第 2 刀口径为「本次真正新落 run 行的 link」，第 3 刀判定并入推送端点后该口径不再有意义：落行≠迁移，判定判出 `pending`/`gap`/`unclean_batch`/`no_progress` 时不得报推进）。重复推送为空、orphan 为空、终态 link（终态只读）为空。`cases_dropped` = **载荷校验产物，与是否落库正交**——幂等重放仍返回**与首次相同**的值，**不归零**：首次推送若响应丢失而实际已成功，重试拿到 `duplicated:true` 时 offline 若见到 `cases_dropped:0`，会误判「没丢数据」而实际丢了行；恒返原值让重试拿到**一致答案**。**v1 硬约束：一次回归 run 只对应一个 cluster**（`trigger_signal_id` 单值；跨 cluster 批量回归不在 v1 范围）。
 
+**载荷校验失败有两类响应形态（v1.23 实证补）**：① **端点层语义校验** → `ERR_PULL_0002`(400)（`pass_fail='na'` 缺 `error_type`、`finished_ts` 非 ISO8601、载荷内 `case_id` 重复；§8.9）；② **模型层校验**（字段缺失 / 类型不符 / `run_status` 枚举外，例如 `run_id` 传 int、`trigger_signal_id` 传非数字串）→ **FastAPI 默认 422**，响应体形如 `{"detail":[…]}`，**不带 `ERR_PULL_*` 码** —— `app/main.py` 只注册了 `AppError` 处理器（`core/errors.py`），**无 `RequestValidationError` 处理器**。**为什么必须写明**：② 是**最易触发**的一类（发送方忘把 run id 转字符串即命中），而按 `ERR_PULL_*` 形状解析响应日志/告警者会把它整类漏掉。**对 offline 无行为影响**：fire-and-forget，仅记日志、不据此做业务分支（§8.7 上文）。
+
 **原 online → offline 回查侧三端点整组作废（v1.23）**：`GET /api/v1/runs`、`GET /api/v1/runs/{run_id}/results`、`GET /api/v1/agents/{agent}/versions` 不再实现、不再调用；配套 `BACKFLOW_INBOUND_SECRET`（`scope=platform:readonly`）凭证链一并作废（§8.8/§13.5）。原三条消费语义的去向：
 
 - **R-4 `excluded_case_ids` 与 R-16 字段位 → 取消**：推送是**全量对账**（run 跑过的每个 case 都在 `cases[]` 里），不存在原「缺行 → 轮询」的场景；连带 R-3 的 online 侧「缺行≠na，轮询至 claim TTL」语义取消（**R-3 的 offline 侧版本差集补建保留**）。
@@ -1190,7 +1192,7 @@ CREATE TABLE `trace_judge_state` (
 | `ERR_CLUSTER_0003` | 400 | 非法迁移（如 active case 人工 invalidate；claim 缺 fix_version）。**ack 前置不符时（契约修订 R3）响应体带当前 `offline_status`+`invalidate_reason`**（供 offline 对账 manual-invalidate 竞态等，§8.7） |
 | `ERR_CONFIG_0001` | 403 | 词表等 admin-only 键变更被拒 |
 | `ERR_PULL_0001` | 401 | evaluator 凭证无效 |
-| `ERR_PULL_0002` | 400 | case_type 非白名单 / schema_version 不识别（返回空集约定在 8.7，强校验失败 400）；**结果推送载荷不合法**（`pass_fail='na'` 缺 `error_type` R-22 不变量、`finished_ts` 非 ISO8601、载荷内 `case_id` 重复，§8.7） |
+| `ERR_PULL_0002` | 400 | case_type 非白名单 / schema_version 不识别（返回空集约定在 8.7，强校验失败 400）；**结果推送载荷不合法**（`pass_fail='na'` 缺 `error_type` R-22 不变量、`finished_ts` 非 ISO8601、载荷内 `case_id` 重复，§8.7）；**模型层校验失败**（字段缺失 / 类型不符 / 枚举外）**不在本码范围 —— 走 FastAPI 默认 422，不带 `ERR_PULL_*` 码**，见 §8.7 |
 | `ERR_PULL_0003` | 404 | payload_id 不存在（对**已知** payload_id 的重复 ack = 200 幂等成功；对**未知** payload_id = 404；§7.3 ack 矩阵） |
 | `ERR_PULL_0004` | 400 | **v1.23 结果推送**：`schema_version` 非 `1.0`（不识别 → 拒单并计数，§8.7）。**注**：无 `scope` 分置（三端点共用静态 secret，§8.8 实证口径），故不存在「凭证调错面」的 401 分支 |
 
