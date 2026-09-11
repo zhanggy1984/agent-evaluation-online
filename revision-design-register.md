@@ -30,7 +30,7 @@
 | R-4 | cap 截断 newest-active-first 饿死最老 case：高错误率 agent 下队尾 case 永不进 run，其 cluster 永等不到终值 | phase2 §6.1 注1（cap 估算、newest-active-first、case_truncated 仅诚实标记） | online 语义/可见性 + offline 只读面透出 | 已拍板（方案 1：online 可见性 + 人工收敛） | approved → **landed**（2026-09-07：detail v1.6 §7.6 缺行成因诊断 + §9.3 excluded-case 只读面；solution v3.5.6；phase2 v0.7 §9.3 溢出透出 + §11.2 场景 18；不跨端保窗口维持）**【v1.23 已作废】`excluded_case_ids` 只读面取消**（推送为全量对账，无「缺行→轮询」场景）；缺行语义改由载荷必填 `prev_terminal_version` 承载（缺行 → `gap` 保持 `pending`）。见 detail §8.7 作废清单 / §7.6 v1.6① 的 v1.23 作废注。 |
 | R-5 | fix_version 三方字符串相等无硬校验：claim 填未发布/错版本 → offline 无该 version run → 空轮询满 14d | detail §8.4（claim 端点）、§7.5（版本字面量域 B-5）；phase2 风险 17（双向 mismatch） | online 交互/告警 + offline 只读面（数据源） | 已拍板（软校验 + agent 已见版本新读面） | approved → **landed**（2026-09-07：detail v1.6 §8.7 agent 已见版本读面 + §9.3 claim 表单软校验告警；solution v3.5.6 §10.4；phase2 v0.7 §9.3 读面数据源）**【v1.23 已改锚】「agent 已见版本」只读面整体作废**（§8.7 作废清单）——守卫所需最小信息改由载荷必填 `agent_latest_version`（单值水位）承载；claim 表单软校验**数据源消失**、降级为「online 已收结果的版本集」（仍为只提示不拦，**语义确已弱化**，detail §8.4/§8.7/§9.3）。 |
 | R-6 | L2 子节点 error_type 原值还原精度：err_summary_json 未钉 schema，若存分类非原值 → §6.2 原值去重粒度漂移 | detail §5.1⑩（err_summary 聚合字段）、§6.2（error_type 原值去重） | online schema 钉死 + 环2 用例 | 已拍板（钉死原值域） | approved（实现前钉死点） → **landed**（2026-09-07：随 detail v1.6 §4.3/§5.1 err_summary_json DDL schema 钉死落字，不独立占版本；solution/phase2 零改动） |
-| R-7 | online_content_gap（含**空词表**）无批量自愈：配置补齐后需 admin 逐个 requeue | detail §7.4（requeue、reason 码 online_content_gap）；phase1 §6.3/§6.5 | online（批量工具） | 已拍板（批量端点 + 可愈性标注） | approved → **landed**（2026-09-07：detail v1.6 §7.4/§8.4/§9.3 批量 requeue + 可愈性标注；solution v3.5.6 §10.3；online 环 2 场景 → detail v1.6 §14；phase2 零改动）**；2026-09-11 改判（换判据）**：原判据（按 `reject_detail` 缺项分可愈/不愈）经查**不成立**（**注意措辞：「不成立」≠「不可实现」**）——分两层：① **~~一半无承载对象~~ 已证伪（2026-09-11 重核）**：「版本不识别」类**确实落 invalidated 行**——offline `validate_envelope` 判 `version_drift` → `status='rejected'` + **ack invalidated**，且 `reject_code` **与 content_gap 同码 `online_content_gap`**（offline `error-backflow-phase1.md:591` 环 1 集成用例第 2 条 / `error-backflow-solution_detail.md:332`+`:807` X-1）⇒ **正好落在** `requeue.py:209` 筛选内、**伪装成可愈那一类**。真正缺口 = **区分信息不跨端**（`PullAckRequest` 无 detail 槽，offline 本地 `reject_detail` 注明「需 offline 升级、requeue 不愈」却从不传给 online），**非「无对象」**；我原引 `ERR_PULL_0004` 属**别条链**（推送接收面；`pull.py:88` 则为拉取请求级 `ERR_PULL_0002`）；② **另一半须跨端扩词表**：ack 线路上**有 `reason` 槽**（`api/pull.py:63`），但值域被 `REASON_CODES`（`backflow/ack.py:25`）卡在 3 个粗码，细分码须双端契约扩展 = **欠债、非不可能**。**改判理由是「成本 vs 收益不划算」**（实害路径**「无调用方」、非「关闭」**——前端零入口已逐面取证，但端点可达、admin 可 curl 触发），**不是「做不了」**。改用**行为数据判据**（该 link 历史重推次数 ≥ 阈值仍被打回 ⇒ 疑似不可自愈），范围 = **单 link 路径**（`requeue_count` + 前端双次强确认）；可愈性「**意图**」（防 admin 反复无效重推）**保留、判据替换**，但**门控强度实为降档**（见改判记录）。**批量侧标注仍未交付**（批量审计 `link_id=None` 不可按 link 归因）。register 原备选 C（定时自动 requeue job）**仍否决**。 |
+| R-7 | online_content_gap（含**空词表**）无批量自愈：配置补齐后需 admin 逐个 requeue | detail §7.4（requeue、reason 码 online_content_gap）；phase1 §6.3/§6.5 | online（批量工具） | 已拍板（批量端点 + 可愈性标注） | approved → **landed**（2026-09-07：detail v1.6 §7.4/§8.4/§9.3 批量 requeue + 可愈性标注；solution v3.5.6 §10.3；online 环 2 场景 → detail v1.6 §14；phase2 零改动）**；2026-09-11 改判（换判据）**：原判据（按 `reject_detail` 缺项分可愈/不愈）经查**不成立**（**注意措辞：「不成立」≠「不可实现」**）——分两层：① **「不愈类」在跨端链路上不可达（2026-09-11 重估终版；此前两版均误、勿复用）**：`version_drift` 是**死分支**——其两个触发条件都被 **online pull 层上游**挡死（版本不匹配 → 400 `ERR_PULL_0002` 拒单，`pull.py:88`，实测 `tests/test_backflow.py:237`；`case_type` 非白名单 → **返空集不传**，`pull.py:94`），而 offline 的声明与校验均为同一常量 `"1.0"`（offline `error-backflow-solution_detail.md:292` / `:309`）⇒ **收不到会触发它的信封** ⇒ 不落行、不进 `requeue` 输入集合，**实害不成立**。**详见改判记录第 2 项**（含两版错误复盘）；② **另一半须跨端扩词表**：ack 线路上**有 `reason` 槽**（`api/pull.py:63`），但值域被 `REASON_CODES`（`backflow/ack.py:25`）卡在 3 个粗码，细分码须双端契约扩展 = **欠债、非不可能**。**改判理由是「原判据要区分的对象在跨端链路上不可达」**（**非「成本/收益不划算」、亦非「做不了」**；实害路径**「无调用方」、非「关闭」**——前端零入口已逐面取证，但端点可达、admin 可 curl 触发），**不是「做不了」**。改用**行为数据判据**（该 link 历史重推次数 ≥ 阈值仍被打回 ⇒ 疑似不可自愈），范围 = **单 link 路径**（`requeue_count` + 前端双次强确认）；可愈性「**意图**」（防 admin 反复无效重推）**保留、判据替换**，但**门控强度实为降档**（见改判记录）。**批量侧标注仍未交付**（批量审计 `link_id=None` 不可按 link 归因）。register 原备选 C（定时自动 requeue job）**仍否决**。 |
 | R-8 | cap_gap 每小时自愈对**已 acked 闭环** rejected 行也重扫：映射持续缺时每小时重发无效 invalidated ack（online 200 幂等兜底，纯噪音） | phase1 §6.5（cap_gap 自愈未限定 ack_status） | offline 节流 | 已拍板（探测态节流） | approved → **landed**（2026-09-07：phase2 v0.7 §6.5 节流修正注记 + §11.2 场景 20 + phase1 §6.5 引用修订；offline 机制代码单独立项 code_detail；online 零改动 = detail v1.6 依据注 + solution v3.5.6） |
 | R-9 | needs_review_batch 整批 resolve 与 TTL job 并发 CAS 冲突：引用 cluster 处置瞬间被回退 open → 整批事务回滚，重试语义未定义 | detail §7.6（batch resolve 前提"引用 cluster 保持 claim"）、§8.4 | online 并发语义 | 已拍板（语义化跳过非 claim） | approved → **landed**（2026-09-07：detail v1.6 §7.6 处置语义 + §8.4 per-cluster 结果 + 整批单事务/批级 CAS；solution v3.5.6 §10.4；phase2 零改动） |
 | R-10 | 复现 input 截断/归一保真：evidence.input ≤8K 截断代表事件，长输入尾部依赖型错误可能复现假 pass → 假 fixed | detail §5.1④（input_snapshot ≤8K vs input_hash normalize 4096）；phase1 §2.1/§6.3（超长判定未定义） | online 语义 + offline 边界 | 已拍板（截断标记 + 禁用 + 新 reason input_truncated） | approved → **landed**（2026-09-07：detail v1.6 §5.1 input_truncated 列 + §7.6/§8.4/§9.3 + reason 值域 3→4 + input_hash normalize 4096→8192；solution v3.5.6 §10.2/§10.4；phase2 v0.7 注记 + §11.2 场景 21） |
@@ -210,20 +210,30 @@
 **改判记录（2026-09-11 用户拍板：换判据；非采纳备选 A/B/C 任一）**
 
 设计与实现分离核查发现，本 R-7 的**原判据（评审记录 ② = 按 `reject_detail` 缺项分可愈/不愈）
-在实现层面不成立**（**注意：「不成立」≠「不可实现」**——改判理由是成本/收益不划算，不是做不了），三层事实：
+在实现层面不成立**（**注意：「不成立」≠「不可实现」**——原写改判理由为「成本/收益不划算」，2026-09-11 重估后**订正为「原判据要区分的对象在跨端链路上不可达」**：不是做不起，是**没有可区分的对象**），三层事实：
 
-1. **细分码须跨端扩词表（属欠债，非不可能）**：ack 线路**并非没有载体**——`PullAckRequest.reason: str | None` 槽位就在（`api/pull.py:63`），只是值域被 `REASON_CODES`（`backflow/ack.py:25` = `offline_cap_gap` / `online_content_gap` / `manual_invalidate`）卡在 3 个粗码。要拿到「字段缺 / 词表空 / 版本不识别」粒度，须**双端扩词表**——是**工作量**，不是「做不了」。
-2. **目标类别可达、但不可区分（⚠️ 2026-09-11 重核订正：原写「不可达」系误判）**：判为「不愈」的
-   「版本不识别」**确实产生 invalidated 行**——offline `validate_envelope` 判 `version_drift`
-   ⇒ `status='rejected'` + **ack invalidated**，`reject_code` **与 content_gap 同码
-   `online_content_gap`**（offline `error-backflow-phase1.md:591` 环 1 集成用例第 2 条 /
-   `error-backflow-solution_detail.md:332`、`:807` X-1）⇒ 它**正好落在** `requeue.py:209` 筛选内、
-   **伪装成可愈那一类**。真正的缺口 = **区分信息不跨端**：`PullAckRequest` 无 detail 槽
-   （`api/pull.py:63`），offline 本地 `reject_detail` 注明「版本不识别，需 offline 升级，requeue 不愈」
-   却**从不传给 online**。我原引 `ERR_PULL_0004`（`app/api/backflow.py:970`）在**推送接收面**、
-   `pull.py:88` 是 `ERR_PULL_0002`（**拉取请求级**），**都不是** offline 信封级这条链。
-   ⇒ **实害较原判据所述更直接**：不需新入口，offline 按自身设计实现即发生。
-   ⇒ **改判理由（成本/收益不划算）现仅剩第 1 项一条支撑腿，须另轮重估**。
+1. **~~细分码须跨端扩词表（属欠债）~~ 该腿已作废（2026-09-11 重估）**：若第 2 项成立（「不愈类」到不了），**无对象可区分，扩词表亦无意义**——非「欠债」而是「无用」。**保留原文以备回溯**：ack 线路**并非没有载体**——`PullAckRequest.reason: str | None` 槽位就在（`api/pull.py:63`），只是值域被 `REASON_CODES`（`backflow/ack.py:25` = `offline_cap_gap` / `online_content_gap` / `manual_invalidate`）卡在 3 个粗码。要拿到「字段缺 / 词表空 / 版本不识别」粒度，须**双端扩词表**——是**工作量**，不是「做不了」。
+2. **目标类别在跨端链路上不可达（⚠️ 2026-09-11 重估终版，前两版均误）**：判为「不愈」的
+   「版本不识别」**设计上确有分支、但该分支是死的**——`version_drift` 的两个触发条件
+   （`schema_version != "1.0"` / `case_type` 非白名单）**都被 online pull 层上游挡死**：
+   offline 拉取时声明 `{schema_version:"1.0", case_type:"regression_error"}`（offline
+   `error-backflow-solution_detail.md:292`）、`validate_envelope` 亦硬校验 `schema_version == "1.0"`
+   （同文件 `:309`）；而 online 对声明 ≠ `SCHEMA_VERSION` 的请求**直接 400 `ERR_PULL_0002`
+   拒单**（`api/pull.py:88`，真实 HTTP 单测 `backend/tests/test_backflow.py:237`
+   `test_pull_rejects_wrong_schema_version`）、对非白名单 `case_type` **返空集不传**
+   （`pull.py:94`；offline `error-backflow-phase1.md:122` 亦明写「白名单外返回空集」）；
+   且 online 发出的信封版本 = 同一常量（真库探针 `tests/integration/pull_probe.py:268`
+   断言 `env["schema_version"] == "1.0"`）。⇒ **两道闸管同一条件、pull 层在上游**
+   ⇒ offline **永远收不到会触发 `version_drift` 的信封** ⇒ **该分支不落行**。
+   **⚠️ 前两版错在哪（勿复用）**：初版写「不落 invalidated 行」但引错链（`ERR_PULL_0004`
+   在推送接收面、`pull.py:88` 是拉取请求级）——方向对、因由错；订正版写「**确实落 invalidated
+   行**」——只读了 offline **设计**（`phase1.md:591` / `solution_detail.md:332`、`:807` X-1
+   确有该分支），**没问它可不可达**，故亦误。**两版的共同根因 = 拿「设计里写了这条分支」
+   当「实际会走到这条分支」。**
+   ⇒ **实害（「版本不识别」类被反复误推）不成立**：`online_content_gap` 的 invalidated 行
+   **只有 content_gap（空词表/字段缺）一类**，全属原判据的「可愈」⇒ 无差别批量复位 = 正确行为。
+   ⇒ **改判理由订正**：不是「成本/收益不划算」，而是**原判据要区分的对象在跨端链路上不可达**
+   ——进不来、无从区分；故行为数据判据**不是退而求其次，而是唯一可用**的信号。
 3. **实害路径「无调用方」，非「不可达」（⚠️ 措辞订正 2026-09-11）**：**「前端零批量重推入口」已逐面取证为真**——前端 `requeue-batch` **零引用**（`frontend/src` 内 requeue 命中全为单 link `linkRequeue`）、offline 仓**无 backflow 模块**（233 个 .py 中 requeue 零命中）、两仓 `scripts/` 与 `.claude/skills/` 亦无；生产代码唯一的 `requeue_flow.requeue_batch(` 调用点即**端点自身**（`api/backflow.py:805`）。**⚠️ 但端点此刻是活的**——`require_admin`（`api/deps.py:44-46`）**只挡非 admin**，**admin 持 token 即可 curl 直接触发**。故正确表述 = 「**无调用方，但可达**」：**UI 是便利性问题、不是可达性问题**，勿读成「等接了 UI 才会打开」。
 
 **改判结论**：不补「缺项预判」，改用**行为数据判据**——以该 link **历史被 requeue 的次数**
