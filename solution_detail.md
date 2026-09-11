@@ -1052,7 +1052,7 @@ CREATE TABLE `trace_judge_state` (
 |---|---|---|
 | `POST /auth/login` | 公开 | body `{username,password}` → `{access_token(15min), refresh_token, user{id,role}}`；失败计数锁定（§13.2） |
 | `POST /auth/refresh` | 公开(refresh) | body `{refresh_token}` → 新 access/refresh；吊销即时生效（token version） |
-| `POST /auth/logout` | 登录 | revoke refresh 会话 |
+| `POST /auth/logout` | 登录 | revoke refresh 会话；body = `{refresh_token}`（**必填**，`min_length=1`，§8.1 `LogoutRequest`）——前端 `api/auth.ts` 从 `localStorage['obs_refresh']` 取值传入；**幂等**（重复调用不报错，`test_api_auth.py::test_logout_idempotent_revokes`） |
 | `GET /auth/me` | 登录 | 当前用户 + 角色 |
 
 ### 8.2 链路查询 trace（维度1，§2/solution§8）
@@ -1070,7 +1070,7 @@ CREATE TABLE `trace_judge_state` (
 | Method & Path | 权限 | 说明 |
 |---|---|---|
 | `GET /metrics/overview` | viewer | 参数 `agent?`（缺省/空=**全站跨 agent**，§9.2）`window`。返回：时序点列（QPS + 失败率/超时率曲线，1h/24h/7d）+ 概览卡（QPS/P50/P95/P99/失败率/超时率）。数据源按窗口路由 rollup/实时（§5.3） |
-| `GET /metrics/interfaces` | viewer | 参数同；返回接口明细：请求级 + LLM 调用级双指标 tab（含按 `model` 分组的 LLM 指标）；~~支持 `interface=` 过滤~~ **（v1.23 反查订正：未实现）**——端点/loader/ES body 三层均无 `interface` 参；`task.md` 从未列入、前端未消费。LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数 |
+| `GET /metrics/interfaces` | viewer | 参数同；返回接口明细：请求级 + LLM 调用级双指标 tab（含按 `model` 分组的 LLM 指标）；~~支持 `interface=` 过滤~~ **（v1.23 反查订正：未实现）**——端点/loader/ES body 三层均无 `interface` 参；`task.md` 从未列入、前端未消费。**（2026-09-11 裁定：永久不做，`task.md` T-3.11 ① 结清）****判据 = 从未实现 ⇒ 不存在会被本裁定破坏的调用方**——任何调用方即便传了该参，拿到的也是**未过滤**结果（与今日逐字节相同）；**但不能据此说「无任何外部调用方」**：不能排除已有人按旧文档传了该参、一直以为在被过滤（实际拿到未过滤数据），该情形不可追溯、且与「删不删」无关（删的是文档承诺，不改任何运行时行为）；且本端点返回**本就按 `interface` 分组**，过滤只影响列表长度、不增信息量。LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数 |
 | `GET /metrics/anomalies` | viewer | 异常聚焦：**request 级**失败/超时排序 → 异常 trace 列表（联动 trace 详情）。不进 `request ok + llm_call error`（那归 llm-failures） |
 | `GET /metrics/llm-failures` | viewer | **『LLM 调用失败』下钻段（v3.5.1）**：`request ok + 子节点 llm_call error/timeout` 的 trace 列表，逐条标注「降级/兜底现场，v1 不回流、L3 二期接入」——承载一期兜底劣化基础可见性（§2.4 前提成立才查得到） |
 | `GET /metrics/agents` | viewer | **agent 下拉数据源（v1.13 新增）**：近 7d **纯实测去重 agent 列表**（`agent` terms agg freq desc、size ≤100），非白名单/字典合成；供指标过滤条 + 链路查询表单共用 |
@@ -1225,7 +1225,7 @@ CREATE TABLE `trace_judge_state` (
 | 接口 `/interfaces` | 接口明细：请求级 + LLM 级双 tab（model 分组）；行级分位/计数实时整窗；空（双 tab 均空）= no_traffic | §8.3 interfaces |
 | 异常 `/anomalies` | request 级 error/timeout 倒序列表；行点击下钻 trace 详情；空列表 = 「窗口内无异常（错误=0）」有效空态；**截断提示（v1.14）**：`total > len(items)` 时「窗口内共 N 条，仅显示最新 M 条」 | §8.3 anomalies |
 | LLM 失败 `/llm-failures` | request ok + 子节点 llm_call error/timeout 兜底/降级现场列表（标注「v1 不回流、L3 二期」）；行点击下钻 trace 详情；空列表 = 「窗口内无 LLM 失败现场」有效空态；**截断提示（v1.14）**：同上（total = 失败 trace 去重数） | §8.3 llm-failures |
-| 链路查询 `/traces` | traceId/关键字自由输入（可任一）；命中列表 + **动态 agent 下拉**（全站 + §8.3 agents 实测列表，Q6）→ trace 详情 | §8.2 traces |
+| 链路查询 `/traces` | traceId/关键字自由输入（可任一）；命中列表 + **动态 agent 下拉**（全站 + §8.3 agents 实测列表，Q6）→ trace 详情；**`total` 口径（v1.23 反查补）** = `cardinality(trace_key)` 的**去重 trace 数**（`store/es.py:157-160`），**不是 `hits.total`** —— collapse 下 `hits.total` 是**折叠前命中行数（偏高）**，该处专门覆盖之，**勿改回**；且为**近似值**（cardinality `precision_threshold` 默认 3000 > 列表上限 200，够用），**调该阈值会使 total 漂移** | §8.2 traces |
 | trace 详情（共享抽屉） | ~~`(ts,parent,seq)` 树时间轴~~ **（v1.23 反查订正）实为 `seq asc`**；异常节点红显；日志行分页懒加载；input/output/error_msg 脱敏展示；llm_call 高亮；正文查看受 `body_search` | §8.2 traces + logs |
 | 回流-错误聚类 `/backflow`（v1.20 已实现） | cluster 列表/筛选 + overview 卡；**代表 trace（`first_trace_id`，点击跳 trace 详情）**、input_hash、状态 pill·generation·count·first/latest ts·fix_version；复验总览（cluster 状态分布 / link verify 分布 / 待修复集规模标注「本地近似 offline 权威集」/ by_agent 分布）；筛选 agent·interface（近 7d 实测并集）·layer·status·watch + 分页；静态 + 手动刷新（不轮询） | §8.4 backflow/clusters + overview |
 | 回流-聚类详情 `/backflow/clusters/:id`（v1.20 已实现，独立路由） | links 表（case_type/offline_status/verify_status/source + **admin** invalidate/requeue）、版本×pass/fail 时间线、conversion_record 中文时间线、人工操作区（ignore/claim/needs_review-resolve/fixed-review/admin 动作，按 §9.4 门控置灰）、claim 复核窗倒计时（1s tick + 45s 可见轮询，超时回退 open 提示）；**input_truncated 当前判定态警示 + 被未决 unclean_run 批挂起徽标 + open_batches「处置整批」入口（v1.8 R-13/R-14、v1.20 R-14 批读面：读 `link_refs` 关联、不新增存储列）**；**reentry_observe 复发 caption（v1.20，§9.3）** | §8.4 cluster/{id} + link 操作 |
