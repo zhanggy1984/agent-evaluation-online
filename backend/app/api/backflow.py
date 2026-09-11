@@ -683,15 +683,18 @@ async def _claim_warning(
     if not received:
         return None  # 该 agent 零已收结果：无可比版本集，宁缺勿假（原 offline 未配分支的等价物）
     fv = claim_flow.normalize_fix_version(fix_version)
+    # 比较 lower、存储保原串（ClaimRequest 约定）：normalize_fix_version 是落库路径故只 trim，
+    # 大小写归一在本比较处。不 lower 时人工填 V1.2、agent 自报 v1.2 → 假告警 + R7 漏报。
+    fv_key = fv.lower()
     seen = sorted({bv for bv, _ in received})
-    if fv not in seen:
+    if fv_key not in {bv.lower() for bv in seen}:
         shown = "、".join(seen[:12])
         if len(seen) > 12:
             shown += f" 等 {len(seen)} 个"
         return (f"注意：未观测到 {agent}@{fv} 评测 run——可能未发版或字面量"
                 f"不匹配，已收结果的版本：{shown}")
     if generation > 1 and any(
-        bv == fv and st == "completed" for bv, st in received
+        bv.lower() == fv_key and st == "completed" for bv, st in received
     ):
         return (f"注意：{agent}@{fv} 已存在 completed run（generation>1 同版本"
                 f"重试命中 reentry）——是否确为新修复？verify 判定按实际结果；硬闸属 P2-5")

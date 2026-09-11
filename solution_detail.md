@@ -947,7 +947,7 @@ CREATE TABLE `trace_judge_state` (
 
 **requeue 守卫（v1.9 R-24 状态域精确化）**：仅 `offline_status=invalidated` 且 **`cluster.status ∈ {open, claim, needs_review}`** 可复位——**fixed/inactive（已 closed）禁 requeue**（需重测走 superseded+reopen 重建新 link/新 payload_id，防对已收敛证据翻案）；claim / needs_review 态**允许**（供 claim 回归 run / needs-review-resolve 补充证据的拉取复位，§7.6）。**锚点保护**：requeue 仅复位 link（invalidated→assembled，复用 payload_id + 重填 payload_json + 刷新 `assembled_ts`），**不动 cluster 锚点**——fix_version / claim_k / TTL 保留，run 判定仍以现 claim 锚定（§7.6）；复位不改 `verify_status`（保持 pending → 仍占现行位，§5.1 注）。**verify 兜底**：仅 `verify_status=pending` 的 invalidated link 走此路（已推进 passed/failed/superseded 的不在此路）。防抖限流：同一 link 人工重推间隔 ≥【实现约定】5 分钟。
 
-**批量 requeue（v1.6 R-7）**：`POST /backflow/links/requeue-batch`（§8.4）——admin 筛选 `offline_status=invalidated + invalidate_reason='online_content_gap'`（可加 agent/缺项过滤）批量复位，逐行复用本守卫 + 防抖 ≤N/min【实现约定 20】。**可愈性标注**：按 invalidate detail 缺项区分「补齐+重推可愈」（字段缺/词表空，补齐 `no_fallback_config` 即愈）vs「requeue 不愈」（版本不识别：schema_version 非 1.0 / case_type 新白名单值，需 offline 升级/联调同步才愈，phase1 §6.3 同源语义）——批量 UI 对不愈行**默认禁勾（强确认才放行）**，防误导 admin 反复重推。返回逐行结果（requeued / skipped+原因）并记 conversion_record（actor、筛选条件、逐行结果）。
+**批量 requeue（v1.6 R-7）**：`POST /backflow/links/requeue-batch`（§8.4）——admin 筛选 `offline_status=invalidated + invalidate_reason='online_content_gap'`（可加 agent/缺项过滤）批量复位，逐行复用本守卫 + 防抖 ≤N/min【实现约定 20】。**可愈性标注**：按 invalidate detail 缺项区分「补齐+重推可愈」（字段缺/词表空，补齐 `no_fallback_config` 即愈）vs「requeue 不愈」（版本不识别：schema_version 非 1.0 / case_type 新白名单值，需 offline 升级/联调同步才愈，phase1 §6.3 同源语义）——批量 UI 对不愈行**默认禁勾（强确认才放行）**，防误导 admin 反复重推。**（v1.23 反查订正：本段所述可愈性标注 + 不愈行禁勾/强确认门控未交付** —— 实现仅落批量端点，`requeue.py` docstring 把可愈性改写为「可愈性 = 补齐现场即愈」的机制描述；**register R-7 原拍板含标注并否决了备选 B「仅批量端点不加标注」**）返回逐行结果（requeued / skipped+原因）并记 conversion_record（actor、筛选条件、逐行结果）。
 
 **invalidate reason 结构化码（驳回与人工统一）**：`offline_cap_gap`（offline adapter/判定器缺）→ 归 offline 重扫自愈（本表上行）；`online_content_gap`（payload 内容缺，reason 指明缺项）→ 归 online admin 重推（本表下行）；`manual_invalidate`（admin 人工判无效，可附补充理由）。code 随 §8.7 ack/聚类详情透出，前端按码出文案（§9.3）。
 
@@ -1044,7 +1044,7 @@ CREATE TABLE `trace_judge_state` (
 
 ## 8. 后端 API 契约全集（backend `app/api/`）
 
-> 依据：solution.md §8/§9/§12/§10/§11。前缀统一 `/api/v1`。鉴权三域：平台 JWT（viewer/admin）、Kafka SASL（agent 上报，**无 HTTP ingest**）、平台间服务凭证（offline，§8.7）。分页/错误码见 §1.5/§8.9。时间窗取值 `1h|24h|7d`。
+> 依据：solution.md §8/§9/§12/§10/§11。前缀统一 `/api/v1`。鉴权三域：平台 JWT（viewer/admin）、Kafka SASL（agent 上报，**无 HTTP ingest**）、平台间服务凭证（offline，§8.7）。分页/错误码见 §1.5/§8.9。时间窗取值 `1h|24h|7d`。**（v1.23 反查订正）范围声明：本节 §8.5/§8.6 整节未实现**（无实现、无挂载，保留为设计契约，实施前须先立 T 项）；其余小节的可证伪断言已随 v1.23 反查逐条核对并就地标注（见各节订正注）。
 
 ### 8.1 认证（auth）
 
@@ -1059,8 +1059,8 @@ CREATE TABLE `trace_judge_state` (
 
 | Method & Path | 权限 | 说明 |
 |---|---|---|
-| `GET /traces` | viewer | 参数：`trace_id?` `keyword?`（任一即可都输）、`agent?` `interface?` `start_ts?` `end_ts?`、`page/page_size`。命中 trace 列表（`search_after` 深翻页；检索面限 **最近 7d**（可配）+ 结果上限 ≤200 + 超时 ≤3s + 慢查询熔断/限流）。**检索落 ES 前按 `body_search` 开关过滤 input/output/log_message 命中**（§5.2 注） |
-| `GET /traces/{agent}/{trace_id}` | viewer | 该 trace 全节点：`(ts,parent,seq)` 树排序事件行（含 log 行引用）；异常节点红显标记；llm_call 高亮。**大 trace 防护**：日志行不进本响应（走 8.2 logs）；事件行单 trace 上限（【实现约定】500）+ 超时 |
+| `GET /traces` | viewer | 参数：`trace_id?` `keyword?`（任一即可都输）、`agent?` `interface?` `start_ts?` `end_ts?`、`page/page_size`。命中 trace 列表（~~`search_after` 深翻页~~ **（v1.23 反查订正）实为 `collapse(trace_key)` + `from/size` 偏移翻页，`offset ≥ 200` 直接 400 `ERR_TRACE_0002`**；检索面限 **最近 7d**（可配）+ 结果上限 ≤200 + 超时 ≤3s + ~~慢查询熔断/限流~~ **（v1.23 反查订正）实为超时熔断**（`trace_query_timeout_ms`/`metric_agg_timeout_ms` 默认 3000 → `TransportError` → 400；**平台内无 API 级限流**，限流归 infra 网关））。**检索落 ES 前按 `body_search` 开关过滤 input/output/log_message 命中**（§5.2 注） |
+| `GET /traces/{agent}/{trace_id}` | viewer | 该 trace 全节点：~~`(ts,parent,seq)` 树排序事件行（含 log 行引用）~~ **（v1.23 反查订正）实为 `seq asc`**（父 seq 恒小于子 seq → 即结构拓扑序；不能用 ts asc：request 事件在中间件 finally 才发出、ts 恒为全 trace 最大）；**本响应不含 log 行引用**（响应字段无该项，日志走 logs 懒加载）；异常节点红显标记；llm_call 高亮。**大 trace 防护**：日志行不进本响应（走 8.2 logs）；事件行单 trace 上限（【实现约定】500）+ 超时 |
 | `GET /traces/{agent}/{trace_id}/logs` | viewer | 日志行分页懒加载（`page/page_size`），单独接口防上千日志行一次拉爆 |
 
 > **body_search 后端置空（v1.1）**：接口级 `body_search=false`（默认）时，traces 列表/详情/logs 响应在**后端序列化前将 `input/output/log_message` 置空**，前端隐藏仅兜底（§13.4）；检索面在 ES 查询层已按开关过滤命中（§5.2 注）——两层都不泄露正文。
@@ -1070,7 +1070,7 @@ CREATE TABLE `trace_judge_state` (
 | Method & Path | 权限 | 说明 |
 |---|---|---|
 | `GET /metrics/overview` | viewer | 参数 `agent?`（缺省/空=**全站跨 agent**，§9.2）`window`。返回：时序点列（QPS + 失败率/超时率曲线，1h/24h/7d）+ 概览卡（QPS/P50/P95/P99/失败率/超时率）。数据源按窗口路由 rollup/实时（§5.3） |
-| `GET /metrics/interfaces` | viewer | 参数同；返回接口明细：请求级 + LLM 调用级双指标 tab（含按 `model` 分组的 LLM 指标）；支持 `interface=` 过滤。LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数 |
+| `GET /metrics/interfaces` | viewer | 参数同；返回接口明细：请求级 + LLM 调用级双指标 tab（含按 `model` 分组的 LLM 指标）；~~支持 `interface=` 过滤~~ **（v1.23 反查订正：未实现）**——端点/loader/ES body 三层均无 `interface` 参；`task.md` 从未列入、前端未消费。LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数 |
 | `GET /metrics/anomalies` | viewer | 异常聚焦：**request 级**失败/超时排序 → 异常 trace 列表（联动 trace 详情）。不进 `request ok + llm_call error`（那归 llm-failures） |
 | `GET /metrics/llm-failures` | viewer | **『LLM 调用失败』下钻段（v3.5.1）**：`request ok + 子节点 llm_call error/timeout` 的 trace 列表，逐条标注「降级/兜底现场，v1 不回流、L3 二期接入」——承载一期兜底劣化基础可见性（§2.4 前提成立才查得到） |
 | `GET /metrics/agents` | viewer | **agent 下拉数据源（v1.13 新增）**：近 7d **纯实测去重 agent 列表**（`agent` terms agg freq desc、size ≤100），非白名单/字典合成；供指标过滤条 + 链路查询表单共用 |
@@ -1079,7 +1079,7 @@ CREATE TABLE `trace_judge_state` (
 
 > **metrics 端点响应形状（实现钉定 v1.12 + agents 补 v1.13，与 §9.2 前端消费逐字段对齐）**：
 > - `GET /overview` → `{window, agent?, source(rollup|realtime|mixed), fallback_hours[], covered_hours, cards{qps,p50,p95,p99,total,error,timeout,error_rate,timeout_rate}, series[{ts,count,qps,error_rate,timeout_rate}]}`。卡片 p50/95/99 = request 锚全量 duration_ms（含 error/timeout）；失败率=error÷total、超时率=timeout÷total；7d 卡片分位仅并 rollup 覆盖小时（§5.3，尾小时省略）。**`covered_hours`（v1.14）** = 7d 已 rollup 小时数（meta 判别、含"处理过零流量"小时），1h/24h 恒 0——UI 据此标注"分位基于 N 个已完成小时"（分位与计数不同样本口径，v1.14 注）。**series qps（v1.14）** = count ÷ **桶实际覆盖秒** `min(ts+桶宽,end) − max(ts,start)`：date_histogram 对齐整边界使首桶左越窗、尾桶（进行中小时）右越窗，按满桶宽除会虚低 → 尾桶折算后即真实"已过秒数"口径；error/timeout_rate 分母仍桶内 count。
-> - `GET /interfaces` → `{window, agent?, source, fallback_hours[], request[{interface,total,error,timeout,p50,p95,p99}], llm[{interface,total,error,llm_failure_rate,models[{model,total,error,prompt_tokens,completion_tokens}]}]}`。支持 `interface=` 过滤；LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数；7d 行级分位保持实时（§5.3）。
+> - `GET /interfaces` → `{window, agent?, source, fallback_hours[], request[{interface,total,error,timeout,p50,p95,p99}], llm[{interface,total,error,llm_failure_rate,models[{model,total,error,prompt_tokens,completion_tokens}]}]}`。~~支持 `interface=` 过滤~~ **（v1.23 反查订正：未实现）**——端点/loader/ES body 三层均无 `interface` 参；`task.md` 从未列入、前端未消费；LLM 失败率 = `status∈{error,timeout}` llm_call ÷ 总数；7d 行级分位保持实时（§5.3）。
 > - `GET /anomalies` → `{window, agent?, total, truncated, items[{agent,trace_id,interface,status,error_type,error_msg,ts,duration_ms}]}`——request 级 error/timeout 排序列表（sort ts desc、size ≤100，联动 trace 详情）；不进 `request ok + llm_call error`（归 llm-failures）。**total/truncated（v1.14）**：total = 窗口内真实条数（body `track_total_hits: True` 关闭近似），truncated = total > len(items)（size≤100 截断，UI「仅显示最新 N 条」提示）。
 > - `GET /llm-failures` → `{window, agent?, total, truncated, items[{agent,trace_id,interface,request_status,llm_node_status,llm_error_type,llm_error_msg,model,ts}]}`——`request ok + 子节点 llm_call error/timeout` 兜底吸收现场，逐条前端标注「降级/兜底现场，v1 不回流、L3 二期接入」。**total/truncated（v1.14）**：total = 窗口内**失败 trace 去重数**（collapse 不改 hits.total → body `aggs.trace_total = cardinality(trace_key)` 独立算，缺 agg 回退 hits.total 仅容测试），truncated = total > len(items)。
 > - `GET /agents`（v1.13 新增，v1.14 补 total/truncated）→ `{total, truncated, agents:[name,...]}`——total = `distinct` cardinality(agent) **真实去重总数**（terms size≤100 top 截断后仍需如实计数），truncated = total > len(agents)（UI「下拉仅显示最活跃 N 个」）；近 7d `agent` terms agg freq desc、size ≤100，agent 下拉与链路查询共用；不带 agent/window 参数、固定 7d 实测窗。
@@ -1089,20 +1089,22 @@ CREATE TABLE `trace_judge_state` (
 
 | Method & Path | 权限 | 说明 |
 |---|---|---|
-| `GET /backflow/overview` | viewer | 复验总览：open+claim 错误数、关联回归用例 verify 分布、**待修复集规模**（本地镜像推导 = offline_status=active ∧ verify∈{pending,failed}，标注「近似 offline 权威集」）、按 agent/接口/层分布 |
+| `GET /backflow/overview` | viewer | 复验总览：~~open+claim 错误数~~ **（v1.23 反查订正）`clusters` 返回全 5 态计数**（open/claim/fixed/inactive/needs_review）、关联回归用例 verify 分布、**待修复集规模**（本地镜像推导 = offline_status=active ∧ verify∈{pending,failed}，标注「近似 offline 权威集」）、~~按 agent/接口/层分布~~ **（v1.23 反查订正）实为仅 `by_agent`**（`{agent, open, claim}`；接口/层只作 `/clusters` 筛选参数，非 overview 输出） |
 | `GET /backflow/clusters` | viewer | 列表/筛选：`agent interface layer status`（status 含 open/claim/fixed/inactive/needs_review + `watch=assembled/draft` 待拉取/确认筛选）；返回代表 trace（**`first_trace_id`**，ErrorCluster 既有列，前端跳 trace 详情）、input_hash、去重/生成计数、关联 link 摘要 |
-| `GET /backflow/clusters/{id}` | viewer | 详情：cluster 元数据 + links（case_id/case_type/offline_status/verify_status/source/payload_id）+ 该 case 历次回归 run **版本×pass/fail 时间线**（verify_run_record）+ conversion_record 审计时间线 + 「已待 N 天」与 requeue 状态 + **`reentry_observe`（v1.20：claim/fixed 态 blocked 复发读数 `{count, latest_version, since_ts, mode}`，后端读 `trace_judge_state` 保留窗现算，非 claim/fixed 态为 null，§7.5）** + **`open_batches`（v1.20：`NeedsReviewBatch.status=open` 且 `link_refs` JSON 含该 cluster_id 的未决批，前端「被批挂起」徽标 + 处置整批入口，items = `{batch_id, run_id, agent, bound_version, error_type, ref_count}`）** |
+| `GET /backflow/clusters/{id}` | viewer | 详情：cluster 元数据 + links（case_id/case_type/offline_status/verify_status/~~source~~/payload_id）+ **（v1.23 反查订正）`source` 字段不存在**：`ErrorCaseLink` 无该列、`_link_item` 不返回（实测 8 字段 = `link_id/payload_id/case_id/case_type/offline_status/verify_status/assembled_ts/invalidate_reason`） 该 case 历次回归 run **版本×pass/fail 时间线**（verify_run_record）+ conversion_record 审计时间线 + 「已待 N 天」与 requeue 状态 + **`reentry_observe`（v1.20：claim/fixed 态 blocked 复发读数 `{count, latest_version, since_ts, mode}`，后端读 `trace_judge_state` 保留窗现算，非 claim/fixed 态为 null，§7.5）** + **`open_batches`（v1.20：`NeedsReviewBatch.status=open` 且 `link_refs` JSON 含该 cluster_id 的未决批，前端「被批挂起」徽标 + 处置整批入口，items = `{batch_id, run_id, agent, bound_version, error_type, ref_count}`）** |
 | `POST /backflow/clusters/{id}/ignore` | viewer | ignore → cluster inactive（link 若现行 → superseded 后再停判定） |
-| `POST /backflow/clusters/{id}/claim` | viewer | **必填** `{fix_version, note}`，可选 `k`（值域 {1,2}、超域 400；缺省取全局 dict_config `auto_fixed_k_default`=2）→ status=claim 并把 K **固化为** `claim_k`=k（claim CAS 同批写 + 审计；fix_version 为 R5 判定锚定，输入给候选提示 + trim/大小写归一防人手版本 ≠ agent 自报——Task #4-②）；返回复核窗截止（TTL 默认 14d）。**R7 联动（v1.4）**：generation>1（reentry 产物）cluster claim 的 fix_version 若命中该 (agent,version) 已有 completed 回归 run → 详情即提示「同版本旧 run 不作 auto-fixed 证据，需人工/升版验证」（最终判定见 §7.6 `reentry_same_version`）。**R-1 联动（v1.5）**：TTL 回退后重 claim 若 fix_version 与上次 claim 相同 → 表单按 agent 近期版本活跃度动态提示（数据源 = R-5 版本活跃度查询，R-1 只留接口）；claim 观察期降 K = 零推进可降、推进后锁死（§7.6 v1.5 ②，CAS + 审计） |
+| `POST /backflow/clusters/{id}/claim` | viewer | ~~**必填** `{fix_version, note}`~~ **必填** `{fix_version}`、`note` 可选（**v1.23 反查订正**：原写二者均必填，实现为 `note: str | None = None`），可选 `k`（值域 {1,2}、超域 400；缺省取全局 dict_config `auto_fixed_k_default`=2）→ status=claim 并把 K **固化为** `claim_k`=k（claim CAS 同批写 + 审计；fix_version 为 R5 判定锚定，输入给候选提示 + trim/大小写归一防人手版本 ≠ agent 自报（**归一策略 = 比较 lower、存储保原串**）——Task #4-②）；返回复核窗截止（TTL 默认 14d）。**R7 联动（v1.4）**：generation>1（reentry 产物）cluster claim 的 fix_version 若命中该 (agent,version) 已有 completed 回归 run → ~~详情即提示「同版本旧 run 不作 auto-fixed 证据，需人工/升版验证」~~ **（v1.23 反查订正）实现在 claim 响应的 `warning` 字段**（`_claim_warning`，文案「已存在 completed run（generation>1 同版本重试命中 reentry）——是否确为新修复？」；**详情端点无此提示**）（最终判定见 §7.6 `reentry_same_version`）。**R-1 联动（v1.5）**：TTL 回退后重 claim 若 fix_version 与上次 claim 相同 → 表单按 agent 近期版本活跃度动态提示（数据源 = R-5 版本活跃度查询，R-1 只留接口）；claim 观察期降 K = 零推进可降、推进后锁死（§7.6 v1.5 ②，CAS + 审计） |
 | `POST /backflow/clusters/{id}/reopen` | viewer | reopen → open（复发/误判） |
 | `POST /backflow/clusters/{id}/needs-review-resolve` | viewer | **单条 needs_review 处置**（cluster 级；源 = **纯 `na` cluster**（退批后唯一通道，v1.5）、或 `reentry_same_version` / `input_truncated` 单条（R7 / R-10 v1.6），reason 值域 §7.6）：`{action: reopen_cluster 或 escalated, note}` → open（reopen）/ 超时升级走 §16；**unclean_run 聚合批走下表 `needs-review-batches`**（仅 unclean_run 批，v1.5） |
 | `POST /backflow/needs-review-batches/{id}/resolve` | viewer/admin | **批量（unclean_run 聚合批，reason 值域 = {unclean_run}，v1.5 批纯化）处置**：`{action: reopen_cluster 或 escalated, note}` → **整批同动作单事务**（CAS `status=open`）；`reopen_cluster` = 引用各 cluster `claim→open` + conversion_record(action=needs_review_resolve)；返回逐 cluster 处置结果（reopened / skipped_already_open / skipped_fixed / manual_review，v1.6 R-9 语义化跳过非 claim） |
 | `POST /backflow/clusters/{id}/fixed-review` | admin | admin 复核置 fixed：`{approve:true}` → fixed(closed_by=admin_review)；`approve:false` → reopen |
 | `POST /backflow/links/{id}/invalidate` | admin | **仅 offline_status∈{assembled,draft}** 可人工 invalidate（`{reason}`；active 后不提供——废弃走 superseded+reopen） |
 | `POST /backflow/links/{id}/requeue` | admin | invalidated→assembled 复位重推（复用 payload_id；§7.4 守卫 + 防抖） |
-| `POST /backflow/links/requeue-batch` | admin | **批量 requeue（v1.6 R-7）**：body `{filter:{agent?, invalidate_reason:'online_content_gap'}}` → 逐行 §7.4 守卫 + 防抖 → 返回逐行结果 + skipped 原因（含可愈性标注，不愈行需 force 确认） |
+| `POST /backflow/links/requeue-batch` | admin | **批量 requeue（v1.6 R-7）**：body `{filter:{agent?, invalidate_reason:'online_content_gap'}}` → 逐行 §7.4 守卫 + 防抖 → 返回逐行结果 + skipped 原因（~~含可愈性标注，不愈行需 force 确认~~ **v1.23 反查订正：未交付** —— 无 `force` 参、无逐行标注；且「`force`」本身是文档笔误：设计定位为**前端 UI 强确认门控**（register R-7），非后端 body 参数；前端批量重推 UI 整块未做） |
 
 ### 8.5 Agent 与接口字典（admin；solution §12.1 Agent 管理 → 本文件 §9.2）
+
+> **（v1.23 反查订正）本节整节未实现** —— 以下端点在 `app/api/` 无实现、在 `app/api/router.py` 无挂载（该文件只挂 auth/trace/metrics/backflow/pull 五个 router）。本节保留为**设计契约**（非既有能力），实施前须先立 T 项。
 
 | Method & Path | 说明 |
 |---|---|
@@ -1117,6 +1119,8 @@ CREATE TABLE `trace_judge_state` (
 **8.5.1 疑似漏标自动补标（§10.1 观察窗，v3.4.5 裁定）**：接口观测到 llm_call 且 `llm=false` → `llm_suspect=1`；连续观测达阈值（【实现约定】窗口 24h 内 ≥ 10 次）→ 自动 `llm=true`（source=auto_observed）不再疑似；观察窗内存疑 → `llm_suspect=1` 进 admin 复核列表 + 看板/Agent 管理「疑似漏标告警」。
 
 ### 8.6 配置与用户（admin）
+
+> **（v1.23 反查订正）本节整节未实现** —— 同 §8.5：无实现、无挂载。**连带**：§8.9 的 `ERR_CONFIG_0001` 因此**无抛出点**（admin 写入面未实现）。
 
 | Method & Path | 说明 |
 |---|---|
@@ -1175,7 +1179,7 @@ CREATE TABLE `trace_judge_state` (
 - 路由级：`viewer` 可访问 8.1~8.4；`admin` 才可 8.5/8.6 + 8.4 中 admin 动作；**前端隐藏 + 后端二次鉴权双保险**。
 - 平台间端点仅接受 evaluator 服务凭证（独立签发路径），不接平台 JWT。**v1.23 实证口径（据实收敛，此前版本描述的 JWT/scope 机制 online 从未实现）**：online 的服务凭证实现 = **静态预共享 secret**（`api/deps.py:50-58` `require_evaluator`，`secrets.compare_digest` 比对 `settings.evaluator_service_secret`），**非 JWT service token**——offline 文档 §9 设计的 `iss`/`scope`/`exp` 体系 online 侧**未采用**。故：**pull/ack 与结果推送三端点共用同一 secret，不做 scope 分置**；接受「推送凭证可调 pull 面」的耦合，凭证分置与轮换一并归 `#2` credential 缺口批。**online 侧不再持有任何 offline 出站凭证**（原 `BACKFLOW_INBOUND_SECRET` 概念整条作废）。
 - 正文查看需 viewer + 接口 `body_search=true`（无 per-agent 授权域，R2）；`body_search=false` 时后端响应前置空正文（§8.2 注/§13.4）。
-- metrics agg / trace 检索默认带超时与结果护栏（`metric_agg_timeout_ms` / `trace_query_timeout_ms` / 结果上限，§8.2/§8.3/§10.1），超时熔断引导缩小范围而非长查询拖死。
+- metrics agg / trace 检索默认带超时与结果护栏（`metric_agg_timeout_ms` / `trace_query_timeout_ms` / 结果上限，§8.2/§8.3/§10.1），~~超时熔断引导缩小范围而非长查询拖死~~ **（v1.23 反查订正）实现 = 超时配置 + `TransportError`→400 fail-fast，无独立熔断器**。
 
 ### 8.9 错误码（统一 `core/errors.py`）
 
@@ -1190,7 +1194,7 @@ CREATE TABLE `trace_judge_state` (
 | `ERR_CLUSTER_0001` | 404 | cluster/link 不存在 |
 | `ERR_CLUSTER_0002` | 409 | CAS 状态冲突（他人已操作），返回当前状态 |
 | `ERR_CLUSTER_0003` | 400 | 非法迁移（如 active case 人工 invalidate；claim 缺 fix_version）。**ack 前置不符时（契约修订 R3）响应体带当前 `offline_status`+`invalidate_reason`**（供 offline 对账 manual-invalidate 竞态等，§8.7） |
-| `ERR_CONFIG_0001` | 403 | 词表等 admin-only 键变更被拒 |
+| `ERR_CONFIG_0001` | 403 | 词表等 admin-only 键变更被拒（**v1.23 反查订正：本码当前无抛出点** —— 对应的 admin 配置写入面 §8.6 整节未实现） |
 | `ERR_PULL_0001` | 401 | evaluator 凭证无效 |
 | `ERR_PULL_0002` | 400 | case_type 非白名单 / schema_version 不识别（返回空集约定在 8.7，强校验失败 400）；**结果推送载荷不合法**（`pass_fail='na'` 缺 `error_type` R-22 不变量、`finished_ts` 非 ISO8601、载荷内 `case_id` 重复，§8.7）；**模型层校验失败**（字段缺失 / 类型不符 / 枚举外）**不在本码范围 —— 走 FastAPI 默认 422，不带 `ERR_PULL_*` 码**，见 §8.7 |
 | `ERR_PULL_0003` | 404 | payload_id 不存在（对**已知** payload_id 的重复 ack = 200 幂等成功；对**未知** payload_id = 404；§7.3 ack 矩阵） |
@@ -1222,7 +1226,7 @@ CREATE TABLE `trace_judge_state` (
 | 异常 `/anomalies` | request 级 error/timeout 倒序列表；行点击下钻 trace 详情；空列表 = 「窗口内无异常（错误=0）」有效空态；**截断提示（v1.14）**：`total > len(items)` 时「窗口内共 N 条，仅显示最新 M 条」 | §8.3 anomalies |
 | LLM 失败 `/llm-failures` | request ok + 子节点 llm_call error/timeout 兜底/降级现场列表（标注「v1 不回流、L3 二期」）；行点击下钻 trace 详情；空列表 = 「窗口内无 LLM 失败现场」有效空态；**截断提示（v1.14）**：同上（total = 失败 trace 去重数） | §8.3 llm-failures |
 | 链路查询 `/traces` | traceId/关键字自由输入（可任一）；命中列表 + **动态 agent 下拉**（全站 + §8.3 agents 实测列表，Q6）→ trace 详情 | §8.2 traces |
-| trace 详情（共享抽屉） | `(ts,parent,seq)` 树时间轴；异常节点红显；日志行分页懒加载；input/output/error_msg 脱敏展示；llm_call 高亮；正文查看受 `body_search` | §8.2 traces + logs |
+| trace 详情（共享抽屉） | ~~`(ts,parent,seq)` 树时间轴~~ **（v1.23 反查订正）实为 `seq asc`**；异常节点红显；日志行分页懒加载；input/output/error_msg 脱敏展示；llm_call 高亮；正文查看受 `body_search` | §8.2 traces + logs |
 | 回流-错误聚类 `/backflow`（v1.20 已实现） | cluster 列表/筛选 + overview 卡；**代表 trace（`first_trace_id`，点击跳 trace 详情）**、input_hash、状态 pill·generation·count·first/latest ts·fix_version；复验总览（cluster 状态分布 / link verify 分布 / 待修复集规模标注「本地近似 offline 权威集」/ by_agent 分布）；筛选 agent·interface（近 7d 实测并集）·layer·status·watch + 分页；静态 + 手动刷新（不轮询） | §8.4 backflow/clusters + overview |
 | 回流-聚类详情 `/backflow/clusters/:id`（v1.20 已实现，独立路由） | links 表（case_type/offline_status/verify_status/source + **admin** invalidate/requeue）、版本×pass/fail 时间线、conversion_record 中文时间线、人工操作区（ignore/claim/needs_review-resolve/fixed-review/admin 动作，按 §9.4 门控置灰）、claim 复核窗倒计时（1s tick + 45s 可见轮询，超时回退 open 提示）；**input_truncated 当前判定态警示 + 被未决 unclean_run 批挂起徽标 + open_batches「处置整批」入口（v1.8 R-13/R-14、v1.20 R-14 批读面：读 `link_refs` 关联、不新增存储列）**；**reentry_observe 复发 caption（v1.20，§9.3）** | §8.4 cluster/{id} + link 操作 |
 | Agent 与接口字典 `/admin/agents` | agent 启停；接口字典（llm 补标/疑似漏标告警/归一化核对/正文开关）；凭证查看/轮换；**agent 上报健康小卡**（未接入/无流量区分依据，§9.1） | §8.5 |
@@ -1244,7 +1248,7 @@ CREATE TABLE `trace_judge_state` (
 | ~~claim 回查持续缺行（无该版本 run 终值）~~ **（v1.23 作废）** | **整条作废**：`excluded_case_ids` 只读面与「轮询至 TTL」场景均已取消——推送为全量对账，缺行由 `gap`（`prev_terminal_version` 缺行）承载，保持 `pending` 不误判（§7.6 v1.6 ① v1.23 作废注 / §8.7） | §7.6/§8.7 |
 | assembled 已待 N 天超阈值 | 提示性标记「offline 疑似停摆，人工核查」（非告警、不设时钟） | §7.2/§13.5 |
 | link invalidated 驳回（reason 码区分） | `offline_cap_gap`→「offline 能力补齐后自动恢复（重扫自愈）」；`online_content_gap`→「现场已修正，待 admin 重推」；`manual_invalidate`→「已人工判无效，可重推或弃用」 | §7.4/§8.7 |
-| invalidated 列表批量重推 | 「批量重推」动作 + 可愈性标注（空词表/字段缺=可愈可勾选；版本不识别=禁勾、强确认才放行）+ 结果逐行回显 | §7.4/§8.4 v1.6（R-7） |
+| invalidated 列表批量重推 | 「批量重推」动作 + ~~可愈性标注（空词表/字段缺=可愈可勾选；版本不识别=禁勾、强确认才放行）~~ **（v1.23 反查订正：未交付）**+ 结果逐行回显 | §7.4/§8.4 v1.6（R-7） |
 | cluster status=needs_review | reason 值域 {`na`（该 case infra 无法判定，cluster 级单点处置）、`unclean_run`（环境级 na 污染下 pass 存疑，批量处置）、`reentry_same_version`（同版本旧 run pass，需人工/升版）、`input_truncated`（复现输入截断证据不可信，需人工复核或小输入重测，v1.6 R-10）}：补充证据回 open / 升级（v1.6 口径） | §7.6 |
 | 词表空 | 配置页/组装提示「空词库守卫不生效（fail-closed）」 | §10.1/§7.1 |
 | 历史通过被 superseded | 展示「历史通过于 V_x / 现又复发」 | §6.2 |
@@ -1479,7 +1483,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 ### 14.4 性能与健壮性用例（护栏）
 
 - rollup：迟到事件（≤6h）重算幂等不双计；缺桶回退实时 + 页面标注；**t-digest 跨小时合并 ≈ 全量重算 p95（误差 <1%）**（O-4 验证）。
-- 检索/看板：慢查询熔断/限流 + 单 trace 日志懒加载分页（§8.2 大 trace 防护）。
+- 检索/看板：~~慢查询熔断/限流~~ **（v1.23 反查订正）实为超时熔断**（`trace_query_timeout_ms`/`metric_agg_timeout_ms` 默认 3000 → `TransportError` → 400；**平台内无 API 级限流**，限流归 infra 网关） + 单 trace 日志懒加载分页（§8.2 大 trace 防护）。
 - **O-1 护栏已裁定（§12.2，含数值判据）**：agent 缺省=全站 1h/24h 实时 agg 强制结果缓存 `metric_agg_cache_ttl_s=60` + agg 超时 `metric_agg_timeout_ms=3000`；全站 24h agg P95 ≤5s；trace 检索超时 `trace_query_timeout_ms=3000`、命中 ≤200 上限。
 - **写侧/后台判据**：判定态表单行 upsert P95 ≤10ms；rollup 每小时任务完成 ≤2min；judge_scan/cluster/assemble/claim_ttl/rejudge 各时间驱动 job 单飞无重复执行（§1.3）；requeue 防抖 ≥5min 生效。
 

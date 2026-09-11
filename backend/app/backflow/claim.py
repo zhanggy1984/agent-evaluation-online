@@ -51,7 +51,16 @@ def _json_detail(fields: dict) -> str:
 
 
 def normalize_fix_version(value: str) -> str:
-    """fix_version trim 归一（比较用 lower；Task #4-②）。"""
+    """fix_version 入口归一：**只 trim**（Task #4-②）。
+
+    为什么不 lower：`ClaimRequest` 约定「**比较 lower、存储保原串**」，而本函数返回值
+    会落库（`claim` 落 `cluster.fix_version`）——lower 会丢掉用户原输入。大小写归一
+    属**比较处**的职责，两侧各自满足：
+      - 判定内核：`verify._ver_key`（`lstrip("vV")`，本就大小写无关）；
+      - 提示面：`api/backflow.py` 的「未观测到该版本」告警与 R7 命中，**须自行
+        `lower()` 后比较**（该处曾漏做 → 人工填 `V1.2`、agent 自报 `v1.2` 时
+        报假告警且 R7 静默漏报）。
+    """
     return value.strip()
 
 

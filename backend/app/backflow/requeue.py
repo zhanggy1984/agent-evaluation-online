@@ -156,7 +156,10 @@ async def requeue_batch(
     now: datetime,
 ) -> dict:
     """批量复位（§8.4 requeue-batch / §7.4 R-7）：筛选 invalidated+online_content_gap
-    （+agent，可愈性 = 补齐现场即愈）→ 逐行守卫 + 防抖，每行 savepoint 隔离；
+    （+agent）→ 逐行守卫 + 防抖，每行 savepoint 隔离；
+    【v1.23 反查订正】原写「可愈性 = 补齐现场即愈」——该表述与 register R-7 拍板
+    （逐行可愈性标注 + 不愈行禁勾/强确认门控）不符，实现只落了批量端点；
+    勿据此认为可愈性已交付。
     返回逐行结果 + 汇总 conversion_record(action=requeue)。
     """
     q = (

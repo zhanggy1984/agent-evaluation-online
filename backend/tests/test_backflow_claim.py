@@ -3,7 +3,9 @@
 - route_verdict：§7.6 v1.5 R-2 映射 ①~⑤ + R-10/R-15 优先级 全分支（纯函数直打）。
 - classify_error_type / env_na_types：R-19 环境级 5 + case 级 10 字面量护栏 + 未知从严 env。
 - decide_k：K 序列折叠（相邻纯净 pass 才递增、跨缺版/污染断链、fail/na/截断终值）。
-- normalize_fix_version：fix_version trim 归一。
+- normalize_fix_version：fix_version **只 trim**（ClaimRequest 约定「比较 lower、存储保
+  原串」，本函数是落库路径故不得 lower）；大小写归一属**比较处**职责（提示面
+  _claim_warning 自行 lower，不 lower 会报假告警并漏 R7）。
 - HTTP 鉴权负例（真实 deps 链 + FakeAsyncSession）：viewer 可触达 claim/不可触达
   fixed-review（ERR_AUTH_0002 403）、无 token 401、cluster 不存在 ERR_CLUSTER_0001(404)。
 - 迁移守卫（DB-free raise 分支直打）：claim/ignore/reopen/fixed-review/needs-review-resolve
@@ -201,6 +203,39 @@ def test_k_missing_also_breaks_adjacency():
 def test_normalize_fix_version_trims():
     assert claim_flow.normalize_fix_version("  1.4.0  ") == "1.4.0"
     assert claim_flow.normalize_fix_version("") == ""
+
+
+def test_normalize_fix_version_keeps_original_case():
+    # 「比较 lower、存储保原串」：返回值落库（claim.py → cluster.fix_version），
+    # 故**不得** lower——lower 会丢掉用户原输入。大小写归一在比较处（见下条用例）。
+    assert claim_flow.normalize_fix_version("  V1.2  ") == "V1.2"
+    assert claim_flow.normalize_fix_version("v1.2") == "v1.2"
+    # 反向护栏：若有人日后把 lower 塞回本函数，上面两条即失败
+    assert claim_flow.normalize_fix_version("V1.2") != claim_flow.normalize_fix_version("v1.2")
+
+
+def test_claim_warning_case_insensitive(monkeypatch):
+    # _claim_warning 的两条分支都以「lower 后的字符串」与已收版本集比较（比较处归一）；
+    # 本用例钉死：人工大小写与 agent 自报不一致时，不得报假告警、R7 不得漏报。
+    # 已收版本集故意用大写 V1.2，claim 侧分别用小写/大写打 —— 双向覆盖两侧归一。
+    from app.api import backflow as backflow_api
+
+    async def _fake_received(session, agent):
+        return [("V1.2", "completed")]
+
+    monkeypatch.setattr(backflow_api, "_received_versions", _fake_received)
+
+    # 命中已收版本集 → 无「未观测到」假告警
+    assert _run(backflow_api._claim_warning(None, "agent-x", 1, "v1.2")) is None
+    assert _run(backflow_api._claim_warning(None, "agent-x", 1, "V1.2")) is None
+    # R7：generation>1 且同版本已完成 → 必须命中提示
+    warn = _run(backflow_api._claim_warning(None, "agent-x", 2, "v1.2"))
+    assert warn is not None and "reentry" in warn
+    # 对照组（防假绿）：真·未观测到的版本仍须报告警，证明上面两条断言非空转
+    miss = _run(backflow_api._claim_warning(None, "agent-x", 1, "V9.9"))
+    assert miss is not None and "未观测到" in miss
+    # 提示文案保原串（告诉用户他填的是什么，不得显示 lower 后的形态）
+    assert "V9.9" in miss
 
 
 # ---------- 协程直跑 helper ----------
