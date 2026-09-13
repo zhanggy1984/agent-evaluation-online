@@ -57,7 +57,7 @@
 |---|---|---|---|
 | 1 | **T-4.7**（**E-18~E-20 三条**） | ~~Kafka broker 停 / ES 不可用 / MySQL 不可用~~ **三条已于 2026-09-13 真机注入全部通过**（见 §1 与 §6 F-4）；残留 = E-19 的「该小时 rollup 缺口标注」**未验** | **E-21 的「网关不可达」注入半边不可做**——网关不在本阶段（见 §4.1），其**判定逻辑**已覆（§1） |
 | 2 | **T-4.9**（**仅非网关半边**） | ~~交付物边界 / 凭证不入镜像 / `{env}.` 前缀全链路 / 不映射 3306·9200·9092 / 走内网~~ **五条已于 2026-09-13 全部验证通过**（见 §1 与 §6 F-6） | **网关与 SSO 半边已于 2026-09-11 裁定下移 T-5.3 上线门、文档订正已落**（见 §4.1） |
-| 3 | **T-4.10** | 角色矩阵 / token version 吊销 / Kafka SASL·TLS + topic ACL / 凭证轮换 / 速率闸 / pull-API case_type 白名单 | 现仅零星碎片（`claim_probe#C-2`、`pull_probe#P-9` 的 403） |
+| 3 | **T-4.10** | ~~角色矩阵 / token version 吊销 / pull-API case_type 白名单 / 未授权 topic 丢弃计数~~ **四条已判定 online 可验**（**尚未跑**，见 §6 F-8）；**速率闸 / 凭证轮换 / Kafka ACL 已于 2026-09-13 裁定下移 T-5.3** | 现仅零星碎片（`claim_probe#C-2`、`pull_probe#P-9` 的 403） |
 | 4 | **T-4.8** | 全站 24h agg P95 ≤5s / `metric_agg_*` 生效 / 判定态 upsert P95 ≤10ms / rollup 每小时 ≤2min / **t-digest 合并误差 <1%** / 500 事件·s⁻¹ | **零覆盖**（现有 `test_tdigest`/`test_metrics` 是单测，非集成档位） |
 | 5 | **T-4.5** 残留 | **E-14 SSE/分批到达窗口补全** | 「多实例并行消费幂等 / job 单飞双实例」= T-3.6 结清时延期到本阶段的那一项，**已于 2026-09-13 真机双实例执行（见 §1 与 §6）**，不再计为剩余 |
 | 6 | **T-4.13** 残留 | ② 脱敏死角 / ④ 检索注入与转义 / ⑥ 大对象边界 | ①③⑤ 已覆 |
@@ -193,6 +193,28 @@
 | offline↔online 走内网不经公网网关 | ✅ | 中间件寻址全为**网络内服务名**：`db_host:db_port` = `mysql:3306`、`es_url` = `http://elasticsearch:9200`、`kafka_bootstrap` = `kafka:19092`；compose 网络 = `external: true` / `shared-infra_shared-infra` |
 
 **下移项（不在本条）** —— 「终止 TLS / `{env}` 子域路径 / 前端登录走网关 / SSO 透传 / 绕过网关直连 backend 被拒」整块已于 2026-09-11 下移 **T-5.3 上线门**（见 §4.1）。
+
+### F-8（2026-09-13）：T-4.10 边界调研 —— 裁定「非网关项整体下移 T-5.3」；**速率闸「未实现」的判断被取证推翻**
+
+**裁定（2026-09-13 拍板）**：T-4.10 本次**只验 online 侧已实现的四条**；**速率闸 / agent_credential 轮换 / Kafka SASL·TLS + topic ACL 三项整体下移 T-5.3 上线门**（与网关同口径）。
+
+| 要求 | 实现形态 | 状态 |
+|---|---|---|
+| 角色矩阵越权被拒 | `api/deps.py` `require_viewer`/`require_admin`，且**查库保 role/status 最新**（非纯 claims 信任） | ✅ 可验 |
+| **token version 吊销** | **全仓无 `token_version` 字段**——但 `api/auth.py:7` 注释**明写它就是「refresh 轮换 + 旧 session 吊销」的别名**；实体 = `UserSession.revoked_at` + `User.status`（禁用即吊销）+ `auth.py:115` 轮换即吊销旧会话 | ✅ 可验（**形态不同 ≠ 未实现**） |
+| pull-API `case_type` 白名单 | `api/pull.py:94` 非白名单**返 200 空集而非全量泄漏** | ✅ 可验 |
+| 未授权 topic 丢弃并计数 | `DropCode.AGENT_MISMATCH` + `DroppedCounter` | ✅ 可验 |
+| **每 agent 上报/回流量级速率闸** | ⚠️ **见下「更正」**——网关侧有限流，但**按 agent 维度**的上报/回流速率闸**未见** | 下移 T-5.3 |
+| agent_credential 加密轮换 | 表结构支持（`secret_cipher` / `rotated_at` / `active` 齐备），**无应用侧执行逻辑** ⇒ 属性上是**运维动作**（脚本/人工轮换后置 `rotated_at`），不是应用功能 | 下移 T-5.3 |
+| Kafka SASL·TLS + topic ACL | infra 侧 | 下移 T-5.3 |
+
+**⚠️ 更正（2026-09-13，本条目初判把「未实现」写错了）** —— 我最初据「app 全仓 grep `rate_limit` 零命中」判「速率闸未实现」；补查 infra 时**又一次**得到零命中，遂加固了该判断。**两次零命中都是假证据**：第二次的直接成因是**路径错位**——shell 的 cwd 停在 `backend/`，而我搜的是 `../infra`（= `agent-evaluation-online/infra`，**不存在**）⇒ grep 静默返回空，我却把「空」读成了「无」。改用绝对路径后真相 = `/d/study/aiprojcet/infra/api-gateway/conf.d/gateway.conf` **有 7 个 `limit_req_zone`**（global 30r/s、gq_chat 2r/s、cs_chat 2r/s、cs_auth 5r/m、cc_api 10r/s、sp_api 10r/s、eval_api 10r/s），并在 `nginx.conf:45` 应用 `limit_req zone=global burst=50 nodelay`。
+
+**但两者不是同一件事**：网关限流按**来源 IP × 端点**（面向 chat/业务 API），T-4.10 要求的是「**每 agent 上报/回流量级**」的速率闸——**后者仍未证实存在**。故本项的准确表述是「**未见按 agent 维度的速率闸**」，**不是「未实现」**；定论需在 T-5.3 连同网关一并做。
+
+**未验声明** —— 上表四条「可验」项**截至本笔尚未执行**（仅完成可行性判定）；本文件不得据「可验」读作「已验」。
+
+**方法论留痕（同族第三次）** —— ① `token_version` grep 零命中 → 差点报「已实现项为缺口」；② 速率闸两次 grep 零命中 → 据「空」下「不存在」。**共同根因 = 把「搜索返回空」当成「对象不存在」，而没先证明「我的搜索确实能命中」**。⇒ 规则：**任何「未找到」结论，必须先跑一个「已知存在的对照样本」验证搜索路径本身有效**（本例对照样本 = 先 `ls` 确认目录存在）；路径含 `..` 时尤其要 `pwd` 核对。这是 [[existence-is-not-reachability]] 的**取证侧镜像**：前两形态管「对象是否可达/归属」，本条管「我的观测手段是否真的触到了它」。
 
 ### F-7（2026-09-13）：T-4.9 执行期两个发现——**取证方法本身会骗人**
 
