@@ -1465,7 +1465,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | E-18 | 故障注入：Kafka broker 停 | consumer 停拉退避挂起（不提交空推进）→ broker 恢复续拉不丢、判定态补齐（§4.1/§4.3） |
 | E-19 | 故障注入：ES 不可用 | 事件落待补写 spool 或显式丢弃 + 该小时 rollup 缺口标注；判定/聚类/回流不受影响（判定源=MySQL 判定态，§4.1/§5.3） |
 | E-20 | 故障注入：MySQL 不可用 | 判定态写失败 → **不提交 offset + 退避自监控**；恢复后判定不丢（禁"丢弃并提交"，§4.1 step4） |
-| E-21 | 故障注入：网关/offline 不可达/停摆 | **v1.23 改被动探测**——online 已无出站调用，「回查退避重试」触发源消失；改为「**超时未收到结果推送**」判定：claim 侧以 `claim_ttl_expire` 转换记录 + 残留 `fix_version` 派生（**非在线时窗**——回退任务 60s 内即清 `claimed_at`，现算判据恒假，见 §8.7）∧ 现行 link 无 `verify_run_record` / assembled 待 N 天超阈 → 统一提示「回查结果未达（疑似 offline 停摆），人工核查」；不设 online 时钟（§7.2/§7.6/§8.7） |
+| E-21 | 故障注入：网关/offline 不可达/停摆 | **v1.23 改被动探测**——online 已无出站调用，「回查退避重试」触发源消失；改为「**超时未收到结果推送**」判定：claim 侧以 `claim_ttl_expire` 转换记录 + 残留 `fix_version` 派生（**非在线时窗**——回退任务 60s 内即清 `claimed_at`，现算判据恒假，见 §8.7）∧ 现行 link 无 `verify_run_record` / assembled 待 N 天超阈 → 统一提示「回查结果未达（疑似 offline 停摆），人工核查」；不设 online 时钟（§7.2/§7.6/§8.7）。**2026-09-11 网关归属裁定**：本行标题的「网关」不含网关注入——本行自 v1.23 起即为 **offline 停摆探测**；网关联调与验收整体归 **T-5.3 上线门**（见 task.md T-4.9 注） |
 | E-22 | requeue 刷新游标 | admin requeue 后 `assembled_ts` 刷新 → offline 增量 since_ts 重拉可见（复用 payload_id 幂等）（§7.2/§7.4） |
 | E-23 | R-13 同键截断→小输入洗白 | 同键首现 input>8K（input_truncated=1、该版不计 K）→ claim 观察窗内同键 ≤8K 纯净 trace 到达 → cluster 位刷新清 0 → 对应版 run pass 计 K、escape 可达；已 fixed cluster 迟到截断 trace 不翻案（终态只读） |
 | E-24 | R-14 unclean_run 批引 claim 挂起标注 | 环境级 na 污染 run 下 claim cluster pass 存疑 → 聚 unclean_run 批、cluster 保持 claim + 详情实时显「被未决批挂起」；批未 resolve 期间 TTL 照走（到期回退 open）；批 resolve 时已 open → skipped_already_open 幂等 |
