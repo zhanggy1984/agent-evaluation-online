@@ -47,6 +47,7 @@
 | **T-4.14** ⑤ 并发/竞态（部分） | claim CAS、ack 幂等重放、requeue 防抖边界 | `claim_probe#C-10`、`pull_probe#P-13`、`#P-11` |
 | **T-4.11** 前端端到端（大部分）⚠️ | 登录 / 回流列表与详情 / viewer 与 admin 权限 / 状态文案 / claim 倒计时 / 空态 | **补测批浏览器 e2e（2026-09-10 当次会话结论，非可复跑资产）** |
 | **T-4.7** 故障注入（**三条**） | **E-19 ES 不可用 / E-18 Kafka 不可用 / E-20 MySQL 不可用**——判据均为「投唯一 trace → 注入 → 恢复 → 断言判定态行」 | **真机注入实测，非探针资产**；dev 库已回基线 70 行（2026-09-13）。详见 §6 F-4 |
+| **T-4.9** 部署/网络（**非网关半边五条**） | 交付物边界 / 凭证不入镜像 / `{env}.` 前缀全链路 / backend 零宿主端口映射 / 中间件走网络内服务名 | **真机取证**（`docker run --rm` 无 bind mount 取镜像本体 + 运行时 `select database()` + `NetworkSettings.Ports`），2026-09-13。详见 §6 F-6 |
 
 ---
 
@@ -55,7 +56,7 @@
 | 优先 | 任务 | 剩余内容 | 备注 |
 |---|---|---|---|
 | 1 | **T-4.7**（**E-18~E-20 三条**） | ~~Kafka broker 停 / ES 不可用 / MySQL 不可用~~ **三条已于 2026-09-13 真机注入全部通过**（见 §1 与 §6 F-4）；残留 = E-19 的「该小时 rollup 缺口标注」**未验** | **E-21 的「网关不可达」注入半边不可做**——网关不在本阶段（见 §4.1），其**判定逻辑**已覆（§1） |
-| 2 | **T-4.9**（**仅非网关半边**） | 交付物边界 / 凭证不入镜像 / `{env}.` 前缀在库·index·topic·consumer group 全链路一致 / 容器不映射 3306·9200·9092 / offline↔online 走内网不经公网网关 | **网关与 SSO 半边已于 2026-09-11 裁定下移 T-5.3 上线门、文档订正已落**（见 §4.1） |
+| 2 | **T-4.9**（**仅非网关半边**） | ~~交付物边界 / 凭证不入镜像 / `{env}.` 前缀全链路 / 不映射 3306·9200·9092 / 走内网~~ **五条已于 2026-09-13 全部验证通过**（见 §1 与 §6 F-6） | **网关与 SSO 半边已于 2026-09-11 裁定下移 T-5.3 上线门、文档订正已落**（见 §4.1） |
 | 3 | **T-4.10** | 角色矩阵 / token version 吊销 / Kafka SASL·TLS + topic ACL / 凭证轮换 / 速率闸 / pull-API case_type 白名单 | 现仅零星碎片（`claim_probe#C-2`、`pull_probe#P-9` 的 403） |
 | 4 | **T-4.8** | 全站 24h agg P95 ≤5s / `metric_agg_*` 生效 / 判定态 upsert P95 ≤10ms / rollup 每小时 ≤2min / **t-digest 合并误差 <1%** / 500 事件·s⁻¹ | **零覆盖**（现有 `test_tdigest`/`test_metrics` 是单测，非集成档位） |
 | 5 | **T-4.5** 残留 | **E-14 SSE/分批到达窗口补全** | 「多实例并行消费幂等 / job 单飞双实例」= T-3.6 结清时延期到本阶段的那一项，**已于 2026-09-13 真机双实例执行（见 §1 与 §6）**，不再计为剩余 |
@@ -180,3 +181,23 @@
 实测吻合：MySQL 停机 66s 内重试 13 次（观测间隔约 4.3s ≈ 1s sleep + 3.3s DNS 解析失败），**非指数拉开**。同 `:203` 亦为常量 `_backoff(3)`=4s。
 
 ⇒ 措辞偏差（日志亦称「退避重试」），**非缺陷**——固定间隔对恢复时延反而更有利。按阶段 4「发现即登记、不顺手改」口径处理。
+
+### F-6（2026-09-13）：T-4.9 **非网关半边五条断言全部通过**
+
+| 断言 | 结论 | 取证（均为真机） |
+|---|---|---|
+| 交付物边界（仅 backend + frontend） | ✅ | `docker-compose.yml` 头注释明写「仅 backend + frontend，不含任何中间件」；`services` 实为 backend / worker / frontend（worker 与 backend **同镜像同 env**，不构成第三份交付物）。宿主 `backend/` 下的 6 个一次性脚本（`gen_demo_trace.py` / `metrics_s5_probe.py` / `run_rollup_once.py` / `verify_7d_backfill.py` / `verify_s5_agents_probe.py` / `s5out.txt`）**均被 `.gitignore` 覆盖**（`backend/gen_*.py` / `backend/metrics_s5_*.py` / `backend/s5out.txt`）⇒ 不入交付物 |
+| `.env` 注入 + 凭证不入镜像 | ✅ | **取镜像本体**：`docker run --rm --entrypoint sh agent-evaluation-online-backend -c 'ls /app/.env'` → **No such file**；镜像 `/app` 仅 `alembic`/`alembic.ini`/`app`/`pyproject.toml`/`build`/`egg-info`。Dockerfile 只 `COPY pyproject.toml ./` + `COPY app ./app` + `COPY alembic ./alembic` + `COPY alembic.ini ./`；`.dockerignore` 含 `.env`；本仓 `ENV` 仅 `PYTHONDONTWRITEBYTECODE=1`；`docker history` 无应用密钥（命中项全属 `python:3.11-slim` 基础层，如 `GPG_KEY`） |
+| `{env}.` 前缀在库·index·topic·group 全链路一致 | ✅ | 运行时实测：`select database()` = **`dev.obs`**；`consumer_group` = **`dev.obs.consumer`**（Kafka `--describe` 复核同名）；`agent_topic` = `dev.obs.agent.<name>`、`selfmonitor_topic` = **`dev.obs.selfmonitor`**（Kafka topic 列表复核）；`event_index_prefix` = `dev.obs-event`（ES 实测索引 `dev.obs-event-202637`）、`log_index_prefix` = `dev.obs-log`。**单点来源 = `config.py:25` `resource_env="dev"`** |
+| backend 容器不映射 3306/9200/9092 | ✅ | `NetworkSettings.Ports` = **`map[8000/tcp:[]]`**（仅镜像 `EXPOSE`、**零宿主绑定**；`ports:` 段被注释掉，注释原文即「需要宿主直连调试时临时加，用后移除」）。`obs-worker` 同 |
+| offline↔online 走内网不经公网网关 | ✅ | 中间件寻址全为**网络内服务名**：`db_host:db_port` = `mysql:3306`、`es_url` = `http://elasticsearch:9200`、`kafka_bootstrap` = `kafka:19092`；compose 网络 = `external: true` / `shared-infra_shared-infra` |
+
+**下移项（不在本条）** —— 「终止 TLS / `{env}` 子域路径 / 前端登录走网关 / SSO 透传 / 绕过网关直连 backend 被拒」整块已于 2026-09-11 下移 **T-5.3 上线门**（见 §4.1）。
+
+### F-7（2026-09-13）：T-4.9 执行期两个发现——**取证方法本身会骗人**
+
+**(1) `obs-frontend` 容器已 `Exited (0)` 42 小时——「前端在跑」是过期前提。**
+早前会话记录「前端 `localhost:18080` 可达」（`docker ps` 当时确为 Up）**已是旧状态**；现 `docker ps` 只有 `obs-worker`/`obs-backend`，`docker ps -a` 显示 `obs-frontend | Exited (0) 42 hours ago | ports=`。`.env` 里 `FRONT_HOST_PORT=18080` 仍在，一旦拉起即恢复映射。**影响**：§1 中 T-4.11 的浏览器 e2e 结论是「2026-09-10 当次会话」的，**当前环境前端未运行**，任何浏览器类复验须先 `docker start obs-frontend`；且不得据「容器存在」推断「服务在跑」——`docker inspect` 对已退出容器同样成功。
+
+**(2) 「运行中容器里有 `.env`」≠「凭证入了镜像」——本次差点误判为缺陷。**
+`docker exec obs-backend ls /app/.env` **返回存在**（581B，时间戳 = 宿主文件时间），初判「凭证入镜像」**是错的**：compose 对 backend 有 `./backend:/app` 开发热挂载，该 `.env` 是**宿主文件被挂进去的**。**正确取证 = 绕过 bind mount 取镜像本体**（`docker run --rm --entrypoint sh <image>`，或 `docker create` 后 `docker cp`）。⇒ 泛化：**凡是「运行时观测到的文件/端口/环境变量」，都要先问一句「它是镜像内容，还是编排层注入/挂载进来的」**——前者是交付物缺陷，后者是部署形态，两者结论相反。此为 [[existence-is-not-reachability]] 在交付物取证上的同族形态：**存在性证据必须先定位「这份存在由谁提供」**。
