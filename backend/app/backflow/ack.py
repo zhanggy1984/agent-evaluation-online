@@ -21,7 +21,14 @@ from app.models.error_flow import ErrorCaseLink, ErrorCluster
 SCHEMA_VERSION = "1.0"          # 与 converter/envelope.SCHEMA_VERSION 同源语义
 CASE_TYPES = ("regression_error",)   # §8.7 白名单：v1 仅此；二期加值须回方案
 
-# invalidate reason 结构化码（§7.4）：驳回与人工统一
+# invalidate reason 结构化码（§7.4）：驳回与人工统一。
+# ⚠️ 值域是 offline ack 的**严格相等**校验（`ack_decide` 的 'reason' 条件分支），
+# 且会原样落进 `link.invalidate_reason`——R2 自愈例外判的就是该列的严格相等。
+# 故 offline 必须发**纯码**：人读明细（如「版本不识别」）留在 offline 自己的
+# inbox.reject_detail，不得拼进这里（拼了会被判 400；即便放行也会把 R2 的
+# `== offline_cap_gap` 比较弄断）。**offline 的 content_gap / version_drift /
+# empty_words 三码统一折叠到 `online_content_gap`**（依据 = register R-7 2026-09-11
+# 重估：version_drift 在同一版本对内无产出对象，细分码「无对象可区分」）。
 REASON_CODES = ("offline_cap_gap", "online_content_gap", "manual_invalidate")
 
 # ack 前置矩阵（§7.3，含契约修订 R2 例外）。各 action → 允许的 (当前 offline_status, 附加条件)：
