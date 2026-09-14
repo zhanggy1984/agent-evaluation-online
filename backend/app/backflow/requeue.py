@@ -33,7 +33,10 @@ REQUEUE_ALLOWED_CLUSTER = ("open", "claim", "needs_review")   # R-24：fixed/ina
 MANUAL_INVALIDATE_REASON = "manual_invalidate"
 # R-7 可愈性标注（换判据 = 行为数据）：已重推过 ≥该次数仍 invalidated 回来 = 疑似不可自愈
 # （如版本不识别 / 配置长期未补齐），前端据此转强确认（二次确认）。该值系拍定、无数据支撑，
-# 上线后按真实 conversion_record 分布调；前端 BackflowClusterDetailView.vue 有同值常量。
+# 上线后按真实 conversion_record 分布调。
+# 本常量在后端**零引用点**（仅声明，判据由前端执行）——**唯一行为源 = 前端
+# BackflowClusterDetailView.vue 的同名常量**。改阈值须同改三处：本处 + 前端常量 +
+# tests/test_backflow_requeue_count.py 的 `== 2` 断言（详见 register R-7「阈值」段）。
 SUSPECT_REQUEUE_THRESHOLD = 2
 
 

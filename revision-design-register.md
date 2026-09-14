@@ -253,9 +253,23 @@
   `requeue_link` **已逐行写带 `link_id` 的 conv**（`requeue.py:164-176`），`link_id=None`
   聚合行**只汇总 skipped、且截前 8 条**（`requeue.py:237-256`）⇒ 真实缺口仅「skipped 行
   无逐行持久审计」，不足以支撑做。**日后真接批量入口时重开本条。**
-- **阈值**当前取 2（**无数据支撑**，属拍定值；上线后按真实 `conversion_record` 分布调，
-  前端与后端有**双份硬编码常量须同步改**：`app/backflow/requeue.py:SUSPECT_REQUEUE_THRESHOLD`
-  与 `BackflowClusterDetailView.vue:SUSPECT_REQUEUE_THRESHOLD`）。
+- **阈值**当前取 2（**无数据支撑**，属拍定值；上线后按真实 `conversion_record` 分布调。
+  **⚠️ 2026-09-14 订正（原写「前端与后端有**双份**硬编码常量**须同步改**」，两处不准）**：
+  - **不参与行为的是后端那份**——`app/backflow/requeue.py:SUSPECT_REQUEUE_THRESHOLD`（`:37`）
+    在**全后端零引用点**（除定义与注释；grep 全后端仅 `requeue.py:16/:37/:162` 三处，
+    后两处为注释与定义）。**唯一行为源 = 前端**
+    `BackflowClusterDetailView.vue:SUSPECT_REQUEUE_THRESHOLD`（`:230`，在 `:233` 做
+    `lk.requeue_count >= 阈值` 比较）。故真实失败模式**不是「行为分叉」**，而是
+    **「改阈值只改一处 ⇒ 声明与实值不一致」**（BE 注释 / register / 单测都在宣告一个
+    已不成立的值，而**测试不会红**——`test_backflow_requeue_count.py:147`
+    钉的是 `== 2` 这个**取值**，不是**跨侧一致**）。
+  - **站点实为 3 个、非 2 个**（改阈值时须同改）：① 后端定义 `requeue.py:37`；
+    ② 后端单测 `test_backflow_requeue_count.py:147`（`assert SUSPECT_REQUEUE_THRESHOLD == 2`，
+    改定义不改它会红）；③ 前端常量 `BackflowClusterDetailView.vue:230`（**行为源**）。
+    `requeue.py:33-36` 注释与 `types.ts:236` 注释为引述，随之更新。
+  - **2026-09-14 实测取值**：三站点当前**均为 2**（已同步）。**未加自动跨侧守护**
+    （用户 2026-09-14 拍板：本仓零跨侧读取先例，且 BE 那份不参与行为，守护价值低 ⇒
+    以「同步清单」代替守护；日后真接批量入口或阈值上线后需调时重开本条）。
 - **批量侧标注（评审记录 ① ②）已裁定不做、本条结清（2026-09-11）**，detail §7.4/§8.4/§9.3
   三处划删注已同步为「已裁定不做」。**⚠️ 备选 B 的否决结论已被本裁定推翻**——原否决
   （2026-09-07）的前提是「实害真实、只差判据」，该前提经本块第 2 项查证**已不成立**
