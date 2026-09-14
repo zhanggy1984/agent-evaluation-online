@@ -154,6 +154,21 @@ class TestResolveFallbackWordlist:
         assert parse_words(None) == []
         assert parse_words("not-a-list") == []
 
+    def test_words_verbatim_into_envelope(self):
+        """畸形但合法的词条原样保真落进信封（§14.5 X-12 词表死角）。
+
+        为什么断言「原样」而不是「非空」：词表是**固化**语义——组装瞬间落进信封后
+        就代表那一刻的配置，任何归一化（strip / lower / dedup / 截断）都会让 offline 的
+        判分基于一份**本仓悄悄改写过的**词表，且两侧都不会报错。online 侧唯一可验的
+        就是「一个字符都没动」，故此处用 `is` 断言同一对象、用 `==` 断言逐字相等。
+        """
+        forms = ["", "  ", "MiXeD", "多行\n词条", "x" * 5000, "重复", "重复", "1"]
+        assert parse_words(forms) is forms
+        env = build_envelope(cluster=_cluster(), words=forms, wordlist_version=12345)
+        assert env["no_fallback_config"]["words"] == forms
+        assert env["no_fallback_config"]["wordlist_version"] == 12345
+        assert env["assert"]["no_fallback"]["config_ref"]["wordlist_version"] == 12345
+
 
 # ---- assemble_cluster：编排产物（link + conv）-----------------------------------------
 
