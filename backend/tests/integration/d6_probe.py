@@ -99,6 +99,12 @@ def _llm_error(trace_id: str, ts: int) -> dict:
     }
 
 
+def _llm_ok(trace_id: str, ts: int) -> dict:
+    """S-4 负对照用：与 `_llm_error` 同形，**只差 status**（llm_call 成功）。"""
+    ev = _llm_error(trace_id, ts)
+    return {**ev, "status": "ok", "error_type": None, "error_msg": None}
+
+
 def _log(trace_id: str, ts: int) -> dict:
     return {
         "schema_version": "1.0", "event_kind": "log", "trace_id": trace_id,
@@ -265,7 +271,7 @@ async def _api(method: str, path: str, auth: str | None = None,
     return await asyncio.to_thread(_http, method, path, auth, body)
 
 
-async def s1_s4(settings: Settings, trace_id: str) -> None:
+async def s1_s4(producer, settings: Settings, trace_id: str) -> None:
     """S-1（trace 可查 / 日志穿插 / llm_call 高亮）+ S-4（子节点红显 / llm-failures 可下钻）。
 
     **输入 = S-3 已投的同一 trace**（request ok + llm_call error + log，正是 S-1/S-4 的场景），
@@ -278,6 +284,14 @@ async def s1_s4(settings: Settings, trace_id: str) -> None:
     后者需浏览器 e2e。
     """
     print("\n===== S-1 trace 可查 + 日志懒加载 + llm_call 高亮 =====")
+    # S-4 负对照：同形但 **llm_call 成功** 的 trace（只差一个字段取值的最小差异对）
+    ctl_trace = f"d6-ctl-{TS_BASE}"
+    topic = settings.agent_topic(AGENT)
+    await producer.send(topic, json.dumps(_request(AGENT, ctl_trace, TS_BASE + 3),
+                                          ensure_ascii=False).encode("utf-8"))
+    await producer.send(topic, json.dumps(_llm_ok(ctl_trace, TS_BASE + 4),
+                                          ensure_ascii=False).encode("utf-8"))
+    await producer.flush()
     status, tok = await _api("POST", "/auth/login",
                              body={"username": settings.admin_username,
                                    "password": settings.admin_password})
@@ -336,6 +350,44 @@ async def s1_s4(settings: Settings, trace_id: str) -> None:
     ok = await poll("S-4 llm-failures 含本 trace", 90, 10, drillable)
     check("S-4 /metrics/llm-failures 可下钻到本 trace", ok,
           "命中本 trace_id" if ok else "轮询 90s（>TTL 60s）仍未见，可能窗口/聚合口径不符")
+
+    # 负对照：否则「命中本 trace」与「命中任何 trace」观测等价，上一条无判别力。
+    # 对照 trace 须**先确认已落地**，否则「不在列表」可能只是「还没进 ES」。
+    # 落地须**轮询等待**：投完即查会撞上消费链未落地（实测 404）——前置条的意义正在于此，
+    # 它把这情况判成 FAIL 而不是让下面的「不在列表」假绿。
+    async def ctl_landed() -> bool:
+        st, _ = await _api("GET", f"/traces/{AGENT}/{ctl_trace}", auth)
+        return st == 200
+
+    ctl_ok = await poll("S-4 对照 trace 落地", 120, 5, ctl_landed)
+    check("S-4 对照 trace 已落地（前置）", ctl_ok,
+          (f"对照 {ctl_trace} 已可查（轮询等待消费链落地）" if ctl_ok
+           else f"对照 {ctl_trace} 轮询 120s 仍不可查 ⇒ 数据不足，判 FAIL 不静默通过"))
+    if ctl_ok:
+        st_f, resp_f = await _api("GET", f"/metrics/llm-failures?agent={AGENT}&window=1h", auth)
+        rows_f = (resp_f.get("items") or []) if isinstance(resp_f, dict) else []
+        ids = [r.get("trace_id") for r in rows_f if isinstance(r, dict)]
+        check("S-4 负对照：同形但 llm_call 成功的 trace **不在**失败列表",
+              st_f == 200 and trace_id in ids and ctl_trace not in ids,
+              f"st={st_f}、本 trace 在={trace_id in ids}、对照在={ctl_trace in ids}"
+              f"（期望 st=200/True/False；谓词 node='llm_call' ∧ "
+              f"status∈{{error,timeout}}，es.py:349）")
+
+    es = AsyncElasticsearch(settings.es_url)
+    engine = create_async_engine(settings.sqlalchemy_url)
+    try:
+        await es.delete_by_query(index=["dev.obs-event-*", "dev.obs-log-*"],
+                                 query={"term": {"trace_id": ctl_trace}},
+                                 conflicts="proceed", refresh=True)
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM trace_judge_state WHERE agent=:a AND trace_id=:t"),
+                               {"a": AGENT, "t": ctl_trace})
+        print(f"已清理 S-4 对照 trace {ctl_trace}（MySQL 判定行 + ES doc）")
+    except Exception as exc:
+        print(f"清理 {ctl_trace} 失败（残留，需人工确认）：{exc}")
+    finally:
+        await es.close()
+        await engine.dispose()
     return auth
 
 
@@ -550,7 +602,7 @@ async def main() -> None:
         await producer.start()
         await s2(producer, settings)
         s3_trace_id = await s3(producer, settings)
-        auth = await s1_s4(settings, s3_trace_id)
+        auth = await s1_s4(producer, settings, s3_trace_id)
         if auth:
             await s5(producer, settings, auth, s3_trace_id)
             await s1_lazy(producer, settings, auth)
