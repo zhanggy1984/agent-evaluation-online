@@ -33,6 +33,7 @@ trace 总行数**无关**」，而非「1000 行时够快」，故可用 N=200 �
 退出码：全绿 0，任一断言失败非 0。
 """
 import asyncio
+import datetime as dt
 import json
 import sys
 import time
@@ -49,6 +50,7 @@ from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from app.consumer.main import classify  # noqa: E402  (预检本地判定，与消费链同源)
 from app.core.config import Settings  # noqa: E402
+from app.worker.judge_scan_job import run_judge_scan  # noqa: E402  (S-6 判定侧，进程内调 job)
 
 AGENT = "good-question"
 FAILURES: list[str] = []
@@ -599,6 +601,140 @@ async def s1_lazy(producer, settings: Settings, auth: str) -> None:
         await engine.dispose()
 
 
+# ---- S-6：E-14 分批到达「窗口补全后判定」（detail §14.3 E-14） ----
+
+async def s6_e14(producer, settings: Settings) -> None:
+    """E-14 判据原文 =「长 SSE 分批到达仍等窗口补全后判定（root 到达标记）」。
+
+    机制（`consumer/state.py:118/167-168`）：`ttl_until = 触发行事件 ts + window(60)+grace(300)s`，
+    `judged=0` 时**每来一个触发行事件即顺延**；扫描位点 = `judged=0 ∧ ttl_until<=now`
+    （`judge_scan_job.py:84`）⇒ **窗口内不判**。故本步**不必等 360s**，用三条断言代替：
+
+      A 到达侧（真机 Kafka 消费链）：只投 root ⇒ 建档、`root_ok=1`、**`judged=0`**（窗口内不判）；
+      B 到达侧：窗口内补投**错误子节点** ⇒ `ttl_until` **恰顺延该事件的 ts 差**（= 后续批次被
+        纳入同一窗口，**非丢弃、非另建行**）+ 累积集含该错误；
+      C 判定侧（进程内调 job 函数，与 cluster_probe 同法，**非** Kafka 链）：**夹具动作 =
+        把 `ttl_until` 拨到过去**以模拟窗口到期 ⇒ `run_judge_scan` 判掉 ⇒ 防「永远不判」的假绿。
+
+    期望值取自声明源而非推测：B 用**差值**断言（对时区/epoch 换算约定免疫），
+    A/C 的 `judged` 位取自 `state.py` 与 `judge_scan_job.py` 的谓词原文。
+    """
+    print("\n===== S-6 E-14 分批到达：窗口内不判 / 后续批次纳入同窗 / 到期才判 =====")
+    topic = settings.agent_topic(AGENT)
+    trace_id = f"d6-e14-{TS_BASE}"
+    ts1 = TS_BASE + 20        # 第 1 批：root
+    ts2 = ts1 + 3_000         # 第 2 批：迟到的错误子节点（ts 晚 3s）
+    engine = create_async_engine(settings.sqlalchemy_url)
+
+    async def send(ev: dict) -> None:
+        await producer.send(topic, json.dumps(ev, ensure_ascii=False).encode("utf-8"))
+        await producer.flush()
+
+    async def fetch():
+        async with engine.connect() as conn:
+            res = await conn.execute(text(
+                "SELECT judged, root_ok, ttl_until, err_summary_json "
+                "FROM trace_judge_state WHERE agent=:a AND trace_id=:t"),
+                {"a": AGENT, "t": trace_id})
+            return res.first()
+
+    def entries_of(row) -> list:
+        """err_summary_json 在 MySQL 是 JSON 列：驱动可能回 dict 或 str，两种都认。"""
+        raw = row[3]
+        if raw is None:
+            return []
+        obj = raw if isinstance(raw, dict) else json.loads(raw)
+        return list(obj.get("entries") or [])
+
+    # ---- A 第 1 批（仅 root）----
+    ev1 = _request(AGENT, trace_id, ts1)
+    drop, _ = classify(ev1, AGENT)
+    check("S-6 第 1 批（仅 root）预检合法", drop is None, f"classify 应通过，实际 {drop}")
+    await send(ev1)
+
+    async def row_exists() -> bool:
+        return (await fetch()) is not None
+
+    got1 = await poll("S-6 第 1 批落地", 40, 2, row_exists)
+    row1 = await fetch() if got1 else None
+    check("S-6 A 仅 root 也已建档（前置：不建档则后续断言无对象）",
+          got1 and row1 is not None,
+          (f"judged={row1[0]} root_ok={row1[1]}（残/半程 trace 也落行，state.py:150-155）"
+           if got1 else "轮询 40s 仍未建档 ⇒ 数据不足，判 FAIL 不静默通过"))
+    if row1 is None:
+        await engine.dispose()
+        return
+    check("S-6 A 窗口内不判：第 1 批落地后 judged 仍为 0",
+          int(row1[0]) == 0,
+          f"judged={row1[0]}、ttl_until={row1[2]}（判为 1 则说明未等窗口就用残缺集下了判定）")
+    ttl1 = row1[2]
+
+    # ---- B 窗口内补投第 2 批（错误子节点）----
+    ev2 = _llm_error(trace_id, ts2)
+    drop, _ = classify(ev2, AGENT)
+    check("S-6 第 2 批（llm_call error）预检合法", drop is None,
+          f"classify 应通过，实际 {drop}")
+    await send(ev2)
+
+    async def batch2_landed() -> bool:
+        row = await fetch()
+        return row is not None and any(e.get("error_type") == "llm_timeout"
+                                       for e in entries_of(row))
+
+    got2 = await poll("S-6 第 2 批纳入累积集", 40, 2, batch2_landed)
+    row2 = await fetch()
+    check("S-6 B 窗口内到达的后续批次被纳入累积集（同窗、同行的 err_summary）",
+          got2,
+          (f"entries={[e.get('error_type') for e in entries_of(row2)]}"
+           if got2 else "轮询 40s 累积集仍无 llm_timeout ⇒ 后续批次未纳入"))
+    delta = (row2[2] - ttl1) if (row2 is not None and ttl1 is not None) else None
+    check("S-6 B 窗口随触发行事件顺延，且顺延量**恰等于该事件的 ts 差**（3s）",
+          delta is not None and abs(delta.total_seconds() - 3.0) < 0.005,
+          f"ttl1={ttl1} → ttl2={row2[2] if row2 else None}（差 {delta}，期望 3s）"
+          "⇒ 顺延则说明窗口尚未关闭、该批次仍计入同一判定集")
+
+    # ---- C 到期才判（把 ttl 拨到过去 = 模拟窗口到期；唯一夹具动作）----
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "UPDATE trace_judge_state SET ttl_until = :past "
+            "WHERE agent=:a AND trace_id=:t"),
+            {"past": dt.datetime.now() - dt.timedelta(minutes=1),
+             "a": AGENT, "t": trace_id})
+    judged_n = await run_judge_scan(engine)
+    row3 = await fetch()
+    check("S-6 C 窗口到期后才被判（对照：防「永远不判」的假绿）",
+          row3 is not None and int(row3[0]) == 1,
+          f"run_judge_scan 置 judged=1 行数={judged_n}、"
+          f"本行 judged={row3[0] if row3 else None}")
+    # judgement_json 单独取（列较多，避免 fetch 里塞满）
+    async with engine.connect() as conn:
+        res = await conn.execute(text(
+            "SELECT judgement_json FROM trace_judge_state WHERE agent=:a AND trace_id=:t"),
+            {"a": AGENT, "t": trace_id})
+        raw = res.scalar()
+    if raw is not None:
+        layer = (raw if isinstance(raw, dict) else json.loads(raw)).get("layer")
+    check("S-6 C 判定层 = none（root_status='ok' ⇒ _collect_candidates 门控不建候选 = 兜底吸收）",
+          layer == "none",
+          f"layer={layer}（T-3.10 门控：root 已 ok 的子节点错误走兜底吸收，不作候选）")
+
+    # ---- 自清（幂等：本 trace 的 ES 事件 + MySQL 行）----
+    es = AsyncElasticsearch(settings.es_url)
+    try:
+        await es.delete_by_query(
+            index=["dev.obs-event-*", "dev.obs-log-*"],
+            query={"term": {"trace_id": trace_id}}, refresh=True)
+        await es.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[S-6] ES 自清异常（不判 FAIL）：{exc}")
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "DELETE FROM trace_judge_state WHERE agent=:a AND trace_id=:t"),
+            {"a": AGENT, "t": trace_id})
+    await engine.dispose()
+    print(f"[S-6] 已自清 {trace_id}（ES 文档 + MySQL 判定行）")
+
+
 async def main() -> None:
     settings = Settings()
     producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap,
@@ -607,6 +743,7 @@ async def main() -> None:
         await producer.start()
         await s2(producer, settings)
         s3_trace_id = await s3(producer, settings)
+        await s6_e14(producer, settings)
         auth = await s1_s4(producer, settings, s3_trace_id)
         if auth:
             await s5(producer, settings, auth, s3_trace_id)
