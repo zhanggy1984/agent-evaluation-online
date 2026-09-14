@@ -86,7 +86,7 @@ async def seed(engine) -> None:
         c.add(Agent(name=AGENT, display_name="E2E 样本 agent"))
         await c.flush()
 
-        # ---- 六种 cluster 状态（详情页门控矩阵的真实数据源）----
+        # ---- 八种 cluster 状态（详情页门控矩阵的真实数据源）----
         c_open = _cluster(status="open", input_hash=H("a"), error_type="llm_timeout")
         # open 且带快照 → 会被 live assemble_job 自动组装（D2 观察项）
         c_claim = _cluster(
@@ -108,22 +108,35 @@ async def seed(engine) -> None:
             status="inactive", input_hash=H("e"), error_type="llm_timeout", layer="L2",
             count=2,
         )
+        # needs_review 的 reason 取**代码可达**的三值（= claim.py:32 REVIEW_REASONS）。
+        # 原写 unclean_run 是错的：它只经 batch 载体、**不入 needs_review 态**
+        # （claim.py:9 / v1.8 R-14），
+        # 用它当种子等于拿一个生产写不出的值去验渲染（2026-09-14 订正）。
         c_review = _cluster(
             status="needs_review", input_hash=H("f"), error_type="llm_timeout",
-            needs_review_reason="unclean_run", input_truncated=1, count=5,
+            needs_review_reason="na", input_truncated=1, count=5,
         )
-        for cl in (c_open, c_claim, c_expired, c_fixed, c_inactive, c_review):
+        c_review_reentry = _cluster(
+            status="needs_review", input_hash=H("g"), error_type="llm_rate_limit",
+            needs_review_reason="reentry_same_version", count=3,
+        )
+        c_review_trunc = _cluster(
+            status="needs_review", input_hash=H("h"), error_type="llm_content",
+            needs_review_reason="input_truncated", input_truncated=1, count=4,
+        )
+        for cl in (c_open, c_claim, c_expired, c_fixed, c_inactive,
+                   c_review, c_review_reentry, c_review_trunc):
             c.add(cl)
 
         # ---- 填充行：收掉「分页边界」与「interface 筛选」两个盲区 ----
-        # ① 分页：默认 page_size=20，6 行永远落不满一页 → 分页块整块不渲染。
-        #    补到 24 行才能验「1/2 页、下一页可点、末页禁用」。
+        # ① 分页：默认 page_size=20，原生 8 行永远落不满一页 → 分页块整块不渲染。
+        #    补到 26 行才能验「1/2 页、下一页可点、末页禁用」。
         # ② interface 筛选：下拉项来自 **ES 指标**（metrics.py `_load_interfaces` →
         #    es_store.run_metrics_interfaces），不是本库——灌 MySQL 造不出下拉项。
         #    故反其道：取一个 ES 里**已存在**的接口名挂在种子行上，就能从 UI 下拉选中它
         #    并验筛选链路。'POST /api/chat/{id}' 取自前端下拉实测枚举。
         # snapshot=None：assemble 判据要求快照非空，置空即不参与 live 组装，避免填充行
-        # 造出无关噪音（原生 6 行已足够观察自动组装）。
+        # 造出无关噪音（原生 8 行已足够观察自动组装）。
         ES_IFACE = "POST /api/chat/{id}"
         for i in range(18):
             c.add(_cluster(
@@ -136,6 +149,7 @@ async def seed(engine) -> None:
         cid = {k: v.id for k, v in dict(
             open=c_open, claim=c_claim, expired=c_expired, fixed=c_fixed,
             inactive=c_inactive, review=c_review,
+            review_reentry=c_review_reentry, review_trunc=c_review_trunc,
         ).items()}
 
         def link(cluster_id, *, status, verify, reason=None, case_id=None) -> ErrorCaseLink:
