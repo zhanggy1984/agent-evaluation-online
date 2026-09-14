@@ -84,6 +84,57 @@ class UserUpdateRequest(BaseModel):
     password: str | None = Field(default=None, min_length=8, max_length=64)
 
 
+# ---------- admin · agent 与接口字典（§8.5） ----------
+
+
+class AgentAdminOut(BaseModel):
+    """agent 字典行——**MySQL 字典面**，非 §8.3 的 ES 观测面 `/metrics/agents`
+    （后者只返回「近 7d 有流量的 agent 名」，零流量/已禁用的 agent 在其中不可见）。"""
+
+    id: int
+    name: str
+    display_name: str
+    enable: int
+    backflow_allow: int
+    route_source: str
+    base_url: str | None = None
+    interface_count: int = 0
+
+
+class InterfaceAdminOut(BaseModel):
+    id: int
+    agent_id: int
+    interface: str
+    method: str | None = None
+    path: str | None = None
+    llm: int
+    llm_source: str | None = None
+    llm_suspect: int
+    body_search: int
+    status: int
+    first_seen_ts: datetime
+    last_seen_ts: datetime
+    updated_by: str | None = None
+
+
+class InterfaceListOut(BaseModel):
+    items: list[InterfaceAdminOut]
+    truncated: bool = False
+
+
+class InterfaceUpdateRequest(BaseModel):
+    """字段缺省 = 不修改。
+
+    ⚠️ **`interface` 串不可改**：它是唯一键列 `uk_interface(agent_id, interface)`
+    （`models/agent.py:70`），改它等于换实体；且 §8.5 的入参定义（detail `:1129`）
+    里**本就没有该字段**——文档括注要求的「改 interface 串须记审计」无入参载体。
+    """
+
+    llm: int | None = None
+    llm_source: str | None = None
+    body_search: int | None = None
+
+
 # ---------- 通用分页（§1.5） ----------
 
 T = TypeVar("T")

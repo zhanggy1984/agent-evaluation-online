@@ -1126,7 +1126,7 @@ CREATE TABLE `trace_judge_state` (
 | `GET /agents` | agent 清单（enable、route_source、维度3 白名单） |
 | `POST /agents/{id}/toggle` | 启停 agent（停用=停止该 agent 回流/指标入口？——**仅停回流生成与展示，消费不停**【实现约定】，防数据黑洞） |
 | `GET /agents/{id}/interfaces` | 接口字典清单（自动发现、llm/llm_source/llm_suspect/body_search、first/last_seen） |
-| `PUT /interfaces/{id}` | admin 补标：`{llm?, llm_source?, body_search?}`（归一化核对 = 修改 interface 串需记 conversion 审计【实现约定】）；疑似漏标告警处理（§8.5） |
+| `PUT /interfaces/{id}` | admin 补标：`{llm?, llm_source?, body_search?}`（归一化核对 = 修改 interface 串需记 conversion 审计【实现约定】；⚠️ **2026-09-14 订正：本行入参里并没有 `interface` 字段，而它是唯一键列 `uk_interface(agent_id, interface)` ⇒ v1 不支持改串**（改它等于换实体）。批 2a-1 实测：多余的 `interface` 字段被入参模型忽略、串不变）；疑似漏标告警处理（§8.5） |
 | `GET /agents/{id}/credential` | Kafka 凭证查看（secret 脱敏 + 轮换入口；admin） |
 | `POST /agents/{id}/credential/rotate` | 凭证轮换（版本化、吊销即时生效=撤 ACL+断连接，§13.2） |
 | `GET /agents/{id}/health` | agent 上报健康小卡：最近 1min/5min 上报事件量、dropped、spool_pending、last_seen_ts（读自监控心跳 `obs.selfmonitor`，§3.6/§13.2）；agent 未接入=无 last_seen，前端据此出「未接入 SDK」文案（§9.1） |

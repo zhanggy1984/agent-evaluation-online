@@ -783,6 +783,14 @@ J5 真挣到的是**四条结构型事实**：真重算轮确实会发生 / meta
 
 **归口 = 甲类（真待处置）**：有对象要动（端点 + 页面 + 错误码抛出点），**且不在本阶段动**（阶段 4 只验收）。
 
+**补验（2026-09-14，T-3.12 批 2a-1）：§8.5 字典面已落地，F-19 的闭合面再进一格**
+
+- **已闭合**：§8.5 的 `GET /agents`、`POST /agents/{id}/toggle`、`GET /agents/{id}/interfaces`、`PUT /interfaces/{id}` 四端点 + **§9.2 第三个 admin 页面 `/admin/agents`**（批 1 悬着的「三个页面只做了 2 个」在此补齐）。验证 = 单测 499 passed / 真库探针 **20-20 PASS** / 浏览器 e2e（含 DB 审计取证）。
+- **仍未闭合（本条的剩余部分）**：`GET /agents/{id}/credential`、`POST .../credential/rotate`（批 2b）、`GET /agents/{id}/health`（批 2a-2）、**§8.5.1 疑似漏标自动补标**（批 2c，需观测计数载体 ⇒ 动消费主链路）。
+- ⚠️ **一处文档自相矛盾的处置**：detail `:1129` 的入参 `{llm?, llm_source?, body_search?}` 里**没有 `interface` 字段**，却在同一行括注要求「改 interface 串须记审计」——**无入参载体**；且 `interface` 是唯一键列。处置 = **v1 不做改串**，并已回头订正 detail 该行（不是把缺口记成笔误）。依据同 [[code-doc-gap-three-kinds]] 的第三条分型。
+
+---
+
 ### F-20（2026-09-14）：`needs_review` reason 值域在 **`task.md` 两处写错**（detail / 前端均与代码一致）+ 种子照错值种 + viewer 空 `admin` 列
 
 **来路**：阶段 4 T-4.11 浏览器 e2e 的**前置取证**——该项要求验「needs_review 三 reason 前端呈现」，动手前先回查「哪三个是正确的三个」。

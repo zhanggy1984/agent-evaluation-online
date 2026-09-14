@@ -343,3 +343,47 @@ export interface AdminUserOut {
   status: number
   created_at: string | null
 }
+
+// ---------- admin · agent 与接口字典（§8.5，T-3.12 批 2a-1） ----------
+
+/** agent 字典行 —— MySQL 字典面，非 §8.3 的 ES 观测面 `/metrics/agents`
+ *  （后者只返回「近 7d 有流量」的 agent 名，零流量/已停用的在其中不可见）。 */
+export interface AdminAgentOut {
+  id: number
+  name: string
+  display_name: string
+  enable: number
+  backflow_allow: number
+  route_source: string
+  base_url: string | null
+  interface_count: number
+}
+
+export interface AdminInterfaceOut {
+  id: number
+  agent_id: number
+  interface: string
+  method: string | null
+  path: string | null
+  llm: number
+  llm_source: string | null
+  llm_suspect: number
+  body_search: number
+  status: number
+  first_seen_ts: string
+  last_seen_ts: string
+  updated_by: string | null
+}
+
+/** `truncated=true` = 该 agent 的接口数超过后端单次上限（500），此处只给了前 500 条。 */
+export interface AdminInterfaceListOut {
+  items: AdminInterfaceOut[]
+  truncated: boolean
+}
+
+/** 字段缺省 = 不修改。⚠️ **没有 `interface` 串**：本端点不支持改串（唯一键 + 无入参载体）。 */
+export interface InterfaceUpdateBody {
+  llm?: number
+  llm_source?: string
+  body_search?: number
+}

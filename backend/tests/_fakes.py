@@ -147,7 +147,12 @@ class FakeAsyncSession:
             return next((r for r in self.users if r.id == pk), None)
         if model is _UserSession:
             return next((r for r in self.sessions if r.id == pk), None)
-        return None
+        # registry 注册的模型（Agent/Interface/DictConfig…）：按主键在注册行里找。
+        # 语义与真库 get 同（按 pk 取、无行返回 None），不是「假装支持」——
+        # 端点写 `session.get(Model, pk)` 是最直白的取行写法，缺的是替身而非迁就替身。
+        return next(
+            (r for r in self.registry.get(model, []) if getattr(r, "id", None) == pk), None
+        )
 
     async def execute(self, stmt, params=None, execution_options=None):
         entity = self._resolve_entity(stmt) if stmt is not None else None

@@ -5,6 +5,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { accessToken } from '../api/client'
+import AdminAgentsView from '../views/AdminAgentsView.vue'
 import AdminConfigsView from '../views/AdminConfigsView.vue'
 import AdminUsersView from '../views/AdminUsersView.vue'
 import AnomaliesView from '../views/AnomaliesView.vue'
@@ -73,6 +74,12 @@ const router = createRouter({
       path: '/admin/users',
       name: 'admin-users',
       component: AdminUsersView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/admin/agents',
+      name: 'admin-agents',
+      component: AdminAgentsView,
       meta: { requiresAuth: true },
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

@@ -24,6 +24,7 @@ const MENUS = [
   { name: 'backflow', label: '回流看板' },  // P2-6：第六个一级菜单（detail §9.1 登记）
   { name: 'admin-configs', label: '系统管理 · 配置', adminOnly: true },
   { name: 'admin-users', label: '系统管理 · 账号', adminOnly: true },
+  { name: 'admin-agents', label: '系统管理 · Agent', adminOnly: true },
 ]
 
 const visibleMenus = computed(() => MENUS.filter((m) => !m.adminOnly || user.value?.role === 'admin'))

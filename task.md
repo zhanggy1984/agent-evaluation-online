@@ -141,7 +141,7 @@
   - **与 T-5.3 的边界（防双记）**：T-4.10 已把「**凭证轮换的执行动作**」下移 T-5.3（上线门/安全边界）；本条立的是**端点与 UI 的实现**，**不重复登记执行动作**。
   - **⚠️ 三条显式声明（不改写已发出的结论）**：① **不追认推翻阶段 3 出口**——阶段 3 出口（下条）**已发出且仍有效**，本条是**事后发现的欠债追补**，性质同「回退对应阶段修复」（见阶段 4 抬头「发现缺陷回退对应阶段」）；② **阶段 4 出口不因本条挂起**；③ 编号依据 = 阶段 3 编号止于 `T-3.11`，顺位无冲突（**不新开阶段号**，避免扩展项目范围）。
   - **验收目标**：§8.5/§8.6 端点全绿（含 admin-only 二次鉴权 + **吊销即时生效**）；§9.2 三个 admin 页面数据源可用、菜单按角色渲染；`ERR_CONFIG_0001` 有抛出点；写侧配置变更留审计（`config_key` 粒度 + 旧/新值摘要，§13.5）；**授权与轮换的执行面按 T-5.3 的口径另行复验**。
-  - **状态（2026-09-14 更新）**：**批 1（§8.6 配置 + 用户）已实现并验收完毕**（单测 478 passed / ruff 全绿 / 真库探针 31-31 PASS / 前端 type-check + 133 单测 / **浏览器 e2e 双账号**）；**§8.5 七端点 + §8.5.1 自动补标仍未开工**。
+  - **状态（2026-09-14 更新）**：**批 1（§8.6 配置 + 用户）已实现并验收完毕**（单测 478 passed / ruff 全绿 / 真库探针 31-31 PASS / 前端 type-check + 133 单测 / **浏览器 e2e 双账号**）；**§8.5 余下 health 与凭证两端点、§8.5.1 自动补标仍未开工**（详见下方批 2a-1 回填）。
   - **⚠️ 吊销机制订正（2026-09-14 实测）**：本条原文与 detail §8.6/§13.2 写的「禁用即吊销会话，**token version+1**」**与实现不符**——`user` 表**无 `token_version` 列**，且 `api/auth.py:4-8` 逐字「**不做 token-version 列迁移**」；实机机制 = **`user.status=0` + 撤销该用户全部未撤销 `user_session`（`revoked_at` 落时）**（T-4.10/F-8 已实测吊销即时生效）。**本批按既有机制实现，未加列去迁就文字**；`solution_detail.md` §8.6/§13.2/§13.5 三处措辞已同步订正。
   - **交付回填 · 批 1（2026-09-14；证据 = `backend/app/api/admin.py` + `tests/test_api_admin.py` + `tests/integration/admin_probe.py`）**：
     - ✅ **§8.6 端点**（`api/admin.py`，全部 `AdminUser` 依赖）：`GET /admin/configs?agent=`、`PUT /admin/configs`、`GET /admin/users`、`POST /admin/users`、`PUT /admin/users/{id}`。
@@ -154,6 +154,16 @@
     - ⚠️ **未做**：③ 正文开关配置入口；④ `agent_credential` 轮换执行面（归 T-5.3）；§8.5 全部；§8.5.1 自动补标（需动消费主链路）。
     - ✅ **浏览器 e2e（2026-09-14 实测；`http://localhost:18080`，admin + 真 viewer 双账号）**：① admin 在 `/admin/configs` 写入后 UI 显示「`claim_ttl_days` 已保存：**version → 1**」且更新人变 `admin`——**不停在 UI 自述，另做 DB 取证**：审计行 `id=3154 action=config_change actor_user_id=1 cluster_id=NULL detail="global 配置 claim_ttl_days v0→1：null → 14"`（utf8mb4 复读，中文完整）；② admin 在 `/admin/users` 建号成功、列表即时刷新、出参不含口令；③ **退出后用真 viewer 账号登录**（**不是** localStorage 角色覆盖）⇒ 菜单两项**消失**、**直连 `/admin/configs` 得后端 403**（页面显示 `ERR_AUTH_0002 角色不足（需要 admin）`）⇒ **F-20 的「viewer 边界」在 UI 层也补齐**（探针层已用真账号闭合）；④ 测试账号 `e2e-viewer` **已删除**（含其 `user_session`，库内回到只剩 `admin`），配置行**保留**（值 = seed 默认，读侧等价）。
     - ⚠️ **顺带实测的部署语义（已同步写入 `docs/ops-manual.md` §2，防复踩）**：后端是**热挂载** ⇒ **新增模块（如 `api/admin.py`）必须 `docker compose restart backend`**，否则路由在运行进程里不存在、表现为**页面接口 404**（本批首访即撞上）；前端是**构建产物** ⇒ **必须 `docker compose build frontend && docker compose up -d frontend`**，**重启容器无用**（镜像里仍是旧 dist）。
+
+  - **交付回填 · 批 2a-1（2026-09-14；证据 = `backend/app/api/admin.py` §8.5 段 + `tests/test_api_admin_agents.py` + `tests/integration/admin_agents_probe.py` + `frontend/src/views/AdminAgentsView.vue`）**：
+    - ✅ **§8.5 字典面四端点**：`GET /admin/agents`（读 **MySQL `agent` 表**并带 `interface_count`——**不是** §8.3 的 ES 观测面；探针判据 = **含 `enable=0` 的 agent**，ES 面永远给不出）、`POST /admin/agents/{id}/toggle`（**[裁定]** 无 body、翻转 `enable`）、`GET /admin/agents/{id}/interfaces`（上限 500 + `truncated`）、`PUT /interfaces/{id}`。
+    - ✅ **§9.2 三个 admin 页面齐**：`/admin/agents` 落地并接入菜单（按角色渲染）——批 1「三个只做了 2 个」的缺口**闭合**。
+    - ✅ **两类新审计 action**：`agent_toggle` / `interface_dict_change`（`cluster_id=NULL`、`actor_user_id` 取真 id）；浏览器 e2e 已做 DB 取证（两条）。
+    - **[裁定] 三条**（文档未定义处；按实机实现、不新造契约面）：① `llm_source` 只接受 `manual`；② `llm=1` 连带清 `llm_suspect`（**疑似漏标由人工确认解除**）；③ **不支持改 `interface` 串**——detail §8.5 入参本无该字段，且它是唯一键列 `uk_interface(agent_id, interface)`；探针 G-5f 实测「多余 `interface` 字段被忽略、串不变」。
+    - ✅ **验证（独立验收面 = MySQL，**可全量验**）**：单测 **499 passed**（基线 478 + 新增 21）/ ruff 全绿 / **真库探针 20-20 PASS** / 前端 type-check + **133 单测** / **浏览器 e2e**（`/admin/agents` 渲染 + 启停 + 接口补标；用一次性探针账号，跑完连账号一起清理）。
+    - ⚠️ **未覆盖（如实标注，不算通过）**：`_INTERFACE_MAX=500` 的**截断分支**未做容量型取证（需造 501 行）；`health` 端点不在本批（独立验证面 = ES 心跳）。
+    - ⚠️ **顺带查出并处置的两处「替身 / 文档」不符**（`tests/_fakes.py`）：① `FakeAsyncSession.get()` 此前对 `User`/`UserSession` 以外的模型**恒返回 None**（已补 registry 主键查找，语义与真库同）；② 其自身注释称「列级 select 返回该列属性」，**实测仍返回整行**（2026-09-14）——故 `_interface_counts` 按整行计数，`select(Interface.agent_id)` 那种写法只在替身下崩。
+    - ⚠️ **页面现状**：`.tbl`/`.err`/`.ok`/`.hint` 四个 class **在 `style.css` 中未定义**（批 1 两页同样如此，属全局占位现状）；本批**不补样式**（补会改动全站视觉），只登记。
 
 - **T-3.13 审计读面与导出补实现**（**2026-09-14 立**，用户拍板；来源 = 阶段 5 T-5.4 运营清单，登记见 `docs/integration-report.md` §6 **F-23**）：**审计（`conversion_record`）当前只能逐个 cluster 打开详情看，无跨 cluster 检索、无导出**。运营诉求「统计某时间段内人工处置了多少条」**当前不可用**。
   - **⚠️ 性质声明（与 T-3.12 必须区分，否则两处会被当成同类）**：`T-3.12` = **权威文档承诺过、实现没做**（欠债）；**本条 = 上游设计（`solution.md` / `solution_detail.md`）零命中「导出」**（2026-09-14 实测 grep），系**由 T-5.4 运营清单提出** ⇒ 性质是「**运营需求驱动的补实现**」，**不是**「承诺未兑现」。**登记时勿套 T-3.12 的措辞**——F-19 定义欠债时明确要求「按『承诺过』而非『提过』判定」，本条**不满足该判据**，是**显式自主加范围**（用户已知悉此代价并拍板）。
