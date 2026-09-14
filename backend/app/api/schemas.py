@@ -155,6 +155,42 @@ class AgentHealthOut(BaseModel):
     sdk_connected: bool = False
 
 
+class AgentCredentialItem(BaseModel):
+    """`agent_credential` 行中**可外传**的那部分（§8.5 `:1137` Kafka 凭证查看）。
+
+    ⚠️ **`secret_cipher` 不在本模型内，且全流程不读取它**——见 `AgentCredentialOut`。
+    没有 `has_secret` 之类的布尔位：`secret_cipher` 是 `nullable=False`
+    （`models/agent.py:83`）⇒ 「本对象存在」本身就等价于「有 secret」，再加一个恒真字段
+    是噪声，且会被误读成「可能没有」。
+    """
+
+    kafka_username: str
+    topic: str
+    active: int
+    rotated_at: datetime | None = None
+    created_at: datetime
+
+
+class AgentCredentialOut(BaseModel):
+    """Kafka 上报凭证**脱敏**读面（§8.5 `:1137`，admin）。
+
+    **[裁定] 「脱敏」= 不回传 secret 字段，而非回一个掩码。**
+    文档只说「secret 脱敏」、未定义形式；而 `secret_cipher` 存的是**密文**，本来就是一个
+    随机串 —— 对密文做掩码是「脱敏一个已经不可读的东西」，零信息价值，反而暗示存在可核对
+    的明文前缀。设计本意是「不回明文」，v1 既不解密（全仓 `Fernet`/`MultiFernet` 零实现，
+    2026-09-14 取证）也不回传 ⇒ 最小暴露 = 该字段不出现在响应体里。
+    **故本端点不依赖 `Fernet`**：不是「用它之前先补它」，而是这条路径根本用不上它。
+
+    **[裁定] 无凭证行 ⇒ 200 + `credential=null`，不用 404。**
+    「未发凭证」是**合法状态**（dev 库该表 0 行即是，2026-09-14 实测），非错误；用 404 会让
+    前端分不清「agent 不存在」（本面为 400）与「这个 agent 还没发凭证」——两种处境处置动作
+    完全不同（前者是 id 笔误，后者是待 infra 发放）。
+    """
+
+    agent_id: int
+    credential: AgentCredentialItem | None = None
+
+
 # ---------- 通用分页（§1.5） ----------
 
 T = TypeVar("T")

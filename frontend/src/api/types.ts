@@ -403,3 +403,30 @@ export interface AdminAgentHealthOut {
   dropped: Record<string, number>
   sdk_connected: boolean
 }
+
+/**
+ * agent Kafka 上报凭证的**可外传**部分（§8.5 `:1137`）。
+ *
+ * ⚠️ **没有 secret 字段，也不会有**：「脱敏」在后端的实现 = **连 `secret_cipher` 这一列都不读**
+ * （不是读了再抹）。故本类型里出现任何 secret 字段都属回归。
+ */
+export interface AdminCredentialItem {
+  kafka_username: string
+  topic: string
+  active: number
+  rotated_at: string | null
+  created_at: string
+}
+
+/**
+ * `GET /admin/agents/{id}/credential` 响应（T-3.12 批 2b）。
+ *
+ * ⚠️ `credential === null` = **该 agent 尚未发放凭证**（合法状态），**不是**「agent 不存在」
+ * （后者后端返 400）。两者处置动作不同：前者等 infra 发放，后者是 id 写错了。
+ * ⚠️ **本批不含轮换**：§8.5 `:1138` 的 rotate 要求「新 SASL 账号 + 撤 ACL + 断连接」，
+ *    三者全在 infra，online 无执行面 ⇒ 已下移 T-5.3。**不要**在本页加轮换按钮占位。
+ */
+export interface AdminAgentCredentialOut {
+  agent_id: number
+  credential: AdminCredentialItem | null
+}

@@ -58,7 +58,20 @@
 - **前端是构建产物**（`docker-compose.yml:94-98` `build: ./frontend` + nginx 静态服务），**改前端必须 `docker compose build frontend && docker compose up -d frontend`**，重启容器**无用**（镜像里还是旧 dist）。
 
 **⚠️ 三条仍要记住的现实**：
-1. **审计看得见落库、看不见界面**：配置变更行已写 `conversion_record`，但**跨 cluster 的审计读面未实现**（归 **`T-3.13`**）⇒ 界面上**没有**「词表变更历史」可查，核对只能查库。
+1. **审计看得见落库、看不见界面 —— 且 v1 不再补界面**（2026-09-14 裁定，原 `T-3.13` 已降级为 SOP）：配置变更行已写 `conversion_record`，但**跨 cluster 的审计读面无 UI、无导出**。**这是 v1 的正式口径，不是待办**——审计表就在 MySQL 里，用下面这句查即可：
+   ```sql
+   -- 统计某时间段内各类处置/变更落了多少条（运营诉求「人工处置了多少条」直接看 action 列）
+   SELECT action, COUNT(*) AS cnt, MIN(ts) AS first_ts, MAX(ts) AS last_ts
+     FROM conversion_record
+    WHERE ts >= '2026-09-01 00:00:00' AND ts < '2026-10-01 00:00:00'
+    GROUP BY action ORDER BY cnt DESC;
+
+   -- 看某类动作的明细（detail 是自由文本，人工读；按 config_key 筛选需加列，v1 不做）
+   SELECT ts, action, actor_user_id, cluster_id, detail
+     FROM conversion_record
+    WHERE action = 'config_change' ORDER BY ts DESC LIMIT 200;
+   ```
+   ⚠️ `detail` 是 `String(1024)` 自由文本、**无索引**，按内容筛选会全表扫；`cluster_id`/`link_id` 对配置类变更为 `NULL`（见上面「审计落点」行）。
 2. **空词表合法**：写入 `[]` 不会被拒——它是 **fail-closed 载体**（`words==[]` 时 offline 结构自检 `content_gap` 判不过，§6.3 step3）。**误清空会让该 agent 的兜底判定全部进回流候选**，运维须自重（本步**不设**二次确认）。
 3. **筛选能力有限**：审计 v1 只支持 `action` + `操作人` + 时间窗，**按 `config_key` 筛选未实现**（自由文本 `detail` 无索引，要做需加列）——已登记为已知限制（`task.md` T-3.12 回填）。
 

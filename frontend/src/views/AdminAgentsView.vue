@@ -5,8 +5,11 @@
 // 零流量 / 已停用的 agent 在其中**完全不可见**；本页读 **MySQL 字典面**，因此**两种 agent 都列得出来**。
 // ⚠️ 但「列得出来」≠「分得清」：health 卡**无法区分**「接入后掉线」与「本来就没接」——两者都表现为
 //    「查询窗内无心跳」（2026-09-14 订正：原注释写「能看到二者的差别」，说过头了）。
-// ⚠️ 本页**没有**凭证查看/轮换区（§8.5 凭证两端点属批 2b，未实现）——不留占位，
-// 免得后人把占位读成「功能在、只是没数据」。
+// ⚠️ 凭证区是**只读**的（§8.5 批 2b，2026-09-14 落地）：**没有轮换入口，也不留占位按钮**——
+//    `:1138` 的 rotate 要求「新 SASL 账号 + 撤 ACL + 断连接」，三者全在 infra，online 无执行面，
+//    已下移 T-5.3。放一个按不动的按钮，后人会读成「功能在、只是没数据」。
+// ⚠️ 凭证区**看不到口令**，且这不是「隐藏」而是**后端不读该列**（`secret_cipher` 是密文，
+//    脱敏密文零信息价值）；详见 `api/types.ts` 的 `AdminAgentCredentialOut`。
 // ⚠️ 接口串**不可改**（唯一键列 + 后端入参无该字段）；本页只改 llm / llm_source / body_search。
 // ⚠️ 展开行内的「上报健康」读的是 **ES 心跳面**（第三个数据源），故与接口字典分开报错；
 //    `last_seen_ts` 为空时文案只说「查询窗内无心跳上报」——**不再断言「未接入 SDK」**（2026-09-14 收窄）。
@@ -15,6 +18,7 @@
 import { onMounted, ref } from 'vue'
 
 import {
+  adminAgentCredential,
   adminAgentHealth,
   adminAgentInterfaces,
   adminAgents,
@@ -22,7 +26,12 @@ import {
   adminToggleAgent,
 } from '../api/admin'
 import { ApiError } from '../api/client'
-import type { AdminAgentHealthOut, AdminAgentOut, AdminInterfaceOut } from '../api/types'
+import type {
+  AdminAgentCredentialOut,
+  AdminAgentHealthOut,
+  AdminAgentOut,
+  AdminInterfaceOut,
+} from '../api/types'
 
 const rows = ref<AdminAgentOut[]>([])
 const loading = ref(false)
@@ -41,6 +50,11 @@ const ifaceBusyId = ref<number | null>(null)
 const health = ref<AdminAgentHealthOut | null>(null)
 const healthLoading = ref(false)
 const healthErr = ref('')
+
+// 展开行内的凭证卡（§8.5 批 2b，读 MySQL `agent_credential`）——**只读**，无轮换入口
+const cred = ref<AdminAgentCredentialOut | null>(null)
+const credLoading = ref(false)
+const credErr = ref('')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -82,14 +96,18 @@ async function expand(a: AdminAgentOut): Promise<void> {
   ifaceTruncated.value = false
   health.value = null
   healthErr.value = ''
+  cred.value = null
+  credErr.value = ''
   ifaceLoading.value = true
   healthLoading.value = true
+  credLoading.value = true
   errorMsg.value = ''
-  // 接口字典（MySQL）与心跳（ES）是两个数据源，用 allSettled 各报各的错——
+  // 接口字典与凭证（都是 MySQL，但不同表）与心跳（ES）是三块面，用 allSettled 各报各的错——
   // ES 查询超时不该让接口字典整块消失，反之亦然。
-  const [ifaceRes, healthRes] = await Promise.allSettled([
+  const [ifaceRes, healthRes, credRes] = await Promise.allSettled([
     adminAgentInterfaces(a.id),
     adminAgentHealth(a.id),
+    adminAgentCredential(a.id),
   ])
   if (ifaceRes.status === 'fulfilled') {
     ifaces.value = ifaceRes.value.items
@@ -106,12 +124,26 @@ async function expand(a: AdminAgentOut): Promise<void> {
   } else {
     throw healthRes.reason
   }
+  if (credRes.status === 'fulfilled') {
+    cred.value = credRes.value
+  } else if (credRes.reason instanceof ApiError) {
+    credErr.value = `凭证读取失败（${credRes.reason.code}）：${credRes.reason.message}`
+  } else {
+    throw credRes.reason
+  }
   ifaceLoading.value = false
   healthLoading.value = false
+  credLoading.value = false
 }
 
 function fmtTs(ts: number | null): string {
   return ts === null ? '—' : new Date(ts).toLocaleString()
+}
+
+// 后端 datetime 列走 ISO 字符串（无时区后缀，是 naive UTC）——原样展示，不做本地时区换算，
+// 免得给运维一个「看起来是本地时间」的错位读数。
+function fmtDt(s: string | null): string {
+  return s === null ? '—' : s.replace('T', ' ')
 }
 
 // dropped 是 consumer **进程内累计**快照（重启归零），不是窗口增量 ⇒ 原样列出，不做任何求和
@@ -206,6 +238,28 @@ onMounted(() => void load())
                   </template>
                 </template>
               </div>
+              <div class="health">
+                <strong>上报凭证</strong>
+                <span v-if="credLoading" class="hint">凭证查询中…</span>
+                <span v-else-if="credErr" class="err">{{ credErr }}</span>
+                <span v-else-if="cred && cred.credential === null" class="hint">
+                  尚未发放凭证（等 infra 发 SASL 账号后落库，非本页可操作）
+                </span>
+                <template v-else-if="cred && cred.credential">
+                  <span>SASL 身份 <code>{{ cred.credential.kafka_username }}</code></span>
+                  <span>上报 topic <code>{{ cred.credential.topic }}</code></span>
+                  <span>状态 {{ cred.credential.active === 1 ? '有效' : '已停用' }}</span>
+                  <span>建立于 {{ fmtDt(cred.credential.created_at) }}</span>
+                  <span>
+                    最近轮换
+                    {{ cred.credential.rotated_at ? fmtDt(cred.credential.rotated_at) : '从未' }}
+                  </span>
+                </template>
+                <span class="hint">
+                  （口令本身不提供查看——后端不读该列；轮换需 infra 撤销 ACL 并断连，
+                  不在本页）
+                </span>
+              </div>
               <p v-if="ifaceLoading">接口加载中…</p>
               <p v-else-if="ifaces.length === 0" class="hint">该 agent 暂无接口字典行。</p>
               <template v-else>
@@ -220,7 +274,6 @@ onMounted(() => void load())
                       <th>路径</th>
                       <th>LLM</th>
                       <th>来源</th>
-                      <th>疑似漏标</th>
                       <th>正文检索</th>
                       <th>操作</th>
                     </tr>
@@ -232,10 +285,6 @@ onMounted(() => void load())
                       <td>{{ i.path || '—' }}</td>
                       <td>{{ i.llm === 1 ? '是' : '否' }}</td>
                       <td>{{ i.llm_source || '—' }}</td>
-                      <td>
-                        {{ i.llm_suspect === 1 ? '疑似' : '—' }}
-                        <span v-if="i.llm_suspect === 1" class="hint">（确认后自动解除）</span>
-                      </td>
                       <td>{{ i.body_search === 1 ? '开' : '关' }}</td>
                       <td>
                         <button
@@ -271,13 +320,23 @@ onMounted(() => void load())
 
     <p class="hint">
       停用**仅停回流生成与展示，消费不停**（防数据黑洞）。接口串不可改——它是唯一键列；
-      需要「换串」时请新增接口行，不要改旧的。人工「标为 LLM」会连带解除该行的「疑似漏标」。
+      需要「换串」时请新增接口行，不要改旧的。
+      <br />
+      本表**没有「疑似漏标」列**（2026-09-14 移除）：§8.5.1 的「自动补标」v1 不做
+      （依据见 `solution_detail.md` §8.5.1），而 `llm_suspect` 全仓**没有任何置 1 的写点**
+      ——留着该列只会永远显示「—」，是假入口。**补标改由人工用本表「标为 LLM」完成。**
     </p>
 
     <p class="hint">
       「上报健康」读 ES 心跳，时间窗与检索面同一个「回溯天数」配置；「丢弃计数」是 consumer
       **进程内累计值**（该进程重启即归零），且取的是最新一条心跳的快照、不是窗口增量——
       别把它当历史总丢弃数。
+    </p>
+
+    <p class="hint">
+      「上报凭证」读 MySQL `agent_credential`，**只读**：口令不提供查看（后端根本不读密文列），
+      轮换也不在本页——它要 infra 申请新 SASL 账号、撤旧 ACL 并断连，属上线门（T-5.3）。
+      「尚未发放凭证」是**合法状态**，不是报错。
     </p>
   </div>
 </template>

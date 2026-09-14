@@ -4,8 +4,9 @@
 **§8.5 分两批**（用户 2026-09-14 拍板「拆细、单独验证」）：本文件当前含**字典面**四端点
 （`/agents`、`/agents/{id}/toggle`、`/agents/{id}/interfaces`、`/interfaces/{id}`），
 读 MySQL 两表；`/agents/{id}/health` 读 ES 事件 index、本环境可能无心跳数据 ⇒ 单独成批，
-避免「字典面全绿」掩盖「health 只验了空态」。凭证两端点（`credential` 读 + `rotate`）
-另批。
+避免「字典面全绿」掩盖「health 只验了空态」。`/agents/{id}/credential` **脱敏读面**单独成批
+（**2026-09-14 收窄**：原计划的「凭证两端点」实为**一端点**——`rotate` 的三个动作
+〔新 SASL 账号 / 撤 ACL / 断连接〕全在 infra，online 无执行面，已下移 T-5.3，见该端点文档）。
 
 **零 DDL 实现基础**（逐字段核对，非推断）：
 - 配置写入/version：`dict_config`（`uk_dc(agent_id, config_key)`、`config_value` JSON、`version`）。
@@ -39,6 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import AdminUser
 from app.api.schemas import (
     AgentAdminOut,
+    AgentCredentialItem,
+    AgentCredentialOut,
     AgentHealthOut,
     ConfigItem,
     ConfigUpdateRequest,
@@ -55,7 +58,7 @@ from app.core.errors import AppError
 from app.core.log import get_logger
 from app.core.security import hash_password
 from app.core.seed import GLOBAL_DEFAULTS, PER_AGENT_DEFAULTS
-from app.models.agent import Agent, Interface
+from app.models.agent import Agent, AgentCredential, Interface
 from app.models.config import DictConfig
 from app.models.error_flow import ConversionRecord
 from app.models.user import User, UserSession
@@ -663,5 +666,55 @@ async def get_agent_health(
         row.name,
         len(docs),
         out.last_seen_ts,
+    )
+    return out
+
+
+@router.get("/agents/{agent_id}/credential", response_model=AgentCredentialOut)
+async def get_agent_credential(
+    agent_id: int, user: AdminUser, session: _Session
+) -> AgentCredentialOut:
+    """Kafka 上报凭证**脱敏**读面（§8.5 `:1137`，admin）。
+
+    **[裁定] 「脱敏」= 不回传 secret 字段**（理由见 `AgentCredentialOut` 文档）——
+    本端点**连 `secret_cipher` 这一列都不读**，不是「读了再抹掉」：不取即不可能误传，
+    也不必依赖 `Fernet`（全仓零实现，2026-09-14 取证）。
+
+    **[裁定] 无凭证行 ⇒ 200 + `credential=null`**；agent 本身不存在 ⇒ 400
+    （照 2a-2 health 口径：id 笔误不得伪装成「有这个 agent 但没凭证」）。
+
+    **本端点只读、不写审计**：读操作不产审计行（与 `/users` 列表、`/configs` 列表同口径），
+    审计只在写侧落。
+
+    ⚠️ **本批不做 rotate**：§8.5 `:1138` 的轮换要求「新 SASL 账号 + 撤 ACL + 断连接」，
+    三者**全在 infra**（online 无执行面），且新密码**无来源**——online 自造一个密码只会写出
+    一条 infra 侧永远对不上的记录。该端点与执行面一并下移 T-5.3（2026-09-14 用户拍板）。
+    """
+    logger.debug("admin agent credential 入参: admin=%s agent_id=%s", user.username, agent_id)
+    agent = await session.get(Agent, agent_id)
+    if agent is None:
+        raise AppError("ERR_CONFIG_0001", f"agent 不存在：{agent_id}", http=400)
+
+    stmt = select(AgentCredential).where(AgentCredential.agent_id == agent_id)
+    # `scalar_one_or_none`：`uk_cred_agent(agent_id)` 保证至多一行（`models/agent.py:92`）
+    cred = (await session.execute(stmt)).scalar_one_or_none()
+    if cred is None:
+        logger.debug("admin agent credential 出参: agent_id=%s 未发凭证", agent_id)
+        return AgentCredentialOut(agent_id=agent_id, credential=None)
+
+    out = AgentCredentialOut(
+        agent_id=agent_id,
+        credential=AgentCredentialItem(
+            kafka_username=cred.kafka_username,
+            topic=cred.topic,
+            active=cred.active,
+            rotated_at=cred.rotated_at,
+            created_at=cred.created_at,
+        ),
+    )
+    logger.debug(
+        "admin agent credential 出参: agent_id=%s active=%s（secret 未读取、未回传）",
+        agent_id,
+        cred.active,
     )
     return out

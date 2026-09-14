@@ -3,6 +3,7 @@
 // （与 backflow.ts 同一"双保险"口径）。
 import { api } from './client'
 import type {
+  AdminAgentCredentialOut,
   AdminAgentHealthOut,
   AdminAgentOut,
   AdminConfigItem,
@@ -79,6 +80,13 @@ export function adminAgentInterfaces(agentId: number): Promise<AdminInterfaceLis
 // agent 上报健康卡（§8.5）：读 ES 心跳 doc——last_seen_ts 为 null = 查询窗内无心跳（前端文案不再断言「未接入 SDK」）
 export function adminAgentHealth(agentId: number): Promise<AdminAgentHealthOut> {
   return api<AdminAgentHealthOut>(`/admin/agents/${agentId}/health`)
+}
+
+// Kafka 上报凭证**脱敏**读面（§8.5，批 2b）：后端连 secret_cipher 这一列都不读，响应无 secret 字段。
+// credential 为 null = 尚未发放凭证（合法态），不是「agent 不存在」（那是 400）。
+// ⚠️ 本批**无 rotate**——三个执行动作全在 infra，已下移 T-5.3；此处也不留轮换入口占位。
+export function adminAgentCredential(agentId: number): Promise<AdminAgentCredentialOut> {
+  return api<AdminAgentCredentialOut>(`/admin/agents/${agentId}/credential`)
 }
 
 // 人工补标：llm=1 会连带清 llm_suspect（疑似漏标告警由人工确认解除）；llm_source 只接受 manual
