@@ -5,12 +5,14 @@
 
 四条各自的构造依据（读 `app/core/error_payload.validate_envelope` 判定表得来，非猜）：
 
-| 码 | 构造 | 触发点 |
-|---|---|---|
-| `content_gap` | agent 用 `customer-service`（其 `fallback_utterance` = `[]`） | 空词表在**最早的** validate 就被拦 |
-| `offline_cap_gap` | agent=`good-question`（词表非空）+ cluster.interface 用**离线未登记**的路径 | resolve_interface → None |
-| `offline_cap_gap` | agent 用**离线未登记**的 online agent（需先建该 agent + 其非空词表） | resolve_agent → None |
-| `version_drift` | 组装后**直接 UPDATE `payload_json`** 把 schema_version 改成 `9.9` | 模拟「online 升级了 schema、offline 未跟上」 |
+- `content_gap`：agent 用 `customer-service`（其 `fallback_utterance` = `[]`）
+  → 空词表在**最早的** validate 就被拦。
+- `offline_cap_gap`：agent=`good-question`（词表非空）+ cluster.interface 用**离线未登记**的路径
+  → `resolve_interface` → None。
+- `offline_cap_gap`：agent 用**离线未登记**的 online agent（需先建该 agent + 其非空词表）
+  → `resolve_agent` → None。
+- `version_drift`：组装后**直接 UPDATE `payload_json`** 把 schema_version 改成 `9.9`
+  → 模拟「online 升级了 schema、offline 未跟上」。
 
 ⚠️ 第 3 行是**有争议的一条**：若不建那个 online agent，`resolve_fallback_wordlist` 对未知
 agent 必返 `([], 0)` ⇒ 空词表 ⇒ 更早的 validate 判 `content_gap`，于是 `resolve_agent` 那段
@@ -26,11 +28,11 @@ import json
 import sys
 from datetime import datetime, timezone
 
+import claim_probe as cp
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-import claim_probe as cp
 from app.core.config import Settings
 from app.core.db import get_session
 from app.main import create_app
@@ -145,7 +147,8 @@ async def main() -> None:
             async with AsyncSession(engine) as s:
                 ln = await s.get(ErrorCaseLink, links[drift_cid].id)
                 env = json.loads(ln.payload_json)
-                print(f"[seed] version_drift: schema_version {env['schema_version']} → {DRIFT_SCHEMA}")
+                before = env["schema_version"]
+                print(f"[seed] version_drift: schema_version {before} → {DRIFT_SCHEMA}")
                 env["schema_version"] = DRIFT_SCHEMA
                 ln.payload_json = json.dumps(env, ensure_ascii=False)
                 await s.commit()
