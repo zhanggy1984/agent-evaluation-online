@@ -7,7 +7,11 @@
 - backflow（§8.4，P2-3）：admin 人工 invalidate/requeue 单点+批量（平台 JWT admin）。
 - pull（§8.7/§8.2 域外，P2-3）：平台间 evaluator 服务凭证增量拉取 + ack 回写
   （独立凭证面，不接平台 JWT）。
-- clusters（§8.5）留空待后续阶段（由各自 router 按批接入）。
+- clusters（§8.4）：**无独立 router——12 条 cluster/link 路由已全部由 `backflow.router` 承载**
+  （overview、clusters 列表/详情、claim/ignore/reopen/needs-review-resolve/fixed-review、
+  needs-review-batches/{id}/resolve、links 三动作、regression-results）。
+  ⚠️ 本行原写「clusters（§8.5）留空待后续阶段（由各自 router 按批接入）」——**两处均误且引入于
+  阶段 1（`76611d2`）后未随批更新**：① clusters 属 §8.4 不属 §8.5；② 它不空，早已随回流批落地。
 """
 from fastapi import APIRouter
 
