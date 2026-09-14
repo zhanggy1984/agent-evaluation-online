@@ -56,7 +56,12 @@ TS_BASE = int(time.time() * 1000)  # 本周归属当前周 index；S-2/S-3 各 t
 API_BASE = "http://127.0.0.1:8000/api/v1"  # 容器内 loopback：验收面是 HTTP 契约，非 store 直查
 
 
+CHECKED = 0  # 断言**执行**条数（由 check 自计，不靠人手工数输出行/调用点）
+
+
 def check(name: str, ok: bool, detail: str) -> None:
+    global CHECKED
+    CHECKED += 1
     print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     if not ok:
         FAILURES.append(name)
@@ -611,6 +616,8 @@ async def main() -> None:
 
     verdict = "全部通过" if not FAILURES else f"{len(FAILURES)} 项失败"
     print(f"\n===== D6 probe 结果：{verdict} =====")
+    print(f"断言 {CHECKED} 条：PASS {CHECKED - len(FAILURES)} / FAIL {len(FAILURES)}"
+          "（**由 check 自计**，勿按输出行数或调用点手工数——见 report §6 F-15 ⑧）")
     for name in FAILURES:
         print(f"  - {name}")
     sys.exit(0 if not FAILURES else 1)
