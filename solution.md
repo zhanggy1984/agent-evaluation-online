@@ -338,7 +338,7 @@ _SENSITIVE_KEY = authorization | token | password | secret | api[_-]?key
 
 **能力：** 查询页可自由输入 traceId 和/或关键字（可都输入、可任一）。
 - **traceId 查询**：返回该 trace 全部事件（`(ts,parent,seq)` 树排序，branch 仅标注）→ 前端时间轴（request 根 + 子节点），异常节点红显，日志行穿插，详情含脱敏后堆栈/正文。**大 trace 防护（评审）**：日志行（event_kind=log）分页懒加载，避免单 trace 上千日志行一次拉爆；事件行设单 trace 返回上限 + 超时（§16 登记）。
-- **关键字查询**：全文检索 input/output/log_message/**error_type/error_msg**（评审补：error_msg 需可命中才能按错误摘要找链路）→ 命中 trace 列表（**search_after 深翻页**，避免大 from 偏移拖垮租户档节点）→ 进入 trace 视图；检索面限最近 7d（可调）+ 结果上限 + 超时（§16 登记）。
+- **关键字查询**：全文检索 input/output/log_message/**error_type/error_msg**（评审补：error_msg 需可命中才能按错误摘要找链路）→ 命中 trace 列表（**`collapse(trace_key)` + `from/size` 偏移翻页**，`offset ≥ 200` → 400 `ERR_TRACE_0002`，深度设上限以**避免无界 from 偏移拖垮租户档节点**）→ 进入 trace 视图；检索面限最近 7d（可调）+ 结果上限 + 超时（§16 登记）。
 - **边界**：链路覆盖 agent 后端进程内打点；网关/前端 access log 第一版不纳入。
 
 ---

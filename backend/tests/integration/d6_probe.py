@@ -1,4 +1,4 @@
-"""D6 集成验证 probe（detail §14.1 S-2/S-3）。容器内 `docker exec obs-backend` 运行。
+"""D6 集成验证 probe（detail §14.1 S-1~S-5）。容器内 `docker exec obs-backend` 运行。
 
 前置：obs-backend 已 up（consumer 由 lifespan 拉起，app_env=dev）；probe 在容器内用
 compose 注入的 env（DB_HOST=mysql/ES_URL/KAFKA_BOOTSTRAP 容器内 alias）建连，与
@@ -14,12 +14,26 @@ S-3：同一合法 trace（request ok + llm_call error + log）投 2 遍 → 断
 llm_timeout count 变 2——**有意且有界**（judge/classify 只发生一次、ES _id 幂等、下游靠
 judged bit + cluster 唯一性），故本断言只验"行数与 doc 数"，不验 err_summary 计数值。
 
+S-1/S-4：**走真机 HTTP**（`127.0.0.1:8000/api/v1`，登录 → 取 auth，auth 不打印）读
+S-3 那条 trace → 断言「详情可查 + event 面 seq 升序 + llm_call 节点原样 + 日志行懒加载 +
+两面 seq 值域可合并」与「llm_call 子节点 status∈{error,timeout}（红显依据）+ `/metrics/
+llm-failures` 可下钻到本 trace」。**CSS 级高亮/红显/穿插渲染不在本层**（归 T-4.11 浏览器 e2e），
+本层只证「后端按契约把判据字段原样给出」。
+
+S-5：`/traces` 检索面四条——命中 `error_msg`（+ 无关关键字对照）、偏移翻页第 1/2 页不重叠、
+`offset ≥ 200` → 400 `ERR_TRACE_0002`、**限 7d 的正反对照**（投一条 8 天前同形 trace：默认窗口
+裁掉、显式放宽 `start_ts` 命中 ⇒ 证裁剪真发生，而非只读常量）。该 trace 由本节自清（ES + MySQL）。
+**「超时」不记作已验**：本环境无「慢 ES」注入手段，只登记接线事实。
+
 退出码：全绿 0，任一断言失败非 0。
 """
 import asyncio
 import json
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 sys.path.insert(0, "/app")  # docker exec 默认 cwd=/app，但脚本目录先入 sys.path，显式补
 
@@ -34,6 +48,7 @@ from app.core.config import Settings  # noqa: E402
 AGENT = "good-question"
 FAILURES: list[str] = []
 TS_BASE = int(time.time() * 1000)  # 本周归属当前周 index；S-2/S-3 各 trace 时间戳下探避撞
+API_BASE = "http://127.0.0.1:8000/api/v1"  # 容器内 loopback：验收面是 HTTP 契约，非 store 直查
 
 
 def check(name: str, ok: bool, detail: str) -> None:
@@ -212,6 +227,213 @@ async def s3(producer, settings: Settings) -> None:
           f"SELECT COUNT = {rows}（期望 1，uk_trace 吸收重放）")
     await es.close()
     await engine.dispose()
+    return trace_id
+
+
+# ---- S-1 / S-4：走真机 HTTP（trace 详情 / 日志懒加载 / llm-failures 下钻） ----
+
+def _http(method: str, path: str, auth: str | None = None,
+          body: dict | None = None) -> tuple[int, object]:
+    """同步 HTTP 调用（urllib，零新依赖）；由 to_thread 包进 async。auth 绝不打印。"""
+    req = urllib.request.Request(API_BASE + path, method=method)
+    if auth:
+        req.add_header("Authorization", f"Bearer {auth}")
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data, timeout=20) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # 4xx 也要**按声明形状解析**（AppError → 扁平 {code, message}，errors.py:30）——
+        # 早先此处塞 "_raw" 字符串，导致「断言因取不到 code 而永不可通过」（判据不可达）。
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            return exc.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return exc.code, {"_raw": raw}
+
+
+async def _api(method: str, path: str, auth: str | None = None,
+               body: dict | None = None) -> tuple[int, object]:
+    return await asyncio.to_thread(_http, method, path, auth, body)
+
+
+async def s1_s4(settings: Settings, trace_id: str) -> None:
+    """S-1（trace 可查 / 日志穿插 / llm_call 高亮）+ S-4（子节点红显 / llm-failures 可下钻）。
+
+    **输入 = S-3 已投的同一 trace**（request ok + llm_call error + log，正是 S-1/S-4 的场景），
+    不另投一份：省一次投递，且顺带证「重放后的 trace 读面仍正确」。
+
+    **口径说明（勿读成更强）**：S-1 的「日志穿插」在本实现里**不是后端合并列表**——
+    详情端点只返 event 行、日志行走 `/{trace_id}/logs` 懒加载（`trace.py:79/96`），
+    穿插发生在**前端渲染层**（归 T-4.11）。故本处可验的形态 = 「两个面各自可查、seq 值域
+    互不重叠且并集恰为 [0,1,2]」⇒ 前端按 seq 合并即得穿插。此断言**弱于**「渲染已穿插」，
+    后者需浏览器 e2e。
+    """
+    print("\n===== S-1 trace 可查 + 日志懒加载 + llm_call 高亮 =====")
+    status, tok = await _api("POST", "/auth/login",
+                             body={"username": settings.admin_username,
+                                   "password": settings.admin_password})
+    auth = (tok or {}).get("access_token") if isinstance(tok, dict) else None
+    check("S-1 登录取得 access_token", status == 200 and bool(auth),
+          f"POST /auth/login → {status}（凭证不入日志）")
+    if not auth:
+        return None
+
+    status, detail = await _api("GET", f"/traces/{AGENT}/{trace_id}", auth)
+    if not isinstance(detail, dict):
+        detail = {}
+    events = detail.get("events") or []
+    check("S-1 trace 详情可查", status == 200 and bool(events),
+          f"GET /traces/{AGENT}/{trace_id} → {status}，events={len(events)} 条")
+    nodes = [e.get("node") for e in events]
+    seqs = [e.get("seq") for e in events]
+    check("S-1 event 面按 seq 升序还原拓扑序", seqs == sorted(s for s in seqs if s is not None),
+          f"seq 序列 = {seqs}")
+    check("S-1 llm_call 高亮依据（node 字段原样返回）", "llm_call" in nodes,
+          f"node 序列 = {nodes}（前端高亮判据 = node=='llm_call'，CSS 级归 T-4.11）")
+
+    status, logs = await _api("GET", f"/traces/{AGENT}/{trace_id}/logs", auth)
+    if not isinstance(logs, dict):
+        logs = {}
+    items = logs.get("items") or []
+    check("S-1 日志行懒加载可查", status == 200 and bool(items),
+          f"GET .../logs → {status}，items={len(items)} 条")
+    log_seq = [i.get("seq") for i in items]
+    merged = sorted([s for s in seqs if s is not None] + [s for s in log_seq if s is not None])
+    check("S-1 日志穿插的**值域条件**（两面 seq 并集连续无重叠）",
+          bool(log_seq) and merged == list(range(len(merged))) and len(set(merged)) == len(merged),
+          f"event seq={seqs} + log seq={log_seq} → 并集 {merged}"
+          "（前端按 seq 合并即穿插；渲染本体归 T-4.11）")
+    check("S-1 日志字段带 log_level", all(i.get("log_level") for i in items),
+          f"log_level = {[i.get('log_level') for i in items]}")
+
+    print("\n===== S-4 子节点红显 + llm-failures 可下钻 =====")
+    llm = next((e for e in events if e.get("node") == "llm_call"), {})
+    root = next((e for e in events if e.get("node") == "request"), {})
+    check("S-4 红显依据（llm_call 子节点 status∈{error,timeout}）",
+          llm.get("status") in ("error", "timeout") and root.get("status") == "ok",
+          f"llm_call.status={llm.get('status')!r} / request.status={root.get('status')!r}"
+          "（红显判据 = status∈{error,timeout}，CSS 归 T-4.11）")
+    check("S-4 子节点错因字段可读", llm.get("error_type") == "llm_timeout",
+          f"llm_call.error_type={llm.get('error_type')!r}")
+
+    # llm-failures 有 60s 进程级缓存（metric_agg_cache_ttl_s 默认 60）⇒ 轮询 ≤ TTL+30s
+    async def drillable() -> bool:
+        st, resp = await _api("GET", f"/metrics/llm-failures?agent={AGENT}&window=1h", auth)
+        if st != 200 or not isinstance(resp, dict):
+            return False
+        rows = resp.get("items") or resp.get("failures") or []
+        return any((r.get("trace_id") == trace_id) for r in rows if isinstance(r, dict))
+
+    ok = await poll("S-4 llm-failures 含本 trace", 90, 10, drillable)
+    check("S-4 /metrics/llm-failures 可下钻到本 trace", ok,
+          "命中本 trace_id" if ok else "轮询 90s（>TTL 60s）仍未见，可能窗口/聚合口径不符")
+    return auth
+
+
+async def s5(producer, settings: Settings, auth: str, fresh_trace: str) -> None:
+    """S-5（命中 error_msg / 深翻页 / 限 7d / 上限）——走真机 HTTP `/traces` 检索面。
+
+    **归因式判据（勿读成「不为 0」）**：每条正向断言都写「**等于谁**」，并配一条对照，
+    防「keyword 被整条忽略」这类假绿——同族教训见 X-4 假红（OR 语义把注入串拆出单字符）。
+
+    「限 7d」取**正反对照**而非读常量：同一关键字下，默认窗口**不含** 8 天前的同形 trace、
+    显式放宽 `start_ts` 后**含**它 ⇒ 窗口裁剪真的发生了（读常量只能证「配置是 7」）。
+    「超时」**不做故障注入**——本环境无「慢 ES」注入手段，只登记接线事实（见下），
+    不假装验过（同 E-19/F-13 的记账纪律）。
+    """
+    print("\n===== S-5 关键字检索：命中 error_msg / 深翻页 / 限 7d / 上限 =====")
+    kw = "provider timeout"          # = _llm_error 的 error_msg，故命中即证 error_msg 在检索面
+    miss_kw = "d6-no-such-keyword-zzz"  # 对照：不存在的串必须查不到本 trace
+    old_trace = f"d6-s5-old-{TS_BASE}"
+    old_ts = TS_BASE - 8 * 24 * 3600 * 1000   # 8 天前（超出默认 7d 窗口）
+
+    async def qs(query: str, **extra) -> tuple[int, dict]:
+        q = f"?keyword={urllib.parse.quote(query)}&agent={AGENT}"
+        for k, v in extra.items():
+            q += f"&{k}={v}"
+        st, resp = await _api("GET", f"/traces{q}", auth)
+        return st, resp if isinstance(resp, dict) else {}
+
+    st, resp = await qs(kw)
+    ids = [i.get("trace_id") for i in (resp.get("items") or [])]
+    check("S-5 命中 error_msg（本 trace 在结果内）", st == 200 and fresh_trace in ids,
+          f"keyword={kw!r} → {st}，total={resp.get('total')}，含本 trace={fresh_trace in ids}")
+    st_m, resp_m = await qs(miss_kw)
+    ids_m = [i.get("trace_id") for i in (resp_m.get("items") or [])]
+    check("S-5 对照：无关关键字查不到本 trace（排除 keyword 被忽略）",
+          st_m == 200 and fresh_trace not in ids_m,
+          f"keyword={miss_kw!r} → {st_m}，items={len(ids_m)}，含本 trace={fresh_trace in ids_m}")
+
+    # 深翻页：同页宽下第 1/2 页无重叠（§8.2 collapse(trace_key)+from/size 偏移）
+    st1, r1 = await qs(kw, page=1, page_size=1)
+    st2, r2 = await qs(kw, page=2, page_size=1)
+    i1 = [i.get("trace_id") for i in (r1.get("items") or [])]
+    i2 = [i.get("trace_id") for i in (r2.get("items") or [])]
+    total = r1.get("total")
+    if isinstance(total, int) and total >= 2 and st1 == 200 and st2 == 200:
+        check("S-5 偏移翻页第 1/2 页不重叠", bool(i1) and bool(i2) and not set(i1) & set(i2),
+              f"page1={i1} / page2={i2}（total={total}）")
+    else:
+        check("S-5 偏移翻页第 1/2 页不重叠", False,
+              f"前置不足：total={total} st1={st1} st2={st2}（数据不足以判别 ⇒ 判 FAIL 不静默通过）")
+
+    # 上限：offset ≥ MAX_LIST_RESULTS(200) → 400 ERR_TRACE_0002
+    st_ok, _ = await qs(kw, page_size=2, page=100)   # offset = 198 < 200
+    st_bad, body = await qs(kw, page_size=2, page=101)  # offset = 200 → 越界
+    code = body.get("code") if isinstance(body, dict) else None
+    msg = body.get("message") if isinstance(body, dict) else None
+    check("S-5 上限：offset<200 放行 / offset≥200 → 400 ERR_TRACE_0002",
+          st_ok == 200 and st_bad == 400 and code == "ERR_TRACE_0002" and bool(msg),
+          f"page*2=198 → {st_ok}；page*2=200 → {st_bad} code={code!r} message={msg!r}"
+          "（形状取声明源 errors.py:30 = 扁平 {code,message}）")
+
+    # 限 7d：投一条 8 天前的同形 trace（同 error_msg），默认窗口应排除、显式放宽应命中
+    old_trace_events = [_request(AGENT, old_trace, old_ts, input_={"q": "s5-window"}),
+                        _llm_error(old_trace, old_ts)]
+    topic = settings.agent_topic(AGENT)
+    for ev in old_trace_events:
+        await producer.send(topic, json.dumps(ev, ensure_ascii=False).encode("utf-8"))
+    await producer.flush()
+    print(f"已投 8 天前同形 trace（{old_trace}，ts={old_ts}），等待落地后验窗口裁剪…")
+
+    async def old_landed() -> bool:
+        st_, r_ = await qs(kw, start_ts=old_ts - 3600_000, end_ts=old_ts + 3600_000)
+        return st_ == 200 and old_trace in [i.get("trace_id") for i in (r_.get("items") or [])]
+
+    landed = await poll("S-5 旧 trace 落地", 60, 5, old_landed)
+    st_def, r_def = await qs(kw)   # 默认窗口（不传 start_ts）
+    in_def = old_trace in [i.get("trace_id") for i in (r_def.get("items") or [])]
+    in_fresh_def = fresh_trace in [i.get("trace_id") for i in (r_def.get("items") or [])]
+    check("S-5 限 7d：8 天前 trace 被默认窗口裁掉（同关键字、同 agent）",
+          landed and not in_def,
+          f"落地={landed}；默认窗口含旧 trace={in_def}（期望 False）")
+    check("S-5 同一次默认窗口查询仍含今天的新 trace（证裁剪非「整条查不到」）",
+          in_fresh_def, f"默认窗口含 {fresh_trace}={in_fresh_def}（期望 True）")
+
+    # 收尾：清掉本节自造的旧 trace（ES 两 index + MySQL 判定行），幂等
+    es = AsyncElasticsearch(settings.es_url)
+    engine = create_async_engine(settings.sqlalchemy_url)
+    try:
+        await es.delete_by_query(index=["dev.obs-event-*", "dev.obs-log-*"],
+                                 query={"term": {"trace_id": old_trace}},
+                                 conflicts="proceed", refresh=True)
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM trace_judge_state "
+                                    "WHERE agent=:a AND trace_id=:t"),
+                               {"a": AGENT, "t": old_trace})
+        print(f"已清理本节自造 trace {old_trace}（MySQL 判定行 + ES doc）")
+    except Exception as exc:  # 清理失败不掩盖主断言结论
+        print(f"清理 {old_trace} 失败（残留，需人工确认）：{exc}")
+    finally:
+        await es.close()
+        await engine.dispose()
+    print("S-5 「超时」口径：本环境**未做故障注入**（无「慢 ES」手段）⇒ 只登记接线事实"
+          "（`trace_query_timeout_ms` → `request_timeout_s=max(ms/1000,1.0)`，trace.py 三处），"
+          "**不记作已验通过**。")
 
 
 async def main() -> None:
@@ -221,7 +443,10 @@ async def main() -> None:
     try:
         await producer.start()
         await s2(producer, settings)
-        await s3(producer, settings)
+        s3_trace_id = await s3(producer, settings)
+        auth = await s1_s4(settings, s3_trace_id)
+        if auth:
+            await s5(producer, settings, auth, s3_trace_id)
     finally:
         await producer.stop()
 
