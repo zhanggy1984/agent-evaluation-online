@@ -330,7 +330,12 @@ class ConsumerApp:
 
 
 def _backoff(attempt: int) -> float:
-    """指数退避（cap 30s）：1s/2s/4s/8s…step4 重试与 ES 重试共用。"""
+    """指数退避（cap 30s）：1s/2s/4s/8s…档位由 attempt 决定。
+
+    注意调用方档位并不一致，勿读成「共用同一退避策略」：ES 重试传递进的 attempt
+    （真指数）；step4 落库重试**固定传 1**（`main.py:245`）⇒ 实为 1s 定长退避，
+    不随失败次数增长（F-5 登记，行为未改，仅订正措辞）。
+    """
     return min(2 ** (attempt - 1), 30)
 
 
