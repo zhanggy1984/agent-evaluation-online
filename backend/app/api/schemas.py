@@ -135,6 +135,25 @@ class InterfaceUpdateRequest(BaseModel):
     body_search: int | None = None
 
 
+class AgentHealthOut(BaseModel):
+    """agent 上报健康卡（§8.5）：聚合 ES 事件 index 的 `node=heartbeat` doc。
+
+    无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出「未接入 SDK」（§9.1 据此区分「未接入 vs 无流量」）。
+
+    ⚠️ **不含 `spool_pending`**：detail §3.6（`:432`）定义的心跳 body 含该字段，但**双端都无
+    写入方**——平台侧 `consumer/main.py:76-83` 构造的 doc 是 `{node, agent, ts, dropped, source}`，
+    SDK 侧 `grep spool_pending sdk/obs_sdk/*.py` 零命中（2026-09-14 取证）。照批 1「token version」
+    先例：按实机实现，订正文字，不为契约造字段。
+    """
+
+    agent_id: int
+    last_seen_ts: int | None = None
+    report_1min: int = 0
+    report_5min: int = 0
+    dropped: dict[str, int] = Field(default_factory=dict)
+    sdk_connected: bool = False
+
+
 # ---------- 通用分页（§1.5） ----------
 
 T = TypeVar("T")

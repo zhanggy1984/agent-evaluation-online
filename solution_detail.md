@@ -429,7 +429,9 @@ kafka-python producer (topic obs.agent.<name>)
 
 ### 3.6 SDK 自身观测信号
 
-**自监控信号（v1.1 裁定）**：用专用 topic `obs.selfmonitor`（与业务 topic 同建同 ACL，§3.3/§13.2）承载每 agent **心跳** `{agent, sent_ok, dropped, spool_pending, ts}`（1/min，随批次 flush 附带发送，不单独起连接）。backend 消费后写入事件 index（以 `node=heartbeat` 区分，不进入业务 node 枚举），前端 /admin/agents 页出「agent 上报健康」小卡——数据源 = §8.5 `GET /agents/{id}/health`（聚合最近 1min/5min 心跳；**未接入=无 last_seen**，供 §9.1 EmptyState 区分「未接入 vs 无流量」）。自监控不占用业务事件指标，心跳发送失败不重试惩罚（不干扰上报主链路）。
+**自监控信号（v1.1 裁定）**：用专用 topic `obs.selfmonitor`（与业务 topic 同建同 ACL，§3.3/§13.2）承载每 agent **心跳** `{agent, sent_ok, dropped, spool_pending, ts}`（1/min，随批次 flush 附带发送，不单独起连接）。
+
+> **（2026-09-14 取证订正，批 2a-2）** 上式**与实机不符**：平台侧 `consumer/main.py:76-83` 的 `build_heartbeat_doc` 构造的 doc 只有 `{node, agent, ts, dropped, source}`，**无 `sent_ok` / `spool_pending`**；SDK 侧 `grep -rn 'spool_pending\|sent_ok' sdk/obs_sdk/*.py` **零命中**（2026-09-14 实测）⇒ 该两字段**双端都无写入方**。另：`dropped` 是 consumer **进程内累计计数**（同文件 `:87` 逐字「按 (agent, reason) 累加，心跳任务定期快照」），**不是**窗口增量——读侧取最新一条快照，切勿按窗求和。backend 消费后写入事件 index（以 `node=heartbeat` 区分，不进入业务 node 枚举），前端 /admin/agents 页出「agent 上报健康」小卡——数据源 = §8.5 `GET /agents/{id}/health`（聚合最近 1min/5min 心跳；**未接入=无 last_seen**，供 §9.1 EmptyState 区分「未接入 vs 无流量」）。自监控不占用业务事件指标，心跳发送失败不重试惩罚（不干扰上报主链路）。
 
 > 二期占位：`record_retrieve`/`record_quality`/`record_session_state` 不在 v1 SDK 暴露（§11.1 方法清单）。
 
@@ -1129,7 +1131,7 @@ CREATE TABLE `trace_judge_state` (
 | `PUT /interfaces/{id}` | admin 补标：`{llm?, llm_source?, body_search?}`（归一化核对 = 修改 interface 串需记 conversion 审计【实现约定】；⚠️ **2026-09-14 订正：本行入参里并没有 `interface` 字段，而它是唯一键列 `uk_interface(agent_id, interface)` ⇒ v1 不支持改串**（改它等于换实体）。批 2a-1 实测：多余的 `interface` 字段被入参模型忽略、串不变）；疑似漏标告警处理（§8.5） |
 | `GET /agents/{id}/credential` | Kafka 凭证查看（secret 脱敏 + 轮换入口；admin） |
 | `POST /agents/{id}/credential/rotate` | 凭证轮换（版本化、吊销即时生效=撤 ACL+断连接，§13.2） |
-| `GET /agents/{id}/health` | agent 上报健康小卡：最近 1min/5min 上报事件量、dropped、spool_pending、last_seen_ts（读自监控心跳 `obs.selfmonitor`，§3.6/§13.2）；agent 未接入=无 last_seen，前端据此出「未接入 SDK」文案（§9.1） |
+| `GET /agents/{id}/health` | agent 上报健康小卡：最近 1min/5min 上报事件量、dropped、spool_pending、last_seen_ts（读自监控心跳 `obs.selfmonitor`，§3.6/§13.2）；agent 未接入=无 last_seen，前端据此出「未接入 SDK」文案（§9.1）。⚠️ **2026-09-14 批 2a-2 落地，两处按实机订正**：① **不返回 `spool_pending`**——平台侧心跳 doc 实际只有 `{node, agent, ts, dropped, source}`，SDK 侧 grep 零命中（双端无写入方，同 §3.6 订正）；② **`dropped` 取最新一条心跳的快照、不做窗内求和**——它是 consumer **进程内累计计数**（`consumer/main.py:87`），窗内每条写的是同一个累计值，求和等于重复相加（实测差三个数量级）。实现 = `app/api/admin.py`、`app/store/es.py`；真库真 ES 探针 = `tests/integration/admin_health_probe.py`（12-12）。 |
 
 **8.5.1 疑似漏标自动补标（§10.1 观察窗，v3.4.5 裁定）**：接口观测到 llm_call 且 `llm=false` → `llm_suspect=1`；连续观测达阈值（【实现约定】窗口 24h 内 ≥ 10 次）→ 自动 `llm=true`（source=auto_observed）不再疑似；观察窗内存疑 → `llm_suspect=1` 进 admin 复核列表 + 看板/Agent 管理「疑似漏标告警」。
 

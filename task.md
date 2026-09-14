@@ -141,7 +141,7 @@
   - **与 T-5.3 的边界（防双记）**：T-4.10 已把「**凭证轮换的执行动作**」下移 T-5.3（上线门/安全边界）；本条立的是**端点与 UI 的实现**，**不重复登记执行动作**。
   - **⚠️ 三条显式声明（不改写已发出的结论）**：① **不追认推翻阶段 3 出口**——阶段 3 出口（下条）**已发出且仍有效**，本条是**事后发现的欠债追补**，性质同「回退对应阶段修复」（见阶段 4 抬头「发现缺陷回退对应阶段」）；② **阶段 4 出口不因本条挂起**；③ 编号依据 = 阶段 3 编号止于 `T-3.11`，顺位无冲突（**不新开阶段号**，避免扩展项目范围）。
   - **验收目标**：§8.5/§8.6 端点全绿（含 admin-only 二次鉴权 + **吊销即时生效**）；§9.2 三个 admin 页面数据源可用、菜单按角色渲染；`ERR_CONFIG_0001` 有抛出点；写侧配置变更留审计（`config_key` 粒度 + 旧/新值摘要，§13.5）；**授权与轮换的执行面按 T-5.3 的口径另行复验**。
-  - **状态（2026-09-14 更新）**：**批 1（§8.6 配置 + 用户）已实现并验收完毕**（单测 478 passed / ruff 全绿 / 真库探针 31-31 PASS / 前端 type-check + 133 单测 / **浏览器 e2e 双账号**）；**§8.5 余下 health 与凭证两端点、§8.5.1 自动补标仍未开工**（详见下方批 2a-1 回填）。
+  - **状态（2026-09-14 更新）**：**批 1（§8.6 配置 + 用户）已实现并验收完毕**（单测 478 passed / ruff 全绿 / 真库探针 31-31 PASS / 前端 type-check + 133 单测 / **浏览器 e2e 双账号**）；**§8.5 余下凭证两端点、§8.5.1 自动补标仍未开工**（详见下方批 2a-1 / 2a-2 回填）。
   - **⚠️ 吊销机制订正（2026-09-14 实测）**：本条原文与 detail §8.6/§13.2 写的「禁用即吊销会话，**token version+1**」**与实现不符**——`user` 表**无 `token_version` 列**，且 `api/auth.py:4-8` 逐字「**不做 token-version 列迁移**」；实机机制 = **`user.status=0` + 撤销该用户全部未撤销 `user_session`（`revoked_at` 落时）**（T-4.10/F-8 已实测吊销即时生效）。**本批按既有机制实现，未加列去迁就文字**；`solution_detail.md` §8.6/§13.2/§13.5 三处措辞已同步订正。
   - **交付回填 · 批 1（2026-09-14；证据 = `backend/app/api/admin.py` + `tests/test_api_admin.py` + `tests/integration/admin_probe.py`）**：
     - ✅ **§8.6 端点**（`api/admin.py`，全部 `AdminUser` 依赖）：`GET /admin/configs?agent=`、`PUT /admin/configs`、`GET /admin/users`、`POST /admin/users`、`PUT /admin/users/{id}`。
@@ -164,6 +164,17 @@
     - ⚠️ **未覆盖（如实标注，不算通过）**：`_INTERFACE_MAX=500` 的**截断分支**未做容量型取证（需造 501 行）；`health` 端点不在本批（独立验证面 = ES 心跳）。
     - ⚠️ **顺带查出并处置的两处「替身 / 文档」不符**（`tests/_fakes.py`）：① `FakeAsyncSession.get()` 此前对 `User`/`UserSession` 以外的模型**恒返回 None**（已补 registry 主键查找，语义与真库同）；② 其自身注释称「列级 select 返回该列属性」，**实测仍返回整行**（2026-09-14）——故 `_interface_counts` 按整行计数，`select(Interface.agent_id)` 那种写法只在替身下崩。
     - ⚠️ **页面现状**：`.tbl`/`.err`/`.ok`/`.hint` 四个 class **在 `style.css` 中未定义**（批 1 两页同样如此，属全局占位现状）；本批**不补样式**（补会改动全站视觉），只登记。
+
+  - **交付回填 · 批 2a-2（2026-09-14；证据 = `backend/app/api/admin.py` health 端点 + `backend/app/store/es.py` 心跳三函数 + `tests/test_api_admin_health.py` + `tests/integration/admin_health_probe.py` + `frontend/src/views/AdminAgentsView.vue` 展开行）**：
+    - ✅ **§8.5 health 端点**：`GET /admin/agents/{id}/health` → `AgentHealthOut`（`last_seen_ts`/`report_1min`/`report_5min`/`dropped`/`sdk_connected`）。读 **ES `node=heartbeat`**（与 §8.3 的 ES 流量面无涉）；时间窗**复用** `keyword_search_days`（不新造配置键）。
+    - ✅ **展开行内的 health 卡**：`/admin/agents` 展开时与接口字典**并行**拉取（`allSettled`——两个数据源各报各的错，ES 超时不吞掉字典）；`last_seen_ts=null` 显示「未接入 SDK」。
+    - 🔴 **开工即查出两处真缺陷（此前「构件已写好」是假象）**：① `fetch_heartbeats` 取 `_hits_result(...).get("items")`，而该函数返回的键是 `hits`（`es.py:197`）⇒ **恒返回空列表**（接上端点后表现为「所有 agent 都未接入 SDK」）；② `summarize_heartbeats` 的 `dropped` 原设计为**窗内求和**，但心跳里的 `dropped` 是 consumer **进程内累计快照**（`consumer/main.py:87` 逐字「按 (agent, reason) 累加，心跳任务定期快照」）⇒ 求和 = 把同一个数重复相加。**两处均已修**。
+    - ✅ **「快照 vs 求和」有真数据对照（探针 H-2b）**：`good-question` 窗内 500 条心跳，端点返回 `{agent_mismatch:2, mask:2, schema:2}`（= 最新一条快照）；**若按原设计求和会得 `{agent_mismatch:1410, mask:598, schema:2628, es_fail:812}`**——差三个数量级。
+    - ✅ **验证（独立验收面 = ES 心跳 + Kafka；本批可**近全量**验）**：单测 **512 passed**（基线 499 + 新增 13）/ ruff 全绿 / **真库真 ES 探针 12-12 PASS** / 前端 type-check + **133 单测**。
+    - ✅ **探针覆盖了什么（含真链路）**：H-1 鉴权双证；H-2 与 ES **逐字段对齐**（`last_seen_ts` **等于** ES 最新 ts、`dropped` **等于**快照、`report_*` **等于** 真条数、`sdk_connected` 对齐 source 分布）；**H-3 走真 Kafka（`obs.selfmonitor`）造活心跳** → 端点见 `report_1min=1`、`last_seen_ts` = 发出的 ts、`sdk_connected=true`（**Kafka→consumer→ES→端点**全链）；H-4 空态；H-5 未知 id → 400。现场零残留（MySQL `admhb-%` 0 行 / ES `admhb-` 0 doc）。
+    - ⚠️ **原计划的「向真实 agent 发脏 JSON 造 form A 心跳」未做**（用户 2026-09-14 批准的 A 方案中该项**改由存量真实心跳承担**）：consumer 的消费 loop 在**启动时**按 `_enabled_agents()` 固定建立（`consumer/main.py:123-127`），新插入的 agent 不会被消费 ⇒ 要现造只能打既有 4 个真实 agent，那会**污染它们的进程内 dropped 计数**（该计数是快照语义，一次污染会改掉此后所有心跳的读数）。故 form A 分支由 H-2 用**存量真实心跳**覆盖同一批字段；「form A 能被触发」属 consumer 机制面，已由 `d6_probe.s2` 的 `hb_visible()` 覆盖。
+    - ⚠️ **未覆盖（如实标注，不算通过）**：`_HEALTH_SIZE=500` 的**截断分支**（需造 501 条心跳）——容量型未做；「`keyword_search_days` 配置值**真能改窗**」未在单测覆盖（替身 `execute` 路径的列级 select 返回整行 ⇒ `get_global_int` 恒回退默认；要修须改共享替身，**不属本批**）。
+    - ⚠️ **`spool_pending` 不返回（裁定 4）**：detail §3.6（`:432`）心跳 body 定义了该字段，但**双端都无写入方**（平台侧心跳 doc 只有 `{node, agent, ts, dropped, source}`；SDK 侧 grep 零命中，2026-09-14 取证）——照批 1「按实机实现、订正文字、不为契约造字段」先例。
 
 - **T-3.13 审计读面与导出补实现**（**2026-09-14 立**，用户拍板；来源 = 阶段 5 T-5.4 运营清单，登记见 `docs/integration-report.md` §6 **F-23**）：**审计（`conversion_record`）当前只能逐个 cluster 打开详情看，无跨 cluster 检索、无导出**。运营诉求「统计某时间段内人工处置了多少条」**当前不可用**。
   - **⚠️ 性质声明（与 T-3.12 必须区分，否则两处会被当成同类）**：`T-3.12` = **权威文档承诺过、实现没做**（欠债）；**本条 = 上游设计（`solution.md` / `solution_detail.md`）零命中「导出」**（2026-09-14 实测 grep），系**由 T-5.4 运营清单提出** ⇒ 性质是「**运营需求驱动的补实现**」，**不是**「承诺未兑现」。**登记时勿套 T-3.12 的措辞**——F-19 定义欠债时明确要求「按『承诺过』而非『提过』判定」，本条**不满足该判据**，是**显式自主加范围**（用户已知悉此代价并拍板）。

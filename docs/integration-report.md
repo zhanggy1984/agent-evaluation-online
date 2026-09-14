@@ -789,6 +789,13 @@ J5 真挣到的是**四条结构型事实**：真重算轮确实会发生 / meta
 - **仍未闭合（本条的剩余部分）**：`GET /agents/{id}/credential`、`POST .../credential/rotate`（批 2b）、`GET /agents/{id}/health`（批 2a-2）、**§8.5.1 疑似漏标自动补标**（批 2c，需观测计数载体 ⇒ 动消费主链路）。
 - ⚠️ **一处文档自相矛盾的处置**：detail `:1129` 的入参 `{llm?, llm_source?, body_search?}` 里**没有 `interface` 字段**，却在同一行括注要求「改 interface 串须记审计」——**无入参载体**；且 `interface` 是唯一键列。处置 = **v1 不做改串**，并已回头订正 detail 该行（不是把缺口记成笔误）。依据同 [[code-doc-gap-three-kinds]] 的第三条分型。
 
+**补验（2026-09-14，T-3.12 批 2a-2）：§8.5 `health` 端点已落地，F-19 的闭合面再进一格**
+
+- **已闭合**：`GET /agents/{id}/health`（+ `/admin/agents` 展开行内的健康卡）。验证 = 单测 **512 passed** / **真库真 ES 探针 12-12 PASS**，其中 **H-3 走真 Kafka（`obs.selfmonitor`）现造一条活心跳**，端到端验 `report_1min>=1` / `last_seen_ts≈now` / `sdk_connected=true`（Kafka→consumer→ES→端点全链）。
+- **仍未闭合（本条的剩余部分）**：`GET /agents/{id}/credential`、`POST .../credential/rotate`（批 2b）、**§8.5.1 疑似漏标自动补标**（批 2c，需观测计数载体 ⇒ 动消费主链路）。
+- ⚠️ **「构件已写好」是假象（本轮实证）**：批 2a 时提前写下的 `fetch_heartbeats` / `summarize_heartbeats` 两函数各有**一处真缺陷**——前者取键名写错（`.get("items")` vs 实际的 `hits`）⇒ **恒返回空**；后者把 `dropped` 设计成窗内求和，而它是 consumer **进程内累计快照** ⇒ 求和即重复相加（真数据对照：正确 `{schema:2}` vs 求和 `{schema:2628}`）。**教训**：拆批时「已写好的构件」不得算作进度，接上前必须回查。
+- ⚠️ **契约字段双端无写入方（第二例）**：detail §3.6（`:432`）/§8.5 要求心跳与 health 含 `spool_pending`（及 `sent_ok`），但**平台侧 doc 无该字段、SDK 侧 grep 零命中**（2026-09-14 取证）⇒ health **不返回它**，两处文档已订正。这与批 1 的「token version」同类（同 [[existence-is-not-reachability]]：契约写了 ≠ 有载体）。
+
 ---
 
 ### F-20（2026-09-14）：`needs_review` reason 值域在 **`task.md` 两处写错**（detail / 前端均与代码一致）+ 种子照错值种 + viewer 空 `admin` 列

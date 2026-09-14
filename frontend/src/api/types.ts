@@ -387,3 +387,19 @@ export interface InterfaceUpdateBody {
   llm_source?: string
   body_search?: number
 }
+
+/**
+ * agent 上报健康卡（§8.5）。数据源 = ES 心跳 doc，与「近 7d 有流量」的观测面不同。
+ *
+ * ⚠️ `last_seen_ts` 为 null = **查询窗内没有心跳** ⇒ 前端出「未接入 SDK」；
+ * ⚠️ `dropped` 是 consumer **进程内累计**的丢弃计数（重启归零），不是窗口增量，
+ *    也取的是**最新一条心跳的快照**（后端不求和）——措辞别写成「历史总丢弃数」。
+ */
+export interface AdminAgentHealthOut {
+  agent_id: number
+  last_seen_ts: number | null
+  report_1min: number
+  report_5min: number
+  dropped: Record<string, number>
+  sdk_connected: boolean
+}

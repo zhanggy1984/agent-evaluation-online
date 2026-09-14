@@ -26,17 +26,20 @@
   是自由文本无索引，要做需加列 = 破零 DDL），登记为已知限制。
 """
 import json
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from elasticsearch.exceptions import TransportError
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminUser
 from app.api.schemas import (
     AgentAdminOut,
+    AgentHealthOut,
     ConfigItem,
     ConfigUpdateRequest,
     InterfaceAdminOut,
@@ -56,6 +59,7 @@ from app.models.agent import Agent, Interface
 from app.models.config import DictConfig
 from app.models.error_flow import ConversionRecord
 from app.models.user import User, UserSession
+from app.store import es as es_store
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -384,6 +388,14 @@ _INTERFACE_MAX = 500
 # 都不是 admin 手改的产物——接受它们会让 `updated_by`/审计失去「谁改的」语义。
 _ADMIN_LLM_SOURCES = ("manual",)
 
+# health（§8.5 `:1132`）查询护栏：ts desc + size 上限 ⇒ 截断保住的**恰是最近那批**，
+# 而 last_seen_ts / report_1min / report_5min / dropped 快照全部取自最新端 ⇒ 截断无损。
+_HEALTH_SIZE = 500
+# dict_config 无行时的兜底默认，值照 seed.py 的 keyword_search_days / metric_agg_timeout_ms
+_DEFAULT_LOOKBACK_DAYS = 7
+_DEFAULT_TIMEOUT_MS = 3000
+_MS_PER_DAY = 86_400_000
+
 
 def _enum_str(v: Any) -> Any:
     """取 Enum 列的字面值（替身/纯字符串场景原样返回）。"""
@@ -589,4 +601,66 @@ async def put_interface(
         "接口字典订正：id=%s %s（admin=%s）", interface_id, "；".join(changes), user.username
     )
     logger.debug("admin 改接口 出参: id=%s 变更=%s", interface_id, changes)
+    return out
+
+
+@router.get("/agents/{agent_id}/health", response_model=AgentHealthOut)
+async def get_agent_health(
+    agent_id: int, user: AdminUser, request: Request, session: _Session
+) -> AgentHealthOut:
+    """agent 上报健康卡（§8.5 `:1132`）：聚合 ES 事件 index 的 `node=heartbeat`。
+
+    **数据源 = ES 心跳 doc**（与 §8.3 `/metrics/agents` 的「近 7d 有流量的 agent」不同面）：
+    有心跳 = 该 agent 的 SDK/consumer 还活着。无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出
+    「未接入 SDK」——这正是 §9.1 要区分「未接入 vs 无流量」的那条判据。
+
+    ⚠️ **查 ES 用 `row.name` 而非 `agent_id`**：MySQL 主键是 int，ES 的 `agent` 字段是
+    agent 名（`good-question` 这类）。两者混用会得到一个恒空的查询。
+
+    ⚠️ **先查 MySQL 确认 agent 存在**：否则一个笔误的 id 会返回「未接入 SDK」，把「没有这个
+    agent」伪装成「有这个 agent 但没上报」。
+
+    **[裁定 4] 不返回 `spool_pending`**：detail §3.6（`:432`）的心跳 body 定义了该字段，但
+    **双端都无写入方**（平台侧 `consumer/main.py:76-83` 构造的 doc 是
+    `{node, agent, ts, dropped, source}`；SDK 侧 grep 零命中，2026-09-14 取证）——照批 1
+    「按实机实现、订正文字、不为契约造字段」先例。
+
+    时间窗键**复用** `keyword_search_days`（全局回溯窗，与检索面同键）：不新造配置键，
+    admin 在配置页一并可调；窗大小只影响「多久以前的心跳还算数」这一条语义。
+    """
+    logger.debug("admin agent health 入参: admin=%s agent_id=%s", user.username, agent_id)
+    row = await session.get(Agent, agent_id)
+    if row is None:
+        raise AppError("ERR_CONFIG_0001", f"agent 不存在：{agent_id}", http=400)
+
+    now_ms = int(time.time() * 1000)
+    days = await dict_config.get_global_int(
+        session, "keyword_search_days", _DEFAULT_LOOKBACK_DAYS
+    )
+    timeout_ms = await dict_config.get_global_int(
+        session, "metric_agg_timeout_ms", _DEFAULT_TIMEOUT_MS
+    )
+    try:
+        docs = await es_store.fetch_heartbeats(
+            request.app.state.es_query,
+            settings=request.app.state.settings,
+            request_timeout_s=max(timeout_ms / 1000, 1.0),
+            agent=row.name,
+            start_ts=now_ms - days * _MS_PER_DAY,
+            end_ts=now_ms,
+            size=_HEALTH_SIZE,
+        )
+    except TransportError as exc:  # 超时/连接失败/5xx：照 §8.2/§8.4 检索护栏转 400
+        raise AppError(
+            "ERR_CONFIG_0001", f"心跳查询暂不可用或超时: {exc}", http=400
+        ) from exc
+
+    out = AgentHealthOut(agent_id=agent_id, **es_store.summarize_heartbeats(docs, now_ms=now_ms))
+    logger.debug(
+        "admin agent health 出参: agent_id=%s agent=%s 心跳=%s last_seen_ts=%s",
+        agent_id,
+        row.name,
+        len(docs),
+        out.last_seen_ts,
+    )
     return out

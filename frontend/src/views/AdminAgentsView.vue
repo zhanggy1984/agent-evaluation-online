@@ -7,11 +7,19 @@
 // ⚠️ 本页**没有**凭证查看/轮换区（§8.5 凭证两端点属批 2b，未实现）——不留占位，
 // 免得后人把占位读成「功能在、只是没数据」。
 // ⚠️ 接口串**不可改**（唯一键列 + 后端入参无该字段）；本页只改 llm / llm_source / body_search。
+// ⚠️ 展开行内的「上报健康」读的是 **ES 心跳面**（第三个数据源），故与接口字典分开报错；
+//    `last_seen_ts` 为空即「未接入 SDK」，这是 §9.1 用来区分「未接入 vs 无流量」的判据。
 import { onMounted, ref } from 'vue'
 
-import { adminAgentInterfaces, adminAgents, adminPutInterface, adminToggleAgent } from '../api/admin'
+import {
+  adminAgentHealth,
+  adminAgentInterfaces,
+  adminAgents,
+  adminPutInterface,
+  adminToggleAgent,
+} from '../api/admin'
 import { ApiError } from '../api/client'
-import type { AdminAgentOut, AdminInterfaceOut } from '../api/types'
+import type { AdminAgentHealthOut, AdminAgentOut, AdminInterfaceOut } from '../api/types'
 
 const rows = ref<AdminAgentOut[]>([])
 const loading = ref(false)
@@ -25,6 +33,11 @@ const ifaces = ref<AdminInterfaceOut[]>([])
 const ifaceTruncated = ref(false)
 const ifaceLoading = ref(false)
 const ifaceBusyId = ref<number | null>(null)
+
+// 展开行内的上报健康卡（ES 心跳面，与上面的 MySQL 字典面是两个数据源）
+const health = ref<AdminAgentHealthOut | null>(null)
+const healthLoading = ref(false)
+const healthErr = ref('')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -64,18 +77,44 @@ async function expand(a: AdminAgentOut): Promise<void> {
   openId.value = a.id
   ifaces.value = []
   ifaceTruncated.value = false
+  health.value = null
+  healthErr.value = ''
   ifaceLoading.value = true
+  healthLoading.value = true
   errorMsg.value = ''
-  try {
-    const res = await adminAgentInterfaces(a.id)
-    ifaces.value = res.items
-    ifaceTruncated.value = res.truncated
-  } catch (e) {
-    if (e instanceof ApiError) errorMsg.value = `接口读取失败（${e.code}）：${e.message}`
-    else throw e
-  } finally {
-    ifaceLoading.value = false
+  // 接口字典（MySQL）与心跳（ES）是两个数据源，用 allSettled 各报各的错——
+  // ES 查询超时不该让接口字典整块消失，反之亦然。
+  const [ifaceRes, healthRes] = await Promise.allSettled([
+    adminAgentInterfaces(a.id),
+    adminAgentHealth(a.id),
+  ])
+  if (ifaceRes.status === 'fulfilled') {
+    ifaces.value = ifaceRes.value.items
+    ifaceTruncated.value = ifaceRes.value.truncated
+  } else if (ifaceRes.reason instanceof ApiError) {
+    errorMsg.value = `接口读取失败（${ifaceRes.reason.code}）：${ifaceRes.reason.message}`
+  } else {
+    throw ifaceRes.reason
   }
+  if (healthRes.status === 'fulfilled') {
+    health.value = healthRes.value
+  } else if (healthRes.reason instanceof ApiError) {
+    healthErr.value = `心跳读取失败（${healthRes.reason.code}）：${healthRes.reason.message}`
+  } else {
+    throw healthRes.reason
+  }
+  ifaceLoading.value = false
+  healthLoading.value = false
+}
+
+function fmtTs(ts: number | null): string {
+  return ts === null ? '—' : new Date(ts).toLocaleString()
+}
+
+// dropped 是 consumer **进程内累计**快照（重启归零），不是窗口增量 ⇒ 原样列出，不做任何求和
+function fmtDropped(d: Record<string, number>): string {
+  const keys = Object.keys(d)
+  return keys.length === 0 ? '无' : keys.map((k) => `${k}=${d[k]}`).join('、')
 }
 
 // 只传变更字段（字段缺省 = 不修改）。llm=1 时后端连带清 llm_suspect。
@@ -142,6 +181,23 @@ onMounted(() => void load())
           </tr>
           <tr v-if="openId === a.id">
             <td colspan="7">
+              <div class="health">
+                <strong>上报健康</strong>
+                <span v-if="healthLoading" class="hint">心跳查询中…</span>
+                <span v-else-if="healthErr" class="err">{{ healthErr }}</span>
+                <template v-else-if="health">
+                  <span v-if="health.last_seen_ts === null" class="err">
+                    未接入 SDK（查询窗内无心跳上报）
+                  </span>
+                  <template v-else>
+                    <span>最后上报 {{ fmtTs(health.last_seen_ts) }}</span>
+                    <span>近 1 分钟上报 {{ health.report_1min }} 次</span>
+                    <span>近 5 分钟上报 {{ health.report_5min }} 次</span>
+                    <span>SDK 自报心跳 {{ health.sdk_connected ? '有' : '无' }}</span>
+                    <span>丢弃计数 {{ fmtDropped(health.dropped) }}</span>
+                  </template>
+                </template>
+              </div>
               <p v-if="ifaceLoading">接口加载中…</p>
               <p v-else-if="ifaces.length === 0" class="hint">该 agent 暂无接口字典行。</p>
               <template v-else>
@@ -208,6 +264,12 @@ onMounted(() => void load())
     <p class="hint">
       停用**仅停回流生成与展示，消费不停**（防数据黑洞）。接口串不可改——它是唯一键列；
       需要「换串」时请新增接口行，不要改旧的。人工「标为 LLM」会连带解除该行的「疑似漏标」。
+    </p>
+
+    <p class="hint">
+      「上报健康」读 ES 心跳，时间窗与检索面同一个「回溯天数」配置；「丢弃计数」是 consumer
+      **进程内累计值**（该进程重启即归零），且取的是最新一条心跳的快照、不是窗口增量——
+      别把它当历史总丢弃数。
     </p>
   </div>
 </template>

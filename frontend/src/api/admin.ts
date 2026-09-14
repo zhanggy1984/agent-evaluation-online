@@ -3,6 +3,7 @@
 // （与 backflow.ts 同一"双保险"口径）。
 import { api } from './client'
 import type {
+  AdminAgentHealthOut,
   AdminAgentOut,
   AdminConfigItem,
   AdminInterfaceListOut,
@@ -73,6 +74,11 @@ export function adminToggleAgent(agentId: number): Promise<AdminAgentOut> {
 
 export function adminAgentInterfaces(agentId: number): Promise<AdminInterfaceListOut> {
   return api<AdminInterfaceListOut>(`/admin/agents/${agentId}/interfaces`)
+}
+
+// agent 上报健康卡（§8.5）：读 ES 心跳 doc——last_seen_ts 为 null = 窗内无心跳（未接入 SDK）
+export function adminAgentHealth(agentId: number): Promise<AdminAgentHealthOut> {
+  return api<AdminAgentHealthOut>(`/admin/agents/${agentId}/health`)
 }
 
 // 人工补标：llm=1 会连带清 llm_suspect（疑似漏标告警由人工确认解除）；llm_source 只接受 manual
