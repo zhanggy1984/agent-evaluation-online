@@ -26,7 +26,8 @@ S-5：`/traces` 检索面四条——命中 `error_msg`（+ 无关关键字对�
 **「超时」不记作已验**：本环境无「慢 ES」注入手段，只登记接线事实。
 
 T-4.1 残留「大 trace 懒加载」（task.md T-1.4）：判据**定性为结构型**——证的是「首屏上界与
-trace 总行数**无关**」，而非「1000 行时够快」，故可用 N=200 证明（5 断言，含 1 条前置）；残留的容量尾巴
+trace 总行数**无关**」，而非「1000 行时够快」，故可用 N=200 证明（6 断言，含 1 条前置）；
+残留的容量尾巴
 （500 个 event 行的首屏算不算不拉爆）需真实量级 ⇒ 归 T-5.3。
 
 退出码：全绿 0，任一断言失败非 0。
@@ -505,11 +506,23 @@ async def s1_lazy(producer, settings: Settings, auth: str) -> None:
     check("大 trace 懒加载：page_size 硬上界 200（201 → 422，声明源 trace.py:205）",
           len(items200) == n_log and st_bad == 422,
           f"page_size=200 → {len(items200)} 条；page_size=201 → {st_bad}"
-          f"（{resp_bad.get('code') if isinstance(resp_bad, dict) else resp_bad}）")
+          f"（FastAPI 校验错误形状无 code 键，detail="
+          f"{bool(isinstance(resp_bad, dict) and resp_bad.get('detail'))}）")
 
+    body_none = bool(items50) and all(i.get("log_message") is None for i in items50)
     check("大 trace 懒加载：默认 body_search=false 不下发日志正文",
-          bool(items50) and all(i.get("log_message") is None for i in items50),
-          f"首屏 log_message 全为 None = {all(i.get('log_message') is None for i in items50)}")
+          body_none, f"首屏 log_message 全为 None = {body_none}")
+
+    # 正对照（否则「默认不下发」与「永远不下发」观测等价，该断言无判别力）：
+    # body_search=true 时正文必须回传，且**逐字等于**投递原文（归因式断言，非只判非空）。
+    st_b, resp_b = await _api(
+        "GET", f"/traces/{AGENT}/{trace_id}/logs?page=1&page_size=50&body_search=true", auth)
+    items_b = (resp_b.get("items") or []) if isinstance(resp_b, dict) else []
+    msgs = [i.get("log_message") for i in items_b]
+    check("大 trace 懒加载：body_search=true 正文逐字回传（上一条的正对照）",
+          st_b == 200 and "lazy line 0" in msgs and msgs.count(None) == 0,
+          f"st={st_b}、命中 'lazy line 0' = {'lazy line 0' in msgs}、"
+          f"None 数 = {msgs.count(None)}（共 {len(msgs)} 行）")
 
     es = AsyncElasticsearch(settings.es_url)
     engine = create_async_engine(settings.sqlalchemy_url)
