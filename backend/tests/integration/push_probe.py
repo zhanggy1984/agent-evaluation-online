@@ -195,6 +195,23 @@ async def _cleanup(engine) -> None:
             ConversionRecord.detail.like(f"%run_id={RUN_ID_PREFIX}%"),
         ))
         await s.execute(delete(ErrorCaseLink).where(ErrorCaseLink.cluster_id.in_(sub)))
+        # 兜底（F-1）：上面两句都以簇为锚，对「锚已消失」的行**单向不可达**——簇一旦被删，
+        # 任何后续 run 都再也扫不到它（实证 = cluster 1086 的 link/conv 从 2026-09-10 存活至
+        # 2026-09-14）。故另按探针专属 trace 前缀扫一次悬空行。仍不按位置一刀切（同哨兵行）。
+        # **不静默删**：命中即打印——否则将来真出现新的漏删，兜底会把它抹平、反而让缺口隐身。
+        orphan_link_ids = (await s.execute(
+            select(ErrorCaseLink.id).where(
+                ErrorCaseLink.source_trace_id.like("push-trace-%"),
+                ErrorCaseLink.cluster_id.notin_(select(ErrorCluster.id)),
+            )
+        )).scalars().all()
+        if orphan_link_ids:
+            print(f"[cleanup] 兜底扫到 {len(orphan_link_ids)} 条悬空 link（簇已删）："
+                  f"{orphan_link_ids}")
+            await s.execute(delete(ConversionRecord).where(
+                ConversionRecord.link_id.in_(orphan_link_ids)))
+            await s.execute(delete(ErrorCaseLink).where(
+                ErrorCaseLink.id.in_(orphan_link_ids)))
         await s.execute(delete(VerifyRunRecord).where(
             VerifyRunRecord.run_id.like(f"{RUN_ID_PREFIX}%")))
         await s.execute(delete(ErrorCluster).where(ErrorCluster.agent.like("push-%")))
