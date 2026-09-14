@@ -16,6 +16,7 @@
 - ttl_until = 最后触发行事件的 ts + 完成窗口 + 宽限（【实现约定】60s + 300s，§4.3/§6.1，
   参数由 dict_config 运行时键注入，D5 启动加载）。
 """
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -238,7 +239,11 @@ def _row_to_dict(row: TraceJudgeState) -> dict:
         "root_input_hash": row.root_input_hash,
         "input_snapshot_clean": row.input_snapshot_clean,
         "input_truncated": row.input_truncated,
-        "err_summary_json": row.err_summary_json,
+        # 必须深拷贝：本值是 JSON 列，merge 会**原地**改它（state.py:160-165 改 agent_version
+        # 与 entries）后由 apply_event `setattr` 写回同一对象 ⇒ ORM 的变更检测失效，
+        # 该列**永远不会**出现在 UPDATE 里（症状：标量列如 ttl_until/llm_fact_ok 都落了库、
+        # 只有 err_summary_json 不落）。断开引用后回写的是新对象，变更才可见（F-17）。
+        "err_summary_json": copy.deepcopy(row.err_summary_json),
         "llm_fact_ok": row.llm_fact_ok,
         "judged": row.judged,
         "processed": row.processed,

@@ -5,9 +5,10 @@
 子节点 error（§4.1 step4）；log 与普通 ok 子节点不触达。
 """
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from app.consumer.schema import EventModel
-from app.consumer.state import StateEffects, merge_trace_state
+from app.consumer.state import StateEffects, _row_to_dict, merge_trace_state
 from app.core.input_hash import compute_input_hash, snapshot_input
 
 WINDOW_S = 60  # 完成窗口（§4.3，D5 由 dict_config 注入）
@@ -301,3 +302,33 @@ class TestJudgedFreeze:
         assert after["judged"] == 1
         assert after["root_ok"] == 1 and after["root_status"] == "ok"  # 证据照记
         assert after["ttl_until"] == state["ttl_until"]
+
+
+# ---- F-17 回归：跨「读→改→写」边界不得原地改 JSON 列 ----
+
+def test_row_to_dict_breaks_json_reference():
+    """`_row_to_dict` 供出的 `err_summary_json` 若**按引用**交给 merge，后者会原地改它
+    （state.py:160-165），而 apply_event 回写的又是同一对象 ⇒ ORM 变更检测失效、该列永不进
+    UPDATE（F-17：root 先到、子节点后到的分批到达形态整条累积丢失）。
+
+    修点在**读边界**（深拷贝），故这里验的是该边界本身：`_row_to_dict` 的输出不得与行上
+    同一对象，且 merge 之后**行上的现态不被污染**——这才是 `setattr` 能把该列写进 DB 的前提。
+    注意「merge 不改入参」**不是**本函数的性质（它就是原地改），DB 级回归由 d6_probe S-6 B
+    条承担；单测的 FakeAsyncSession 不做脏检测，验不到那一层。
+    """
+    row = SimpleNamespace(
+        agent="a", trace_id="t", root_ok=1, root_ts=None, interface=None, root_status=None,
+        root_error_type=None, root_input_hash=None, input_snapshot_clean=None,
+        input_truncated=None, err_summary_json={"entries": [], "agent_version": None},
+        llm_fact_ok=0, judged=0, processed=0, root_late_complement=0, ttl_until=None,
+    )
+    current = _row_to_dict(row)
+    assert current["err_summary_json"] == row.err_summary_json
+    assert current["err_summary_json"] is not row.err_summary_json, "未断开引用 ⇒ 变更检测失效"
+
+    next_state, fx = merge_trace_state(
+        current, child(status="error"), window_s=WINDOW_S, grace_s=GRACE_S)
+
+    assert fx.affected is True
+    assert row.err_summary_json == {"entries": [], "agent_version": None}, "行上的现态被污染"
+    assert_counts(next_state, {"llm_timeout": 1})
