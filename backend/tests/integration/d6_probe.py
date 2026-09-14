@@ -1,4 +1,4 @@
-"""D6 集成验证 probe（detail §14.1 S-1~S-5）。容器内 `docker exec obs-backend` 运行。
+"""D6 集成验证 probe（detail §14.1 S-1~S-5 + T-4.1 残留大 trace 懒加载）。容器内跑。
 
 前置：obs-backend 已 up（consumer 由 lifespan 拉起，app_env=dev）；probe 在容器内用
 compose 注入的 env（DB_HOST=mysql/ES_URL/KAFKA_BOOTSTRAP 容器内 alias）建连，与
@@ -24,6 +24,10 @@ S-5：`/traces` 检索面四条——命中 `error_msg`（+ 无关关键字对�
 `offset ≥ 200` → 400 `ERR_TRACE_0002`、**限 7d 的正反对照**（投一条 8 天前同形 trace：默认窗口
 裁掉、显式放宽 `start_ts` 命中 ⇒ 证裁剪真发生，而非只读常量）。该 trace 由本节自清（ES + MySQL）。
 **「超时」不记作已验**：本环境无「慢 ES」注入手段，只登记接线事实。
+
+T-4.1 残留「大 trace 懒加载」（task.md T-1.4）：判据**定性为结构型**——证的是「首屏上界与
+trace 总行数**无关**」，而非「1000 行时够快」，故可用 N=200 证明（5 断言，含 1 条前置）；残留的容量尾巴
+（500 个 event 行的首屏算不算不拉爆）需真实量级 ⇒ 归 T-5.3。
 
 退出码：全绿 0，任一断言失败非 0。
 """
@@ -436,6 +440,95 @@ async def s5(producer, settings: Settings, auth: str, fresh_trace: str) -> None:
           "**不记作已验通过**。")
 
 
+async def s1_lazy(producer, settings: Settings, auth: str) -> None:
+    """T-4.1 残留「大 trace 懒加载」（task.md T-1.4「单 trace 上千日志行首屏不拉爆」）。
+
+    **判据定性 = 结构型**（不是容量型）：被验的不是「1000 行时跑得够快」，而是
+    「**首屏上界与 trace 总行数无关**」——该命题由两个实现层硬上界承载：
+      - 详情面 `size=MAX_DETAIL_EVENTS(500)` + `truncated = total > limit`（`es.py:23/166/174`）；
+      - 日志**不在详情面**（`trace.py:79` 只返 event 行），走独立分页端点，默认
+        `page_size=50`、硬上界 `le=200`（`trace.py:204-205`）、默认 `body_search=false`
+        （正文置空）。
+    ⇒ **可用 N > page_size 的少量数据证明**（本处 N=200），**不需要真造上千行**。
+    残留的**容量尾巴**（「500 个 event 行的首屏算不算不拉爆」）仍需真实量级 + 时延测量 ⇒ 归 T-5.3。
+    """
+    print("\n===== T-4.1 残留：大 trace 懒加载（首屏上界与总数无关） =====")
+    trace_id = f"d6-lazy-{TS_BASE}"
+    n_log = 200
+    ts = TS_BASE + 3
+    topic = settings.agent_topic(AGENT)
+    await producer.send(topic, json.dumps(_request(AGENT, trace_id, ts), ensure_ascii=False)
+                        .encode("utf-8"))
+    for i in range(n_log):   # seq 3..202：doc_id=none(agent|trace|seq) ⇒ 200 个不同 doc，不互覆
+        await producer.send(topic, json.dumps(
+            {"schema_version": "1.0", "event_kind": "log", "trace_id": trace_id,
+             "agent": AGENT, "agent_version": "2026.08.31-r47",
+             "interface": "POST /api/chat/{id}", "node": "log", "seq": 3 + i,
+             "parent": None, "ts": ts + i, "status": "ok",
+             "log_level": "INFO", "log_message": f"lazy line {i}", "extra": {}},
+            ensure_ascii=False).encode("utf-8"))
+    await producer.flush()
+    print(f"已投 1 event + {n_log} log（trace={trace_id}），等待落地后验首屏上界…")
+
+    async def logs_page(page: int, size: int) -> tuple[int, list, object]:
+        st, resp = await _api("GET",
+                              f"/traces/{AGENT}/{trace_id}/logs?page={page}&page_size={size}", auth)
+        if st != 200 or not isinstance(resp, dict):
+            return st, [], None
+        return st, resp.get("items") or [], resp.get("total")
+
+    async def landed() -> bool:
+        st, items, total = await logs_page(1, 50)
+        return st == 200 and total == n_log
+
+    ok = await poll("大 trace 日志落地", 120, 5, landed)
+    if not ok:
+        check("大 trace 懒加载：前置（200 条日志全部落地）", False,
+              f"轮询 120s 未达 total={n_log} ⇒ 数据不足，**判 FAIL 不静默通过**")
+        return
+
+    st_d, detail = await _api("GET", f"/traces/{AGENT}/{trace_id}", auth)
+    events = (detail.get("events") or []) if isinstance(detail, dict) else []
+    check("大 trace 懒加载：日志**不在**详情面（首屏只含 event 行）",
+          st_d == 200 and len(events) == 1 and all(e.get("node") != "log" for e in events),
+          f"详情 events={len(events)} 条、node={[e.get('node') for e in events]}"
+          f"（期望恰 1 条 request）")
+
+    st, items50, total = await logs_page(1, 50)
+    check("大 trace 懒加载：首屏有界（库里 200 条、默认一页只回 50）",
+          st == 200 and len(items50) == 50 and total == n_log,
+          f"page_size=50 → items={len(items50)}，total={total}（上界与总数无关的正证）")
+
+    st_ok, items200, _ = await logs_page(1, 200)
+    st_bad, resp_bad = await _api("GET",
+                                  f"/traces/{AGENT}/{trace_id}/logs?page=1&page_size=201", auth)
+    check("大 trace 懒加载：page_size 硬上界 200（201 → 422，声明源 trace.py:205）",
+          len(items200) == n_log and st_bad == 422,
+          f"page_size=200 → {len(items200)} 条；page_size=201 → {st_bad}"
+          f"（{resp_bad.get('code') if isinstance(resp_bad, dict) else resp_bad}）")
+
+    check("大 trace 懒加载：默认 body_search=false 不下发日志正文",
+          bool(items50) and all(i.get("log_message") is None for i in items50),
+          f"首屏 log_message 全为 None = {all(i.get('log_message') is None for i in items50)}")
+
+    es = AsyncElasticsearch(settings.es_url)
+    engine = create_async_engine(settings.sqlalchemy_url)
+    try:
+        await es.delete_by_query(index=["dev.obs-event-*", "dev.obs-log-*"],
+                                 query={"term": {"trace_id": trace_id}},
+                                 conflicts="proceed", refresh=True)
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM trace_judge_state "
+                                    "WHERE agent=:a AND trace_id=:t"),
+                               {"a": AGENT, "t": trace_id})
+        print(f"已清理本节自造 trace {trace_id}（MySQL 判定行 + ES doc）")
+    except Exception as exc:
+        print(f"清理 {trace_id} 失败（残留，需人工确认）：{exc}")
+    finally:
+        await es.close()
+        await engine.dispose()
+
+
 async def main() -> None:
     settings = Settings()
     producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap,
@@ -447,6 +540,7 @@ async def main() -> None:
         auth = await s1_s4(settings, s3_trace_id)
         if auth:
             await s5(producer, settings, auth, s3_trace_id)
+            await s1_lazy(producer, settings, auth)
     finally:
         await producer.stop()
 
