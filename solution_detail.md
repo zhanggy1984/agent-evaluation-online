@@ -1117,6 +1117,8 @@ CREATE TABLE `trace_judge_state` (
 
 ### 8.5 Agent 与接口字典（admin；solution §12.1 Agent 管理 → 本文件 §9.2）
 
+> **（2026-09-14 追补）** 本节点的「整节未实现」**已确认为一期欠债、非范围外**——权威依据 = `solution.md` §12.1「页面归属阶段：……回流看板与系统管理（**P2**；**Agent/用户管理随 P0/P1 先行**）」。已立 `task.md` **T-3.12** 跟踪（来源 = 阶段 4 登记核对 #214，登记见 `docs/integration-report.md` §6 **F-19**）。
+
 > **（v1.23 反查订正）本节整节未实现** —— 以下端点在 `app/api/` 无实现、在 `app/api/router.py` 无挂载（该文件只挂 auth/trace/metrics/backflow/pull 五个 router）。本节保留为**设计契约**（非既有能力），实施前须先立 T 项。
 
 | Method & Path | 说明 |
@@ -1132,6 +1134,8 @@ CREATE TABLE `trace_judge_state` (
 **8.5.1 疑似漏标自动补标（§10.1 观察窗，v3.4.5 裁定）**：接口观测到 llm_call 且 `llm=false` → `llm_suspect=1`；连续观测达阈值（【实现约定】窗口 24h 内 ≥ 10 次）→ 自动 `llm=true`（source=auto_observed）不再疑似；观察窗内存疑 → `llm_suspect=1` 进 admin 复核列表 + 看板/Agent 管理「疑似漏标告警」。
 
 ### 8.6 配置与用户（admin）
+
+> **（2026-09-14 追补）** 同 §8.5 —— 本条「整节未实现」**已确认为一期欠债**（`solution.md` §12.1 系统管理归 P2），已立 `task.md` **T-3.12**（登记见 `docs/integration-report.md` §6 **F-19**）。连带的 `ERR_CONFIG_0001` **无抛出点**亦随 T-3.12 一并处置。
 
 > **（v1.23 反查订正）本节整节未实现** —— 同 §8.5：无实现、无挂载。**连带**：§8.9 的 `ERR_CONFIG_0001` 因此**无抛出点**（admin 写入面未实现）。
 
