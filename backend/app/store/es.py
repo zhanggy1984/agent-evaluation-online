@@ -26,9 +26,6 @@ MAX_DETAIL_EVENTS = 500
 # 否则按 agent 过滤的列表会混入心跳行。node=log 行的 event_kind=log，随 event_kind 筛分。
 _NODE_HEARTBEAT = {"term": {"node": "heartbeat"}}
 
-# form A 心跳的 source 标记（consumer/main.py:325 传 "consumer"）；非该值的透传心跳 = SDK 自报
-_SOURCE_FORM_A = "consumer"
-
 
 def index_patterns(settings: Settings) -> list[str]:
     """检索 index 集：事件 + 日志两前缀周滚动全量（template 接管后按需建）。"""
@@ -458,87 +455,6 @@ async def run_metrics_interfaces(
             ],
         })
     return {"request": request_rows, "llm": llm_rows}
-
-
-def build_heartbeat_body(*, agent: str, start_ts: int, end_ts: int, size: int = 500) -> dict:
-    """健康卡（§8.5）查询：**含** heartbeat doc——与检索面的 `_NODE_HEARTBEAT` 排除相反。
-
-    心跳 doc 的 `_id` 按 (agent, 分钟) 覆写（`consumer/main.py:70-73`）⇒ 窗内条数即
-    「窗内有上报的分钟数」，这也是 `report_1min`/`report_5min` 的语义。
-    """
-    return {
-        "query": {
-            "bool": {
-                "filter": [
-                    {"term": {"agent": agent}},
-                    {"range": {"ts": {"gte": start_ts, "lte": end_ts}}},
-                    _NODE_HEARTBEAT,
-                ]
-            }
-        },
-        "size": size,
-        "sort": [{"ts": {"order": "desc"}}],
-    }
-
-
-def summarize_heartbeats(docs: list[dict], *, now_ms: int) -> dict:
-    """心跳 docs → 健康卡字段（**纯函数**，单测直接喂列表，ES 查询本身由真库探针覆盖）。
-
-    - `last_seen_ts` = 最大 ts；无 doc ⇒ None ⇒ 前端出「查询窗内无心跳上报」。
-    - `report_1min` / `report_5min` = 窗内条数（条数 =「有上报的分钟数」，见上）。
-    - `dropped` = **最新一条心跳的 `dropped` 快照**（见下方「为什么不是求和」）。
-    - `sdk_connected` = 存在 form A（`source="consumer"`）之外的心跳，即 SDK 自报心跳透传。
-
-    ⚠️ **为什么 `dropped` 取快照而不是窗内求和**（2026-09-14 取证，推翻此前写法）：
-    心跳 doc 里的 `dropped` 是 consumer **进程内累计计数**，不是窗口增量——`consumer/main.py:87`
-    逐字「进程内 dropped 计数（form A）：按 (agent, reason) 累加，心跳任务定期快照」，`:309-329`
-    每 60s 写的都是**同一个累计值**。窗口内若有 N 条心跳，求和 = 把同一个数重复相加 N 次
-    （实测：`good-question` 连续 3 条心跳的 `dropped` 逐字相同 ⇒ 5min 窗求和会得 3 倍假数）。
-    ⇒ 取最新一条即「该 agent 当前累计态」。**注意它随 consumer 重启归零**，前端措辞勿写成
-    「历史总丢弃数」。
-    """
-    if not docs:
-        return {
-            "last_seen_ts": None,
-            "report_1min": 0,
-            "report_5min": 0,
-            "dropped": {},
-            "sdk_connected": False,
-        }
-    ts_list = [int(d.get("ts") or 0) for d in docs]
-    latest = max(docs, key=lambda d: int(d.get("ts") or 0))
-    dropped: dict[str, int] = {}
-    for key, val in (latest.get("dropped") or {}).items():
-        try:
-            dropped[key] = int(val)
-        except (TypeError, ValueError):
-            continue  # 非数值脏字段不计（心跳是自监控面，不因脏数据整体失败）
-    return {
-        "last_seen_ts": max(ts_list) or None,
-        "report_1min": sum(1 for ts in ts_list if now_ms - ts <= 60_000),
-        "report_5min": sum(1 for ts in ts_list if now_ms - ts <= 300_000),
-        "dropped": dropped,
-        "sdk_connected": any(
-            d.get("source") and d.get("source") != _SOURCE_FORM_A for d in docs
-        ),
-    }
-
-
-async def fetch_heartbeats(
-    client, *, settings, request_timeout_s: float, agent: str, start_ts: int, end_ts: int,
-    size: int = 500,
-) -> list[dict]:
-    """取窗内心跳 docs（`health` 端点的 ES 侧；聚合在 `summarize_heartbeats`）。
-
-    ⚠️ 取 `_hits_result(...)["hits"]`——它**已经**是 `_source` 列表（`_hits_result:197`）。
-    此前写成 `.get("items")`，而该函数从不返回 `items` 键 ⇒ **恒返回空列表**（2026-09-14
-    取证修正；当时只读码未实测，端点一旦接上会表现为「所有 agent 都无心跳」）。
-    """
-    body = build_heartbeat_body(agent=agent, start_ts=start_ts, end_ts=end_ts, size=size)
-    resp = await client.options(request_timeout=request_timeout_s).search(
-        index=event_index_patterns(settings), body=body
-    )
-    return list(_hits_result(resp)["hits"])
 
 
 def build_agents_body(*, start_ts: int, end_ts: int, size: int = 100) -> dict:

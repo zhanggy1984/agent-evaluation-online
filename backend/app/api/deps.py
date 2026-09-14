@@ -2,8 +2,8 @@
 
 - get_current_user：Authorization `Bearer <access>` → decode（security.decode_access_token）→
   查 `user` 表 → status==1 校验。查库保 role/status 最新（非纯 claims 信任）。
-- require_viewer / require_admin：viewer ∈ {viewer, admin}；admin-only 路由（§8.5/§8.6 +
-  §8.4 backflow 人工动作）用 require_admin。
+- require_viewer / require_admin：viewer ∈ {viewer, admin}；admin-only 路由（§8.6 +
+  §8.4 backflow 人工动作）用 require_admin。（§8.5 admin Agent 面已于 2026-09-14 整节撤除）
 - require_evaluator：**平台间 /pull/* 专用（§8.8 独立签发路径，不接平台 JWT）**——校验
   Authorization `Bearer <evaluator_service_secret>`（预共享静态 secret，offline 部署同持）；
   未配置/不符 → ERR_PULL_0001(401)，fail-closed。

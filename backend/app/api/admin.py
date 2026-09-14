@@ -1,12 +1,12 @@
-"""admin 系统管理面：配置管理 + 用户管理（detail §8.6）、agent 与接口字典（§8.5）。
-全部端点 `AdminUser` 依赖。
+"""admin 系统管理面：配置管理 + 用户管理（detail §8.6）。全部端点 `AdminUser` 依赖。
 
-**§8.5 分两批**（用户 2026-09-14 拍板「拆细、单独验证」）：本文件当前含**字典面**四端点
-（`/agents`、`/agents/{id}/toggle`、`/agents/{id}/interfaces`、`/interfaces/{id}`），
-读 MySQL 两表；`/agents/{id}/health` 读 ES 事件 index、本环境可能无心跳数据 ⇒ 单独成批，
-避免「字典面全绿」掩盖「health 只验了空态」。`/agents/{id}/credential` **脱敏读面**单独成批
-（**2026-09-14 收窄**：原计划的「凭证两端点」实为**一端点**——`rotate` 的三个动作
-〔新 SASL 账号 / 撤 ACL / 断连接〕全在 infra，online 无执行面，已下移 T-5.3，见该端点文档）。
+**⚠️ §8.5（agent 与接口字典）已整节撤除**（2026-09-14 用户拍板「过度设计」）——本文件
+原含其六端点（`/agents`、`/agents/{id}/toggle`、`/agents/{id}/interfaces`、
+`/interfaces/{id}`、`/agents/{id}/health`、`/agents/{id}/credential`），已连同前端页、
+测试、探针一并删除；`store/es.py` 的心跳读路径（只被 health 消费）同批删除。
+**本文件现只服务 §8.6**，勿据本 docstring 的既往版本外推 §8.5 尚存。
+两处代价：`agent.backflow_allow`/`enable` 无运行期写入面（只能改库/seed、无审计）；
+「agent 有没有在报数」改直查 ES 事件 index 的 `node=heartbeat` doc。
 
 **零 DDL 实现基础**（逐字段核对，非推断）：
 - 配置写入/version：`dict_config`（`uk_dc(agent_id, config_key)`、`config_value` JSON、`version`）。
@@ -27,27 +27,17 @@
   是自由文本无索引，要做需加列 = 破零 DDL），登记为已知限制。
 """
 import json
-import time
-from collections import Counter
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from elasticsearch.exceptions import TransportError
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AdminUser
 from app.api.schemas import (
-    AgentAdminOut,
-    AgentCredentialItem,
-    AgentCredentialOut,
-    AgentHealthOut,
     ConfigItem,
     ConfigUpdateRequest,
-    InterfaceAdminOut,
-    InterfaceListOut,
-    InterfaceUpdateRequest,
     UserAdminOut,
     UserCreateRequest,
     UserUpdateRequest,
@@ -58,11 +48,10 @@ from app.core.errors import AppError
 from app.core.log import get_logger
 from app.core.security import hash_password
 from app.core.seed import GLOBAL_DEFAULTS, PER_AGENT_DEFAULTS
-from app.models.agent import Agent, AgentCredential, Interface
+from app.models.agent import Agent
 from app.models.config import DictConfig
 from app.models.error_flow import ConversionRecord
 from app.models.user import User, UserSession
-from app.store import es as es_store
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -371,350 +360,5 @@ async def update_user(
         out.role,
         out.status,
         revoked,
-    )
-    return out
-
-
-# ---------- agent 与接口字典（§8.5） ----------
-#
-# 本段 = §8.5 的**字典面**（读 MySQL 的 `agent`/`interface` 两表）；§8.5 的 `health`
-# 读的是 ES 事件 index，验证面完全不同（本环境可能无心跳 doc ⇒ 只能验空态），
-# 单独成批，不与此处混交——防「前四端全绿」把「health 只验了空态」盖掉。
-
-ACTION_AGENT_TOGGLE = "agent_toggle"
-ACTION_INTERFACE_CHANGE = "interface_dict_change"
-
-# 接口字典单次返回上限：§8.5 未定义分页入参 ⇒ v1 全量返回，超限截断并置 truncated。
-_INTERFACE_MAX = 500
-
-# 本端点只产出「人工补标」。`config`（离线配置推导）与 `auto_observed`（观测自动写入）
-# 都不是 admin 手改的产物——接受它们会让 `updated_by`/审计失去「谁改的」语义。
-_ADMIN_LLM_SOURCES = ("manual",)
-
-# health（§8.5 `:1132`）查询护栏：ts desc + size 上限 ⇒ 截断保住的**恰是最近那批**，
-# 而 last_seen_ts / report_1min / report_5min / dropped 快照全部取自最新端 ⇒ 截断无损。
-_HEALTH_SIZE = 500
-# dict_config 无行时的兜底默认，值照 seed.py 的 keyword_search_days / metric_agg_timeout_ms
-_DEFAULT_LOOKBACK_DAYS = 7
-_DEFAULT_TIMEOUT_MS = 3000
-_MS_PER_DAY = 86_400_000
-
-
-def _enum_str(v: Any) -> Any:
-    """取 Enum 列的字面值（替身/纯字符串场景原样返回）。"""
-    return getattr(v, "value", v)
-
-
-def _agent_out(row: Agent, interface_count: int) -> AgentAdminOut:
-    return AgentAdminOut(
-        id=row.id,
-        name=row.name,
-        display_name=row.display_name,
-        enable=row.enable,
-        backflow_allow=row.backflow_allow,
-        route_source=_enum_str(row.route_source),
-        base_url=row.base_url,
-        interface_count=interface_count,
-    )
-
-
-def _interface_out(row: Interface) -> InterfaceAdminOut:
-    return InterfaceAdminOut(
-        id=row.id,
-        agent_id=row.agent_id,
-        interface=row.interface,
-        method=row.method,
-        path=row.path,
-        llm=row.llm,
-        llm_source=_enum_str(row.llm_source),
-        llm_suspect=row.llm_suspect,
-        body_search=row.body_search,
-        status=row.status,
-        first_seen_ts=row.first_seen_ts,
-        last_seen_ts=row.last_seen_ts,
-        updated_by=row.updated_by,
-    )
-
-
-async def _interface_counts(session: AsyncSession, agent_id: int | None = None) -> Counter:
-    """按 agent 汇总接口条数（`agent_id` 给了则只数该 agent）。
-
-    ⚠️ **取整行后在 Python 侧按 `agent_id` 计数，不用 `GROUP BY func.count()`**：替身
-    （`tests/_fakes.py`）没有聚合解析分支，用它会让本面在单测里整批不可写。
-    也不写 `select(Interface.agent_id)` 取单列——替身**不建模列投影**（列级 select 仍
-    返回整行，与其自身注释不符，2026-09-14 实测），那样会得到一个「只在替身下崩」的写法。
-    interface 表规模 = 「agent 数 × 接口数」，admin 面 v1 全取可接受；真成瓶颈时再换聚合
-    并补替身。
-    """
-    stmt = select(Interface)
-    if agent_id is not None:
-        stmt = stmt.where(Interface.agent_id == agent_id)
-    rows = (await session.execute(stmt)).scalars().all()
-    return Counter(r.agent_id for r in rows)
-
-
-@router.get("/agents", response_model=list[AgentAdminOut])
-async def list_agents(user: AdminUser, session: _Session) -> list[AgentAdminOut]:
-    """agent 字典清单。
-
-    ⚠️ **数据源 = MySQL `agent` 表，不是 ES**——与 §8.3 的 `/metrics/agents` 互不替代：
-    后者是「近 7d 有流量的 agent 名」实测面，**零流量/已停用的 agent 在其中完全不可见**，
-    运维据此分不清「agent 掉线」与「本来就没接」。
-    """
-    logger.debug("admin agents 入参: admin=%s", user.username)
-    rows = (await session.execute(select(Agent).order_by(Agent.id))).scalars().all()
-    counts = await _interface_counts(session)
-    out = [_agent_out(r, counts.get(r.id, 0)) for r in rows]
-    logger.debug("admin agents 出参: agent 数=%s", len(out))
-    return out
-
-
-@router.post("/agents/{agent_id}/toggle", response_model=AgentAdminOut)
-async def toggle_agent(agent_id: int, user: AdminUser, session: _Session) -> AgentAdminOut:
-    """翻转 `agent.enable`。
-
-    **[裁定]** 无 body：§8.5（detail `:1127`）未定义 toggle 的入参，故语义 = 翻转当前值，
-    不要求调用方先读再写（避免读改写竞态）。
-
-    ⚠️ **停用不等于停消费**（§8.5 `:1127` 逐字：「停用仅停回流生成与展示，消费不停」
-    ——防数据黑洞）。该语义有真实读侧：`analyzer/classify.py:189-190`/`:226-227` 的
-    `agent_enabled` 白名单门 + `consumer/main.py:123` `_enabled_agents()`。
-    """
-    logger.debug("admin toggle agent 入参: admin=%s agent_id=%s", user.username, agent_id)
-    row = await session.get(Agent, agent_id)
-    if row is None:
-        raise AppError("ERR_CONFIG_0001", f"agent 不存在：{agent_id}", http=400)
-    before = row.enable
-    row.enable = 0 if before else 1
-    counts = await _interface_counts(session, agent_id)
-    detail = f"agent={row.name} enable {before}→{row.enable}"
-    session.add(
-        ConversionRecord(
-            cluster_id=None,
-            link_id=None,
-            action=ACTION_AGENT_TOGGLE,
-            detail=detail[:_DETAIL_MAX],
-            actor_user_id=user.id,
-        )
-    )
-    # 同批 1：提交前组装（commit 后读 ORM 属性在 async 下会触发懒刷新）
-    out = _agent_out(row, counts.get(agent_id, 0))
-    await session.commit()
-    logger.info("agent 启停：%s enable=%s（admin=%s）", row.name, out.enable, user.username)
-    logger.debug("admin toggle agent 出参: agent_id=%s enable=%s", agent_id, out.enable)
-    return out
-
-
-@router.get("/agents/{agent_id}/interfaces", response_model=InterfaceListOut)
-async def list_agent_interfaces(
-    agent_id: int, user: AdminUser, session: _Session
-) -> InterfaceListOut:
-    """某 agent 的接口字典（§8.5 `:1128` 字段集）。
-
-    ⚠️ `interface` 串不可改（见 `InterfaceUpdateRequest` 注释）；本端点只读。
-    """
-    logger.debug("admin agent interfaces 入参: admin=%s agent_id=%s", user.username, agent_id)
-    stmt = (
-        select(Interface)
-        .where(Interface.agent_id == agent_id)
-        .order_by(Interface.interface)
-        .limit(_INTERFACE_MAX + 1)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-    truncated = len(rows) > _INTERFACE_MAX
-    out = InterfaceListOut(
-        items=[_interface_out(r) for r in rows[:_INTERFACE_MAX]], truncated=truncated
-    )
-    logger.debug(
-        "admin agent interfaces 出参: agent_id=%s 条数=%s 截断=%s",
-        agent_id,
-        len(out.items),
-        truncated,
-    )
-    return out
-
-
-@router.put("/interfaces/{interface_id}", response_model=InterfaceAdminOut)
-async def put_interface(
-    interface_id: int, body: InterfaceUpdateRequest, user: AdminUser, session: _Session
-) -> InterfaceAdminOut:
-    """接口字典人工订正（§8.5 `:1129`，入参 = `{llm?, llm_source?, body_search?}`）。
-
-    **[裁定 1]** `llm_source` 只接受 `manual`（人工补标）。
-    **[裁定 2]** `llm=1` 时**连带清 `llm_suspect`**——疑似漏标态由「人工确认 llm」解除。
-    **[裁定 3]** **不支持改 `interface` 串**：文档入参里本就没有该字段，而它又是唯一键列
-    （`models/agent.py:70` `uk_interface(agent_id, interface)`），改它等于换实体。
-    """
-    logger.debug(
-        "admin 改接口 入参: admin=%s interface_id=%s fields=%s",
-        user.username,
-        interface_id,
-        sorted(body.model_dump(exclude_none=True).keys()),
-    )
-    row = await session.get(Interface, interface_id)
-    if row is None:
-        raise AppError("ERR_CONFIG_0001", f"接口不存在：{interface_id}", http=400)
-
-    if body.llm is not None and body.llm not in (0, 1):
-        raise AppError("ERR_CONFIG_0001", f"llm 非法：{body.llm}", http=400)
-    if body.body_search is not None and body.body_search not in (0, 1):
-        raise AppError("ERR_CONFIG_0001", f"body_search 非法：{body.body_search}", http=400)
-    if body.llm_source is not None and body.llm_source not in _ADMIN_LLM_SOURCES:
-        raise AppError(
-            "ERR_CONFIG_0001",
-            f"llm_source 非法：{body.llm_source}（本端点只接受 {'/'.join(_ADMIN_LLM_SOURCES)}）",
-            http=400,
-        )
-
-    changes: list[str] = []
-    if body.llm is not None and body.llm != row.llm:
-        changes.append(f"llm {row.llm}→{body.llm}")
-        row.llm = body.llm
-        if body.llm == 1 and row.llm_suspect:
-            # 裁定 2：人工确认 llm ⇒ 疑似漏标告警解除
-            changes.append(f"llm_suspect {row.llm_suspect}→0")
-            row.llm_suspect = 0
-    if body.body_search is not None and body.body_search != row.body_search:
-        changes.append(f"body_search {row.body_search}→{body.body_search}")
-        row.body_search = body.body_search
-    if body.llm_source is not None and body.llm_source != row.llm_source:
-        changes.append(f"llm_source {_enum_str(row.llm_source)}→{body.llm_source}")
-        row.llm_source = body.llm_source
-
-    if not changes:
-        # 空改动不写审计（否则审计表被「点了但没改」的行淹掉）；仍返回当前态。
-        out = _interface_out(row)
-        logger.debug("admin 改接口 出参: id=%s 无字段变更，未写审计", interface_id)
-        return out
-
-    row.updated_by = user.username
-    detail = f"agent_id={row.agent_id} interface={row.interface}：" + "；".join(changes)
-    session.add(
-        ConversionRecord(
-            cluster_id=None,
-            link_id=None,
-            action=ACTION_INTERFACE_CHANGE,
-            detail=detail[:_DETAIL_MAX],
-            actor_user_id=user.id,
-        )
-    )
-    out = _interface_out(row)  # 同上：提交前组装
-    await session.commit()
-    logger.info(
-        "接口字典订正：id=%s %s（admin=%s）", interface_id, "；".join(changes), user.username
-    )
-    logger.debug("admin 改接口 出参: id=%s 变更=%s", interface_id, changes)
-    return out
-
-
-@router.get("/agents/{agent_id}/health", response_model=AgentHealthOut)
-async def get_agent_health(
-    agent_id: int, user: AdminUser, request: Request, session: _Session
-) -> AgentHealthOut:
-    """agent 上报健康卡（§8.5 `:1132`）：聚合 ES 事件 index 的 `node=heartbeat`。
-
-    **数据源 = ES 心跳 doc**（与 §8.3 `/metrics/agents` 的「近 7d 有流量的 agent」不同面）：
-    有心跳 = 该 agent 的 SDK/consumer 还活着。无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出
-    「查询窗内无心跳上报」——这正是 §9.1 区分「窗内无心跳（`no_agent`）」与
-    「有流量无请求（`no_traffic`）」的那条判据。
-
-    ⚠️ **查 ES 用 `row.name` 而非 `agent_id`**：MySQL 主键是 int，ES 的 `agent` 字段是
-    agent 名（`good-question` 这类）。两者混用会得到一个恒空的查询。
-
-    ⚠️ **先查 MySQL 确认 agent 存在**：否则一个笔误的 id 会返回「查询窗内无心跳上报」，把「没有这个
-    agent」伪装成「有这个 agent 但没上报」。
-
-    **[裁定 4] 不返回 `spool_pending`**：detail §3.6（`:432`）的心跳 body 定义了该字段，但
-    **双端都无写入方**（平台侧 `consumer/main.py:76-83` 构造的 doc 是
-    `{node, agent, ts, dropped, source}`；SDK 侧 grep 零命中，2026-09-14 取证）——照批 1
-    「按实机实现、订正文字、不为契约造字段」先例。
-
-    时间窗键**复用** `keyword_search_days`（全局回溯窗，与检索面同键）：不新造配置键，
-    admin 在配置页一并可调；窗大小只影响「多久以前的心跳还算数」这一条语义。
-    """
-    logger.debug("admin agent health 入参: admin=%s agent_id=%s", user.username, agent_id)
-    row = await session.get(Agent, agent_id)
-    if row is None:
-        raise AppError("ERR_CONFIG_0001", f"agent 不存在：{agent_id}", http=400)
-
-    now_ms = int(time.time() * 1000)
-    days = await dict_config.get_global_int(
-        session, "keyword_search_days", _DEFAULT_LOOKBACK_DAYS
-    )
-    timeout_ms = await dict_config.get_global_int(
-        session, "metric_agg_timeout_ms", _DEFAULT_TIMEOUT_MS
-    )
-    try:
-        docs = await es_store.fetch_heartbeats(
-            request.app.state.es_query,
-            settings=request.app.state.settings,
-            request_timeout_s=max(timeout_ms / 1000, 1.0),
-            agent=row.name,
-            start_ts=now_ms - days * _MS_PER_DAY,
-            end_ts=now_ms,
-            size=_HEALTH_SIZE,
-        )
-    except TransportError as exc:  # 超时/连接失败/5xx：照 §8.2/§8.4 检索护栏转 400
-        raise AppError(
-            "ERR_CONFIG_0001", f"心跳查询暂不可用或超时: {exc}", http=400
-        ) from exc
-
-    out = AgentHealthOut(agent_id=agent_id, **es_store.summarize_heartbeats(docs, now_ms=now_ms))
-    logger.debug(
-        "admin agent health 出参: agent_id=%s agent=%s 心跳=%s last_seen_ts=%s",
-        agent_id,
-        row.name,
-        len(docs),
-        out.last_seen_ts,
-    )
-    return out
-
-
-@router.get("/agents/{agent_id}/credential", response_model=AgentCredentialOut)
-async def get_agent_credential(
-    agent_id: int, user: AdminUser, session: _Session
-) -> AgentCredentialOut:
-    """Kafka 上报凭证**脱敏**读面（§8.5 `:1137`，admin）。
-
-    **[裁定] 「脱敏」= 不回传 secret 字段**（理由见 `AgentCredentialOut` 文档）——
-    本端点**连 `secret_cipher` 这一列都不读**，不是「读了再抹掉」：不取即不可能误传，
-    也不必依赖 `Fernet`（全仓零实现，2026-09-14 取证）。
-
-    **[裁定] 无凭证行 ⇒ 200 + `credential=null`**；agent 本身不存在 ⇒ 400
-    （照 2a-2 health 口径：id 笔误不得伪装成「有这个 agent 但没凭证」）。
-
-    **本端点只读、不写审计**：读操作不产审计行（与 `/users` 列表、`/configs` 列表同口径），
-    审计只在写侧落。
-
-    ⚠️ **本批不做 rotate**：§8.5 `:1138` 的轮换要求「新 SASL 账号 + 撤 ACL + 断连接」，
-    三者**全在 infra**（online 无执行面），且新密码**无来源**——online 自造一个密码只会写出
-    一条 infra 侧永远对不上的记录。该端点与执行面一并下移 T-5.3（2026-09-14 用户拍板）。
-    """
-    logger.debug("admin agent credential 入参: admin=%s agent_id=%s", user.username, agent_id)
-    agent = await session.get(Agent, agent_id)
-    if agent is None:
-        raise AppError("ERR_CONFIG_0001", f"agent 不存在：{agent_id}", http=400)
-
-    stmt = select(AgentCredential).where(AgentCredential.agent_id == agent_id)
-    # `scalar_one_or_none`：`uk_cred_agent(agent_id)` 保证至多一行（`models/agent.py:92`）
-    cred = (await session.execute(stmt)).scalar_one_or_none()
-    if cred is None:
-        logger.debug("admin agent credential 出参: agent_id=%s 未发凭证", agent_id)
-        return AgentCredentialOut(agent_id=agent_id, credential=None)
-
-    out = AgentCredentialOut(
-        agent_id=agent_id,
-        credential=AgentCredentialItem(
-            kafka_username=cred.kafka_username,
-            topic=cred.topic,
-            active=cred.active,
-            rotated_at=cred.rotated_at,
-            created_at=cred.created_at,
-        ),
-    )
-    logger.debug(
-        "admin agent credential 出参: agent_id=%s active=%s（secret 未读取、未回传）",
-        agent_id,
-        cred.active,
     )
     return out

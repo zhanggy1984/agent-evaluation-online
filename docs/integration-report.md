@@ -807,8 +807,24 @@ J5 真挣到的是**四条结构型事实**：真重算轮确实会发生 / meta
 **收口（2026-09-14，T-3.12 批 2d）：§8.5.1 **不做**，本条在 admin 面的实现部分就此定版**
 
 - **决策（用户 2026-09-14 拍板）**：`§8.5.1` 疑似漏标自动补标 **v1 不实现**，改由**人工补标**（`PUT /interfaces/{id}`，批 2a-1 已验收）承担。依据 = ① 它替代的是一次点击；② 需新增第 7 个 job（`worker/__init__.py` 立有「job 数 = 6」护栏）+ 两处契约歧义 + 审计量治理；③ 见下条。
+  - ⚠️ **2026-09-14 撤除后此句已失效**：`PUT /interfaces/{id}` 已随 §8.5 整节一并撤除（见下方「撤除」收口）⇒ **「改由人工补标承担」这条替代方案现已无载体**，`llm_suspect` 的解除路径**当前为空**。此句保留仅为记录当时的决策依据，**不得作为现状引用**。
 - ⚠️ **「契约有、载体无」第五例（本批实证）**：**`interface` 表 dev 库 0 行、全仓无 INSERT**（`SELECT COUNT(*)`=0；`app/` 内 `Interface` 仅被 SELECT，**无构造点**），模型 docstring 的「事件自动注册」**无载体**；连带 `llm_suspect=1` **零写点**（唯一写点是把 1 置回 0）、`llm_source` 的 `config`/`auto_observed` 零写点、配置键 `llm_call_observe_window_min/threshold` 有 seed 零消费方。**影响面已修正不夸大**：`classify.py:115` 的字典门是**附加**路径，trace 内 `llm_fact` 仍生效 ⇒ 是 **L2 判定退化**，**不是硬断**。**只登记不修**（补写点属同类过设计，等 T-2.5 真实接入后定）。
-- **本条的最终定性**：§8.5 七端点**中六端点已落地**（批 2a-1 四端点 + 2a-2 health + 2b credential 读），第七个 rotate **下移 T-5.3**（infra 侧动作）；§8.5.1 **不做**。⇒ **F-19 在「已实现范围」内闭合**，剩余部分均为**显式裁定不做**，**无未处置待办**。
+- **本条的最终定性（2026-09-14，已被下方「撤除」取代）**：§8.5 七端点**中六端点已落地**（批 2a-1 四端点 + 2a-2 health + 2b credential 读），第七个 rotate **下移 T-5.3**（infra 侧动作）；§8.5.1 **不做**。⇒ **F-19 在「已实现范围」内闭合**，剩余部分均为**显式裁定不做**，**无未处置待办**。
+
+**撤除（2026-09-14，用户拍板）：§8.5 admin Agent 面**整节撤除**——上面「已闭合」的定性就此作废**
+
+- **决策**：用户 2026-09-14 判「**系统管理-Agent 是过度设计，不是必须的**」，选择**整页连 health 卡一起砍**，并在被告知 `POST /agents/{id}/toggle` 是 `backflow_allow` 核心链白名单门（`analyzer/classify.py:188/225`）的运行期唯一开关后，仍确认 **`GET /agents` + `toggle` 一并删**。依据已立为全局约定：`~/.claude/CLAUDE.md`「设计原则 · 不要过度设计和实现」。
+- **撤除范围（站点全集，实测定死，非凭印象）**：
+  - **后端**：`api/admin.py` §8.5 段全文（六端点 `list_agents`/`toggle_agent`/`list_agent_interfaces`/`put_interface`/`get_agent_health`/`get_agent_credential` + 四专用 helper + 四个专用常量）；`api/schemas.py` 七个模型（`AgentAdminOut`/`InterfaceAdminOut`/`InterfaceListOut`/`InterfaceUpdateRequest`/`AgentHealthOut`/`AgentCredentialItem`/`AgentCredentialOut`）。**`api/admin.py` 的 §8.6 面（configs/users）不受影响**。
+  - **连带孤儿（心跳读路径）**：`store/es.py` 的 `build_heartbeat_body` / `summarize_heartbeats` / `fetch_heartbeats` / `_SOURCE_FORM_A` —— 四个符号**只被 health 端点消费**，留在仓里即死码，故一并删。**代价（已知情）**：`summarize_heartbeats` 里那条「`dropped` 取最新快照而非窗内求和」的修正口径随之离开代码（该结论仍在本文件与提交历史中）。
+  - **测试/探针**：`test_api_admin_agents.py` / `test_api_admin_health.py` / `test_api_admin_credential.py` / `integration/admin_agents_probe.py` / `integration/admin_health_probe.py` / `integration/admin_credential_probe.py` 六个文件整删。
+  - **前端**：`views/AdminAgentsView.vue` 整删 + `router/index.ts`（import + 路由）+ `App.vue` 菜单项 + `api/admin.ts` 六函数 + `api/types.ts` §8.5 类型段。⇒ **§9.2 的 admin 页面由三页回到两页**（`/admin/configs`、`/admin/users`）。
+- **⚠️ 两处代价，明写不做隐瞒**：① **`agent.backflow_allow` / `enable` 此后无运行期写入面**，只能改库或改 seed，**且不留审计**；② **「agent 到底有没有在往 Kafka 报数」失去唯一界面**。
+- **替代观测口径（不留白）**：health 卡读的是 ES 事件 index 里 `node=heartbeat` 的 doc，直查即等价手段——在事件 index pattern（`es.py:index_patterns` = `{event_index_prefix}-*`）上查
+  `{"query":{"bool":{"filter":[{"term":{"node":"heartbeat"}},{"term":{"agent":"<agent 名>"}},{"range":{"ts":{"gte":<now-5min 毫秒>}}}]}},"sort":[{"ts":"desc"}],"size":1}`。
+  命中即「窗内有上报」，取 `_source.dropped` 得该 agent 当前累计丢弃态（**进程内累计、consumer 重启归零**）；无命中 = 窗内无心跳（**区分不了「从未接入」与「曾接入但断联超窗」**，窗 = `keyword_search_days`）。
+- **验证**：后端 `ruff app/ tests/` 全绿 + `pytest tests/ --ignore=tests/integration` **478 passed**（较撤除前 520 少 42 例，即 §8.5 三个测试文件）；前端 `vue-tsc --noEmit` 干净 + `vitest` **133 passed**；`grep` 复核前后端均无残留引用。
+- **未覆盖（如实标注）**：浏览器 e2e 未做（撤除页面本可用「访问 `/admin/agents` 得 404」验，未执行）；路由**兜底项**在首次 `sed` 删除时被连带删掉、已当场复原——**该复原动作由 `vue-tsc` 与单测兜住，但兜底路由本身无专门测试**。
 
 ---
 

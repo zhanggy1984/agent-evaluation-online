@@ -9,7 +9,9 @@
   该 trace 永不回流且 offset 已推进不可找回。ES 失败走显式丢弃（§4.1 step5「不静默丢」；
   spool 归二期，ES 非判定源，分析/回流不依赖 ES）；超阈值只计数不阻塞判定主链。
 - **自监控（form A，§14.1 S-2「selfmonitor 可见」）**：进程内按 (agent, reason) 计数 +
-  周期 60s 写 `node=heartbeat` 心跳 doc 到事件 index（健康卡 §8.5 聚合源）；同时消费
+  周期 60s 写 `node=heartbeat` 心跳 doc 到事件 index（~~健康卡 §8.5 聚合源~~ **2026-09-14：
+  §8.5 health 端点已随整节撤除 ⇒ 本心跳的读取面改为直查 ES**——`node=heartbeat` +
+  `term agent` + ts range，取最新一条即该 agent 当前累计态）；同时消费
   `obs.selfmonitor`（SDK 心跳，§3.6）透写入同一 index。已判定 trace 的 judged 冻结防
   重放；R-21 迟到 root：judge 后 root_ok 0→1 且 status∈{error,timeout} → apply_event
   CAS 置位 `root_late_complement`，`_step4_db` **同事务**调 state.root_late_complement
