@@ -18,6 +18,11 @@ from app.core.errors import AppError
 _ALG = "HS256"
 
 
+def hash_password(plain: str) -> str:
+    """口令哈希（bcrypt，str 形态落库）。唯一入口——seed 与 admin 建号/改密共用，防两处实现漂移。"""
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
 def verify_password(plain: str, password_hash: str) -> bool:
     """口令校验（bcrypt；hash 为 seed 落库的 str 形态）。"""
     try:

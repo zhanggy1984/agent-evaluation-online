@@ -1,11 +1,12 @@
 """运行时键读取（detail §10 / §8.2 检索护栏）：dict_config 全局标量键 → 查询护栏参数。
 
-- **范围最小（阶段 1 收尾批）**：只读本批用到的全局键（keyword_search_days /
-  trace_query_timeout_ms）；per-agent 覆盖键（agent_id 非 NULL）与配置管理接口属阶段 2
-  配置面，不做。
+- **范围**：只读本批用到的全局键（keyword_search_days / trace_query_timeout_ms）。
+  （**2026-09-14 订正**）per-agent 键的读取在 `converter/no_fallback_cfg.py`（组装瞬间读，
+  不走本层缓存）；配置**管理面**（§8.6 写侧）已由 T-3.12 落地于 `api/admin.py`——写入后调
+  本模块 `invalidate_cache()` 清缓存。
 - **60s 进程内缓存**：对齐阶段 2 O-1 护栏先例（metric_agg_cache_ttl_s=60），避免 trace
-  列表每次检索都多一次 MySQL 往返（计划自审薄弱点 #2 预埋）；配置变更生效延迟 ≤60s，
-  配置面落地前可接受。
+  列表每次检索都多一次 MySQL 往返（计划自审薄弱点 #2 预埋）；无配置写入时生效延迟 ≤60s，
+  **经 §8.6 写入的变更因 `invalidate_cache()` 而即时生效**。
 - **缺键回退**：seed 已写全局键默认（7/3000），但查询层仍须防御缺行（库未 seed / 被删），
   缺键时返回调用方默认值并同样缓存 60s，防缺键每请求打库。
 - 表口径：config_value 为 JSON 列，seed 以 json.dumps(标量) 落库 → ORM 读出原生 int 等
@@ -23,6 +24,15 @@ from app.models.config import DictConfig
 
 _DEFAULT_TTL_S = 60
 _cache: dict[str, tuple[float, Any]] = {}
+
+
+def invalidate_cache() -> None:
+    """清空进程内缓存（§8.6 配置写入后调用）。
+
+    单实例（uvicorn --workers 1）语义下即「变更即时生效」；多实例部署时本函数只清本进程
+    缓存，其余实例仍受 60s TTL 约束——届时应改为跨进程失效机制。
+    """
+    _cache.clear()
 
 
 async def get_global_config(

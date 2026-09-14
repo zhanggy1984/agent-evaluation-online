@@ -321,3 +321,25 @@ export interface BackflowQuery {
   page?: number
   page_size?: number
 }
+
+// ---------- admin 系统管理（§8.6，T-3.12 批 1） ----------
+
+export interface AdminConfigItem {
+  agent_id: number | null
+  key: string
+  value: unknown
+  version: number
+  // version=0 且 isDefault=true = 库内无行、此处回显 seed 默认值
+  updated_by: string | null
+  updated_ts: string | null
+  is_default: boolean
+}
+
+export interface AdminUserOut {
+  id: number
+  username: string
+  display_name: string | null
+  role: string
+  status: number
+  created_at: string | null
+}

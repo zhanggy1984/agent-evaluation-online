@@ -14,6 +14,7 @@ const router = useRouter()
 const user = ref(readStoredUser())
 watch(() => route.fullPath, () => { user.value = readStoredUser() })
 
+// adminOnly：系统管理（T-3.12 批 1）仅 admin 可见——前端隐藏只是 UX，后端 403 才是权威
 const MENUS = [
   { name: 'overview', label: '总览' },
   { name: 'interfaces', label: '接口' },
@@ -21,7 +22,11 @@ const MENUS = [
   { name: 'llm-failures', label: 'LLM 失败' },
   { name: 'traces', label: '链路查询' },
   { name: 'backflow', label: '回流看板' },  // P2-6：第六个一级菜单（detail §9.1 登记）
+  { name: 'admin-configs', label: '系统管理 · 配置', adminOnly: true },
+  { name: 'admin-users', label: '系统管理 · 账号', adminOnly: true },
 ]
+
+const visibleMenus = computed(() => MENUS.filter((m) => !m.adminOnly || user.value?.role === 'admin'))
 
 // 详情页下钻共用父菜单高亮（trace-detail → 链路查询；backflow-cluster → 回流看板）
 const activeName = computed(() => {
@@ -59,7 +64,7 @@ onUnmounted(() => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired))
       </div>
       <nav class="menu">
         <router-link
-          v-for="m in MENUS" :key="m.name"
+          v-for="m in visibleMenus" :key="m.name"
           class="menu-item" :class="{ on: isActive(m.name) }"
           :to="{ name: m.name }"
         >{{ m.label }}</router-link>

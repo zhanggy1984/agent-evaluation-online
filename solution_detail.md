@@ -1064,7 +1064,7 @@ CREATE TABLE `trace_judge_state` (
 | Method & Path | 权限 | 说明 |
 |---|---|---|
 | `POST /auth/login` | 公开 | body `{username,password}` → `{access_token(15min), refresh_token, user{id,role}}`；失败计数锁定（§13.2） |
-| `POST /auth/refresh` | 公开(refresh) | body `{refresh_token}` → 新 access/refresh；吊销即时生效（token version） |
+| `POST /auth/refresh` | 公开(refresh) | body `{refresh_token}` → 新 access/refresh；吊销即时生效（**2026-09-14 订正：实机机制 = 旧 session 行 `revoked_at` 落时，不是 token version**——全仓无 `token_version` 列） |
 | `POST /auth/logout` | 登录 | revoke refresh 会话；body = `{refresh_token}`（**必填**，`min_length=1`，§8.1 `LogoutRequest`）——前端 `api/auth.ts` 从 `localStorage['obs_refresh']` 取值传入；**幂等**（重复调用不报错，`test_api_auth.py::test_logout_idempotent_revokes`） |
 | `GET /auth/me` | 登录 | 当前用户 + 角色 |
 
@@ -1138,12 +1138,14 @@ CREATE TABLE `trace_judge_state` (
 > **（2026-09-14 追补）** 同 §8.5 —— 本条「整节未实现」**已确认为一期欠债**（`solution.md` §12.1 系统管理归 P2），已立 `task.md` **T-3.12**（登记见 `docs/integration-report.md` §6 **F-19**）。连带的 `ERR_CONFIG_0001` **无抛出点**亦随 T-3.12 一并处置。
 
 > **（v1.23 反查订正）本节整节未实现** —— 同 §8.5：无实现、无挂载。**连带**：§8.9 的 `ERR_CONFIG_0001` 因此**无抛出点**（admin 写入面未实现）。
+>
+> **（2026-09-14 T-3.12 批 1 落地）本节已实现**（`app/api/admin.py`，挂 `/api/v1/admin/*`；上一行的「未实现」与「无抛出点」**均已被本笔推翻**）：配置读/写（含 `version` 自增 + `config_change` 审计）、账号 CRUD（禁用 = `status=0` + 撤销会话）。**交付回填见 `task.md` T-3.12**；**§8.5 仍未实现**（勿据本条外推）。
 
 | Method & Path | 说明 |
 |---|---|
 | `GET /configs?agent=` | dict_config 全量；**分「v1 生效 / 二期规划（灰置）」两组渲染**（§9.1/§9.2 两组渲染规则；后端只返回 v1 键，二期键不建） |
 | `PUT /configs` | body `{agent_id?, key, value}` → 写 dict_config，`version+1`、记审计（admin-only；detail 记到 **config_key 粒度 + 旧/新值摘要**，§13.5；词表键变更特别提示 §10） |
-| `GET /users` `POST /users` `PUT /users/{id}` | 账号 CRUD：角色 admin/viewer、启停（禁用即吊销会话，token version+1，§13.2） |
+| `GET /users` `POST /users` `PUT /users/{id}` | 账号 CRUD：角色 admin/viewer、启停（**2026-09-14 订正：禁用 = `status=0` + 撤销该用户全部未撤销 `user_session`；原文「token version+1」与实现不符**，`user` 表无该列，详见 §13.2 订正） |
 
 ### 8.7 平台间（D20；offline 服务凭证，独立最小面）
 
@@ -1192,7 +1194,7 @@ CREATE TABLE `trace_judge_state` (
 
 ### 8.8 鉴权与守卫要点（后端）
 
-- 平台 JWT：短效 access(15min) + refresh(7d)；token version 吊销；失败锁定。
+- 平台 JWT：短效 access(15min) + refresh(7d)；**吊销 = session 行 `revoked_at` + `user.status`（2026-09-14 订正：原文「token version 吊销」与实现不符——无该列，`api/auth.py:4-8` 明写不做该迁移）**；失败锁定。
 - 路由级：`viewer` 可访问 8.1~8.4；`admin` 才可 8.5/8.6 + 8.4 中 admin 动作；**前端隐藏 + 后端二次鉴权双保险**。
 - 平台间端点仅接受 evaluator 服务凭证（独立签发路径），不接平台 JWT。**v1.23 实证口径（据实收敛，此前版本描述的 JWT/scope 机制 online 从未实现）**：online 的服务凭证实现 = **静态预共享 secret**（`api/deps.py:50-58` `require_evaluator`，`secrets.compare_digest` 比对 `settings.evaluator_service_secret`），**非 JWT service token**——offline 文档 §9 设计的 `iss`/`scope`/`exp` 体系 online 侧**未采用**。故：**pull/ack 与结果推送三端点共用同一 secret，不做 scope 分置**；接受「推送凭证可调 pull 面」的耦合，凭证分置与轮换一并归 `#2` credential 缺口批。**online 侧不再持有任何 offline 出站凭证**（原 `BACKFLOW_INBOUND_SECRET` 概念整条作废）。
 - 正文查看需 viewer + 接口 `body_search=true`（无 per-agent 授权域，R2）；`body_search=false` 时后端响应前置空正文（§8.2 注/§13.4）。
@@ -1211,7 +1213,7 @@ CREATE TABLE `trace_judge_state` (
 | `ERR_CLUSTER_0001` | 404 | cluster/link 不存在 |
 | `ERR_CLUSTER_0002` | 409 | CAS 状态冲突（他人已操作），返回当前状态 |
 | `ERR_CLUSTER_0003` | 400 | 非法迁移（如 active case 人工 invalidate；claim 缺 fix_version）。**ack 前置不符时（契约修订 R3）响应体带当前 `offline_status`+`invalidate_reason`**（供 offline 对账 manual-invalidate 竞态等，§8.7） |
-| `ERR_CONFIG_0001` | 403 | 词表等 admin-only 键变更被拒（**v1.23 反查订正：本码当前无抛出点** —— 对应的 admin 配置写入面 §8.6 整节未实现） |
+| `ERR_CONFIG_0001` | 400 | **（2026-09-14 T-3.12 批 1 落地，此前无抛出点）** admin 配置/账号写入的**参数类**拒绝：未登记键 / 值形状不符 / 越作用域写 / agent 不存在 / 用户名重复 / 自停用（防锁死）。**403 的「角色不足」不由本码承担**——走 `require_admin` 的 `ERR_AUTH_0002` |
 | `ERR_PULL_0001` | 401 | evaluator 凭证无效 |
 | `ERR_PULL_0002` | 400 | case_type 非白名单 / schema_version 不识别（返回空集约定在 8.7，强校验失败 400）；**结果推送载荷不合法**（`pass_fail='na'` 缺 `error_type` R-22 不变量、`finished_ts` 非 ISO8601、载荷内 `case_id` 重复，§8.7）；**模型层校验失败**（字段缺失 / 类型不符 / 枚举外）**不在本码范围 —— 走 FastAPI 默认 422，不带 `ERR_PULL_*` 码**，见 §8.7 |
 | `ERR_PULL_0003` | 404 | payload_id 不存在（对**已知** payload_id 的重复 ack = 200 幂等成功；对**未知** payload_id = 404；§7.3 ack 矩阵） |
@@ -1413,7 +1415,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 
 ### 13.1 平台用户域（JWT）
 
-- 短效 access（15min）+ refresh（7d）双 token；口令 bcrypt + 登录失败锁定（5 次/15min）；**token version** 吊销（用户禁用/改密 `user_version+1` → 历史 token 全失效）。
+- 短效 access（15min）+ refresh（7d）双 token；口令 bcrypt + 登录失败锁定（5 次/15min）；**会话吊销**（**2026-09-14 订正**：用户禁用 → `status=0` + 撤销该用户全部未撤销 `user_session`；改密 → 同法吊销。原写「token version / `user_version+1`」**全仓无该列、无该字段**，属文档与实现不符，已按实机机制订正——**未加列去迁就文字**）。
 - viewer/admin 两角色（R2 无 per-agent 数据隔离）；admin-only 路由前端隐藏 + 后端二次鉴权。
 
 ### 13.2 agent 上报域（Kafka SASL/TLS + ACL，R3 首版即上）

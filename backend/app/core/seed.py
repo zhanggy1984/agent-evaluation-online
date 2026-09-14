@@ -21,12 +21,12 @@ import asyncio
 import json
 import sys
 
-import bcrypt
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings, get_settings
 from app.core.log import get_logger
+from app.core.security import hash_password
 
 logger = get_logger("app.core.seed")
 
@@ -94,10 +94,8 @@ async def _seed_admin(conn, settings: Settings) -> None:
         raise RuntimeError(
             "admin_password 为空：seed init_admin 不落弱口令，请在 backend/.env 配置 ADMIN_PASSWORD"
         )
-    pw_hash = bcrypt.hashpw(settings.admin_password.encode("utf-8"), bcrypt.gensalt()).decode(
-        "utf-8"
-    )
-    # 已存在 username 则跳过（不改口令；改密走用户管理，token version+1 吊销）
+    pw_hash = hash_password(settings.admin_password)
+    # 已存在 username 则跳过（不改口令；改密走 §8.6 用户管理，重置口令 + 撤销该用户全部会话）
     await conn.execute(
         text(
             "INSERT INTO `user` (username, password_hash, display_name, role, status) "

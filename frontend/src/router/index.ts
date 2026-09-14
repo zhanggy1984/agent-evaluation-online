@@ -5,6 +5,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import { accessToken } from '../api/client'
+import AdminConfigsView from '../views/AdminConfigsView.vue'
+import AdminUsersView from '../views/AdminUsersView.vue'
 import AnomaliesView from '../views/AnomaliesView.vue'
 import BackflowClusterDetailView from '../views/BackflowClusterDetailView.vue'
 import BackflowView from '../views/BackflowView.vue'
@@ -57,6 +59,20 @@ const router = createRouter({
       path: '/backflow/clusters/:clusterId',
       name: 'backflow-cluster',
       component: BackflowClusterDetailView,
+      meta: { requiresAuth: true },
+    },
+    // 系统管理（T-3.12 批 1 / detail §8.6）：admin-only。守卫只判登录态（无角色守卫，
+    // 与既有页面同口径）——非 admin 直连此路径由后端 403 拦下，前端隐藏菜单只是 UX。
+    {
+      path: '/admin/configs',
+      name: 'admin-configs',
+      component: AdminConfigsView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/admin/users',
+      name: 'admin-users',
+      component: AdminUsersView,
       meta: { requiresAuth: true },
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

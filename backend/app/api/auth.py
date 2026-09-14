@@ -1,9 +1,11 @@
 """平台登录与会话（detail §8.1）：POST /auth/login、/auth/refresh、/auth/logout、GET /auth/me。
 
 - **最小闭环边界（2026-09-08 阶段 1 收尾批显式标注）**：失败锁定为进程内计数（backend 容器
-  uvicorn --workers 1 单实例前提；重启清零可接受）；不做 token-version 列迁移 / admin user CRUD
-  （属 §8.6 后续面）——本面由 refresh 会话吊销（UserSession.revoked_at）+ 账号 status 校验 +
-  access 15min 短效覆盖最小闭环。缺口显式化而非静默。
+  uvicorn --workers 1 单实例前提；重启清零可接受）；**不做 token-version 列迁移**（该机制不存在，
+  见下）——本面由 refresh 会话吊销（UserSession.revoked_at）+ 账号 status 校验 + access 15min
+  短效覆盖最小闭环。缺口显式化而非静默。
+- **admin user CRUD 已于 2026-09-14 落地**（§8.6，`app/api/admin.py`，T-3.12 批 1）——**本注释原写
+  「属 §8.6 后续面」已过期**；禁用/改密走 `status=0` + 撤销该用户全部未撤销会话，与本文件同机制。
 - refresh 轮换：旧 session 吊销 + 新 access/refresh 重签（吊销即时生效；§8.1「token version」
   在本最小面 = session 行级吊销）。
 - 时间口径：MySQL DATETIME3 无时区，统一存 naive UTC（datetime.now(timezone.utc) 去 tz）。

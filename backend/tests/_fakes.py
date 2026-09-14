@@ -40,6 +40,13 @@ class FakeResult:
     def scalar(self):
         return self._row
 
+    def scalars(self):
+        """`.scalars().all()` 语义：本替身按等值匹配只取首行 → 返回 0/1 行列表。
+
+        （多行场景由真库探针覆盖——替身假装支持会造假绿。）
+        """
+        return FakeRows([] if self._row is None else [self._row])
+
 
 def _eq_conds(whereclause):
     """提取 AND 等值条件 {列key: 值}（auth 查询全是这种形态）。"""
@@ -163,6 +170,12 @@ class FakeAsyncSession:
 
     async def flush(self):
         pass
+
+    async def refresh(self, obj, *args, **kwargs):
+        """no-op：替身无「服务端默认列」（created_at 等）与 AUTO_INCREMENT 语义。
+
+        真库读回语义由 `tests/integration/admin_probe.py` 覆盖——替身假装支持会造假绿。
+        """
 
     def begin_nested(self):
         return _NullSavepoint()

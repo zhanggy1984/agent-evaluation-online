@@ -37,25 +37,30 @@
 
 ---
 
-## 2. 词表（`fallback_utterance`）维护流程 —— ⚠️ **当前无执行载体**
+## 2. 词表（`fallback_utterance`）维护流程 —— ✅ **执行载体已于 2026-09-14 落地**（T-3.12 批 1）
 
 **设计要求**：`task.md:185` 「新增兜底话术即补词表、**admin-only 留审计**」；代码注释同口径——`converter/no_fallback_cfg.py:4-5`「`fallback_utterance` 的 version 即 D19 `wordlist_version`，**变更 +1，admin-only**」。
 
-**实现现状（2026-09-14 实测）**：
+**实现现状（2026-09-14 复查；T-3.12 批 1 落地后）**：
 
 | 环节 | 现状 | 证据 |
 |---|---|---|
 | 读取（组装瞬间） | ✅ 有 | `converter/no_fallback_cfg.py:47`（`parse_words(row.config_value), row.version`） |
-| **写入端点** | ❌ **无** | `api/router.py:13-20` 只挂 auth/backflow/metrics/pull/trace 五个 router，**无 config/admin 写面** |
-| **admin 角色门控** | ❌ 无（无端点可挂） | `deps.py:44-47` `require_admin` 存在，但**无路由使用它写 `dict_config`** |
-| **审计落点** | ❌ 无 | 审计表 `conversion_record` 仅被回流链路写，**词表变更无写入路径** |
-| **version 自增** | ❌ 无实现 | `models/config.py:23-24` 仅有字段默认值与注释；全仓无 `version = version + 1` |
+| **写入端点** | ✅ **有**（2026-09-14 落地） | `api/admin.py` 的 `PUT /api/v1/admin/configs`（`fallback_utterance` **走同一路径不特判**） |
+| **admin 角色门控** | ✅ 有 | 同一 router 全部端点挂 `AdminUser`（`deps.require_admin` → 403 `ERR_AUTH_0002`） |
+| **审计落点** | ✅ 有 | 写侧落 `conversion_record(action="config_change", cluster_id=NULL, detail=旧→新摘要)` |
+| **version 自增** | ✅ 有 | 每次写入 `version + 1`（即 D19 `wordlist_version`；探针实测「组装读侧读到新 version」） |
 
-**⇒ 结论（写清楚，避免误读）**：**「新增兜底话术即补词表」这条流程，运营期无法执行**——唯一的生产侧写入是 seed 落初始空表（`core/seed.py:154-177`，且 `ON DUPLICATE KEY UPDATE updated_ts = updated_ts`，**只补缺省、不覆盖人工值**）。
+**⇒ 操作路径（当前可行）**：`/admin/configs` 页（admin 登录后菜单「系统管理 · 配置」可见）→ 该页当前**只列全局键**；词表的 per-agent 写入**已具备后端端点**（`PUT /admin/configs` 带 `agent_id`），**UI 尚未提供 per-agent 编辑入口** ⇒ 词表变更**当前需直接调端点**（带 admin access token），**不能只靠界面完成**。
 
-**归口 = `task.md` T-3.12**（「系统管理面（admin）补实现」，其范围**明写含 `dict_config` 配置**）——**已在册，无需新立**；本条把「词表写入 + version 自增 + 审计」**显式列为 T-3.12 的验收内容**，防它在实现时被漏掉。
+**⚠️ 部署语义（本批 e2e 实测踩到，写下来防复踩）**：本仓**前后端更新方式不同**——
+- **后端是热挂载**（`docker-compose.yml:45-47` `./backend:/app`），**改代码后 `docker compose restart backend` 生效，无需 rebuild**；**新增模块（如本批 `api/admin.py`）必须 restart**，否则该路由在运行进程里根本不存在 ⇒ 表现为**页面上接口 404**（不是 403、不是报错）——我这次首访 `/admin/configs` 就撞上这个 404。
+- **前端是构建产物**（`docker-compose.yml:94-98` `build: ./frontend` + nginx 静态服务），**改前端必须 `docker compose build frontend && docker compose up -d frontend`**，重启容器**无用**（镜像里还是旧 dist）。
 
-**过渡期建议**：在 T-3.12 落地前，词表变更**只能由开发直接改库**（无 UI、无审计、无 version 自增）——**这会造成 `wordlist_version` 失真**，而该 version 是 D19 信封的组成部分。**故过渡期应避免改词表**；确需变更时，须同步手工维护 `version`，并知悉该操作**不留审计**。
+**⚠️ 三条仍要记住的现实**：
+1. **审计看得见落库、看不见界面**：配置变更行已写 `conversion_record`，但**跨 cluster 的审计读面未实现**（归 **`T-3.13`**）⇒ 界面上**没有**「词表变更历史」可查，核对只能查库。
+2. **空词表合法**：写入 `[]` 不会被拒——它是 **fail-closed 载体**（`words==[]` 时 offline 结构自检 `content_gap` 判不过，§6.3 step3）。**误清空会让该 agent 的兜底判定全部进回流候选**，运维须自重（本步**不设**二次确认）。
+3. **筛选能力有限**：审计 v1 只支持 `action` + `操作人` + 时间窗，**按 `config_key` 筛选未实现**（自由文本 `detail` 无索引，要做需加列）——已登记为已知限制（`task.md` T-3.12 回填）。
 
 ---
 
@@ -65,7 +70,7 @@
 |---|---|---|
 | ES 事件/日志保留 | ✅ **ILM 30 天已登记**（delete `min_age: 30d`），两个 template 均已挂载 | `es-template/obs-ilm-policy.json:15-20`、`obs-event-template.json:13`、`obs-log-template.json:13` |
 | 审计表 | ✅ `conversion_record` | `models/error_flow.py:143-162` |
-| 审计**读面** | ⚠️ **仅 cluster 详情内嵌**，无独立列表/检索端点 | `api/backflow.py:555-558/590-596/608`（仅 `GET /backflow/clusters/{id}` 返回 `conversions`） |
+| 审计**读面** | ⚠️ **仅 cluster 详情内嵌**，无独立列表/检索端点（**配置变更行 `cluster_id=NULL` ⇒ cluster 详情里也看不到**） | `api/backflow.py:555-558/590-596/608`（仅 `GET /backflow/clusters/{id}` 返回 `conversions`） |
 | 审计**导出** | ❌ **无** | 全仓 grep `csv\|export\|StreamingResponse\|FileResponse\|Content-Disposition` **零命中** |
 
 **⚠️ 运营含义**：**跨 cluster 的审计检索与导出当前做不到**——只能逐个 cluster 打开详情看。这在「统计某时间段内人工处置了多少条」这类运营诉求下**不可用**。
@@ -102,7 +107,7 @@
 | # | 边界 | 性质 | 登记 |
 |---|---|---|---|
 | 1 | 「回查结果未达」前端不呈现 | 实现缺口 | F-18（挂 T-4.11 残留） |
-| 2 | 词表变更无写入面/无审计/无 version 自增 | 实现缺口 | T-3.12（范围内） |
+| 2 | ~~词表变更无写入面/无审计/无 version 自增~~ **已闭合**（2026-09-14，T-3.12 批 1）；**残留** = 词表 UI 无 per-agent 编辑入口、审计无读面（→ T-3.13）、审计不可按 key 筛选 | 部分闭合 | T-3.12 回填 / T-3.13 |
 | 3 | 审计跨 cluster 检索与导出不可用 | 缺实现（**运营需求驱动，非文档欠债**） | **`T-3.13`**（未开工，不阻塞放量） |
 | 4 | rollup 缺口**写侧**无持久标记 | 设计要求有、实现无对象 | F-13 |
 | 5 | 无任何外部告警通道 | 设计如此（不设时钟、非告警） | `api/backflow.py:320/421` |
@@ -118,7 +123,7 @@
 | 运营手册（本文件） | ✅ 本轮交付（**带 7 条边界对照**） |
 | 看板口径文档（双指标 + 缺口语义） | ✅ §4 |
 | 归口一览（owner） | ✅ §0 |
-| 回归假绿残余承认 + 词表维护流程 写入 SOP | ⚠️ **流程已写（§2），但无执行载体** ⇒ 随 T-3.12 落地方可执行 |
+| 回归假绿残余承认 + 词表维护流程 写入 SOP | ✅ **流程已写（§2）且执行载体已落地**（T-3.12 批 1）；**残留** = per-agent 词表无 UI 入口（需调端点） |
 | TTL 告警 owner 明确 | ✅ §0（含「无告警通道、不设时钟」两条否定口径） |
 | 保留期与审计导出 | ⚠️ 保留期 ✅ / **导出缺实现 → 已立 `T-3.13`**（§3；不阻塞放量） |
 | **验证目标：维度 3 开放验收在真实 agent 上最终复验** | ❌ **未达成**——需真实 agent，卡 T-2.5 |
