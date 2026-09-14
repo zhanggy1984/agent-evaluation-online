@@ -76,7 +76,7 @@ export function adminAgentInterfaces(agentId: number): Promise<AdminInterfaceLis
   return api<AdminInterfaceListOut>(`/admin/agents/${agentId}/interfaces`)
 }
 
-// agent 上报健康卡（§8.5）：读 ES 心跳 doc——last_seen_ts 为 null = 窗内无心跳（未接入 SDK）
+// agent 上报健康卡（§8.5）：读 ES 心跳 doc——last_seen_ts 为 null = 查询窗内无心跳（前端文案不再断言「未接入 SDK」）
 export function adminAgentHealth(agentId: number): Promise<AdminAgentHealthOut> {
   return api<AdminAgentHealthOut>(`/admin/agents/${agentId}/health`)
 }

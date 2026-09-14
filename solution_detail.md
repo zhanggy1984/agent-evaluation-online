@@ -34,6 +34,11 @@
 > 修订记录：2026-09-14 **v1.26（`search_after` 陈旧口径全站订正，纯文档）**——① **对象**：「关键字检索深翻页」在 v1.23 契约期已由 `search_after` 改为 **`collapse(trace_key)` + `from/size` 偏移翻页**（深度上限定在 `offset ≥ 200` → 400 `ERR_TRACE_0002`），§8.2 已同步；但**同一口径散落于本文件 §14.1 S-5 行与另两份文档**，v1.24 只改了 §14.5 用例表的 X-4 一处 ⇒ **漏改 3 处**。② **本版改动（3 处，零代码）**：本文件 **§14.1 表 S-5 期望列**；`solution.md` **关键字查询段**（原文「search_after 深翻页，避免大 from 偏移拖垮租户档节点」**理由与实现相反**——实现恰是 `from/size` 偏移，上限定在 200，已改为「`collapse(trace_key)` + `from/size` 偏移翻页 + `offset ≥ 200` → 400，**深度设上限以避免无界 from 偏移**」）；`task.md` **T-1.4 验证目标 S-5**。③ **根因** = 改动范围被默认等同「§14.5 用例表」，而该口径是**跨文档散落拷贝**——**「先改记得的几处」必然漏，且漏的恰是未建模的那份**（同 F-11 族失效模式）。④ **终检** = 全仓 `*.md` 内 `search_after` 仅余**引述/订正**上下文，零未订正站点。⑤ 本版**零代码改动、零判据变更**。
 
 > 修订记录：2026-09-14 **v1.27（T-3.11 ③「型 D」取证与订正：`watch` 值域漏两值，纯文档）**——① **来路**：`task.md` T-3.11 ③ 登记「型 D 4 条（代码有、文档无）」，其中一条原写「`status`/`watch` 实有 4 值而文档写 2」。② **取证结论（逐条核，不看登记摘要）**：(a) `status` **双侧一致**（`backflow.py:490` = `open/claim/fixed/inactive/needs_review`，§8.4 本表逐字相同）⇒ **该半边登记不实**，无需改；(b) **`watch` 确有漏**——代码 `backflow.py:491` = `Literal["assembled","draft","active","invalidated"]` **四值**，本表原写「`watch=assembled/draft`」**漏后两值** ⇒ **已补为四值全枚举**（语义 = 现行 pending link 的 `offline_status`）；(c) 「`result_overdue`/`result_gap_suspected` 未进文档」两字段：`result_gap_suspected` **两侧齐全**（§9.2/§8.4 有语义、前端 `types.ts:308` + `DetailView.vue:328` + 单测）；`result_overdue` **语义已文档化**（本文件 §8.4 第 1046 行 / §9.3 第 1255 行「回查结果未达（疑似 offline 停摆），人工核查」）——**但暴露另一层：前端零消费**（`frontend/src/` 内 `overdue` **零命中**：无类型声明、无渲染、无单测），即 §9.3 要求的呈现面**在线侧不存在** ⇒ 已另行登记为 `docs/integration-report.md` §6 **F-18**；(d) logout body 契约 / `/traces` total cardinality 两条**已于 2026-09-11（`105cd3e`）补毕**。③ 本版**零代码改动、零判据变更**。
+> 修订记录：2026-09-14 **v1.28（T-3.12 批 2a-2：§8.5 health 端点落地 + 一处判据外推的订正）**——① **落地**：`GET /admin/agents/{id}/health` 按实机实现（`app/api/admin.py` + `app/store/es.py`），**两处按实机订正** = (a) **不返回 `spool_pending`**（§3.6 心跳 body 定义含该字段，但**双端都无写入方**：平台侧 `consumer/main.py:76-83` 构造的 doc 只有 `{node, agent, ts, dropped, source}`、SDK 侧 grep 零命中）；(b) **`dropped` 取最新一条心跳的快照、不做窗内求和**（它是 consumer **进程内累计计数**，`consumer/main.py:87` 逐字「按 (agent, reason) 累加，心跳任务定期快照」——窗内每条写的是**同一个累计值**，求和等于重复相加；实测二者差三个数量级）。
+> ② **判据外推的订正（本版最该记的一条）**：§8.5（`:1134`）/ §9.1（`:1238`）/ §3.6（`:434`）/ §9.2 页面表（`:1253`）四处原把「**无 `last_seen`**」写成「**未接入 SDK**」——但该判据承载的只是「**查询窗内无心跳**」（窗 = `keyword_search_days`），**区分不了「从未接入」与「曾接入但断联超窗」**，把后者说成前者**方向相反**（前者是待办、后者是故障）。已四处同步收窄，前端渲染文案由「未接入 SDK（查询窗内无心跳上报）」改为「**查询窗内无心跳上报**」。⚠️ **教训**：该外推**不是前端文案随手写的，而在 §9.1 的判据定义里**——前端只是**照文档实现** ⇒ 订正必须**文档与实现同步**；只改那个字符串会立刻留下新的「文档↔实现不符」。站点全集 = 16 处 / 8 文件（渲染面仅 1 处），残留的「未接入」字样**均为订正上下文里的引述**。
+> ③ **前端卡片**：「丢弃计数」旁标注 `（进程内累计快照，重启归零）`（**仅 `dropped` 非空时显示**），与页脚那段完整说明并存——**读数与口径提示原先隔着一整张表**，而误读方向是「以为数据恢复了」（安全性误判，故上移）。
+> ④ **验证**：单测 **512 passed** / ruff 全绿 / 真库真 ES 真 Kafka 探针 **12-12** / 前端 type-check + **133 单测** / 浏览器 e2e **三分支渲染**（无心跳 → 新文案；有心跳且有 `dropped` → 带标注；有心跳但 `dropped` 空 → 标注不显示）。
+> ⑤ 本版**零判据变更**——收窄的是**文案对判据的表述**，判据本身未动；health 批量面挂账见 `task.md` **T-3.14**（容量型、缺输入）。
 
 ---
 
@@ -431,7 +436,7 @@ kafka-python producer (topic obs.agent.<name>)
 
 **自监控信号（v1.1 裁定）**：用专用 topic `obs.selfmonitor`（与业务 topic 同建同 ACL，§3.3/§13.2）承载每 agent **心跳** `{agent, sent_ok, dropped, spool_pending, ts}`（1/min，随批次 flush 附带发送，不单独起连接）。
 
-> **（2026-09-14 取证订正，批 2a-2）** 上式**与实机不符**：平台侧 `consumer/main.py:76-83` 的 `build_heartbeat_doc` 构造的 doc 只有 `{node, agent, ts, dropped, source}`，**无 `sent_ok` / `spool_pending`**；SDK 侧 `grep -rn 'spool_pending\|sent_ok' sdk/obs_sdk/*.py` **零命中**（2026-09-14 实测）⇒ 该两字段**双端都无写入方**。另：`dropped` 是 consumer **进程内累计计数**（同文件 `:87` 逐字「按 (agent, reason) 累加，心跳任务定期快照」），**不是**窗口增量——读侧取最新一条快照，切勿按窗求和。backend 消费后写入事件 index（以 `node=heartbeat` 区分，不进入业务 node 枚举），前端 /admin/agents 页出「agent 上报健康」小卡——数据源 = §8.5 `GET /agents/{id}/health`（聚合最近 1min/5min 心跳；**未接入=无 last_seen**，供 §9.1 EmptyState 区分「未接入 vs 无流量」）。自监控不占用业务事件指标，心跳发送失败不重试惩罚（不干扰上报主链路）。
+> **（2026-09-14 取证订正，批 2a-2）** 上式**与实机不符**：平台侧 `consumer/main.py:76-83` 的 `build_heartbeat_doc` 构造的 doc 只有 `{node, agent, ts, dropped, source}`，**无 `sent_ok` / `spool_pending`**；SDK 侧 `grep -rn 'spool_pending\|sent_ok' sdk/obs_sdk/*.py` **零命中**（2026-09-14 实测）⇒ 该两字段**双端都无写入方**。另：`dropped` 是 consumer **进程内累计计数**（同文件 `:87` 逐字「按 (agent, reason) 累加，心跳任务定期快照」），**不是**窗口增量——读侧取最新一条快照，切勿按窗求和。backend 消费后写入事件 index（以 `node=heartbeat` 区分，不进入业务 node 枚举），前端 /admin/agents 页出「agent 上报健康」小卡——数据源 = §8.5 `GET /agents/{id}/health`（聚合最近 1min/5min 心跳；**窗内无心跳=无 last_seen**（⚠️ 2026-09-14 措辞收窄：原写「未接入=无 last_seen」，此判据区分不了「从未接入」与「曾接入但断联超窗」，不得据它断言「没接过」），供 §9.1 EmptyState 区分「窗内无心跳（`no_agent`）vs 有流量无请求（`no_traffic`）」）。自监控不占用业务事件指标，心跳发送失败不重试惩罚（不干扰上报主链路）。
 
 > 二期占位：`record_retrieve`/`record_quality`/`record_session_state` 不在 v1 SDK 暴露（§11.1 方法清单）。
 
@@ -1131,7 +1136,7 @@ CREATE TABLE `trace_judge_state` (
 | `PUT /interfaces/{id}` | admin 补标：`{llm?, llm_source?, body_search?}`（归一化核对 = 修改 interface 串需记 conversion 审计【实现约定】；⚠️ **2026-09-14 订正：本行入参里并没有 `interface` 字段，而它是唯一键列 `uk_interface(agent_id, interface)` ⇒ v1 不支持改串**（改它等于换实体）。批 2a-1 实测：多余的 `interface` 字段被入参模型忽略、串不变）；疑似漏标告警处理（§8.5） |
 | `GET /agents/{id}/credential` | Kafka 凭证查看（secret 脱敏 + 轮换入口；admin） |
 | `POST /agents/{id}/credential/rotate` | 凭证轮换（版本化、吊销即时生效=撤 ACL+断连接，§13.2） |
-| `GET /agents/{id}/health` | agent 上报健康小卡：最近 1min/5min 上报事件量、dropped、spool_pending、last_seen_ts（读自监控心跳 `obs.selfmonitor`，§3.6/§13.2）；agent 未接入=无 last_seen，前端据此出「未接入 SDK」文案（§9.1）。⚠️ **2026-09-14 批 2a-2 落地，两处按实机订正**：① **不返回 `spool_pending`**——平台侧心跳 doc 实际只有 `{node, agent, ts, dropped, source}`，SDK 侧 grep 零命中（双端无写入方，同 §3.6 订正）；② **`dropped` 取最新一条心跳的快照、不做窗内求和**——它是 consumer **进程内累计计数**（`consumer/main.py:87`），窗内每条写的是同一个累计值，求和等于重复相加（实测差三个数量级）。实现 = `app/api/admin.py`、`app/store/es.py`；真库真 ES 探针 = `tests/integration/admin_health_probe.py`（12-12）。 |
+| `GET /agents/{id}/health` | agent 上报健康小卡：最近 1min/5min 上报事件量、dropped、spool_pending、last_seen_ts（读自监控心跳 `obs.selfmonitor`，§3.6/§13.2）；agent 未接入=无 last_seen，前端据此出「查询窗内无心跳上报」文案（§9.1）。⚠️ **2026-09-14 措辞收窄**：原写「未接入 SDK」——该判据承载的是「窗内无心跳」，**区分不了**「从未接入」与「曾接入但断联超窗」（窗 = `keyword_search_days`），把后者说成前者方向相反（前者是待办、后者是故障）。⚠️ **2026-09-14 批 2a-2 落地，两处按实机订正**：① **不返回 `spool_pending`**——平台侧心跳 doc 实际只有 `{node, agent, ts, dropped, source}`，SDK 侧 grep 零命中（双端无写入方，同 §3.6 订正）；② **`dropped` 取最新一条心跳的快照、不做窗内求和**——它是 consumer **进程内累计计数**（`consumer/main.py:87`），窗内每条写的是同一个累计值，求和等于重复相加（实测差三个数量级）。实现 = `app/api/admin.py`、`app/store/es.py`；真库真 ES 探针 = `tests/integration/admin_health_probe.py`（12-12）。 |
 
 **8.5.1 疑似漏标自动补标（§10.1 观察窗，v3.4.5 裁定）**：接口观测到 llm_call 且 `llm=false` → `llm_suspect=1`；连续观测达阈值（【实现约定】窗口 24h 内 ≥ 10 次）→ 自动 `llm=true`（source=auto_observed）不再疑似；观察窗内存疑 → `llm_suspect=1` 进 admin 复核列表 + 看板/Agent 管理「疑似漏标告警」。
 
@@ -1235,7 +1240,7 @@ CREATE TABLE `trace_judge_state` (
   - `needs_review` 状态筛选保留（error run 的 `na` 结果行可入列——case 级 infra 无法判定，reason 带 run_id+error_type，同批聚合，§7.6），**缺省为空属正常非功能缺失**。
   - 二期物（L3 质量出口 tab、弃留墙入口、trace quality 过滤/标记）**整条隐藏不可达、不灰置**；仅原始事件 JSON 不可避免暴露 `quality:null` 时行内提示「quality 观测为二期规划（v1 未采集），为空属预期，非采集故障」。
   - 配置管理「二期规划」组灰置 + 角标 + tooltip（键清单 §10.2）。
-  - **看板「无数据」区分（防空报「采集故障」）**：`EmptyState.type` 细分——`no_agent`（该 agent 无 last_seen，未接入 SDK，数据源 §8.5 health）／`no_traffic`（有心跳但窗口无请求量）／`no_rollup`（7d 档缺桶，回退实时口径标注 §5.3）／`second_phase`（二期物，隐藏不可达）；接口/tab 按各自数据源落 type 与文案。**v1.13 空态分页归位**：总览 = no_traffic/no_rollup（沿上）；接口双 tab 均空 = no_traffic（有桶才出明细 section）；**异常/LLM 失败的空列表 = 「窗口内无异常 / 无 LLM 失败现场」有效空态，非 no_traffic**（各自 section 自带准确空文案，payload 未就绪不渲染该文案以免误导，§9.2 行注）。
+  - **看板「无数据」区分（防空报「采集故障」）**：`EmptyState.type` 细分——`no_agent`（该 agent **查询窗内无心跳**，数据源 §8.5 health；⚠️ 2026-09-14 措辞收窄：原写「未接入 SDK」——此判据**区分不了「从未接入」与「曾接入但断联超窗」**，窗 = `keyword_search_days`，**不得据它断言「没接过」**）／`no_traffic`（有心跳但窗口无请求量）／`no_rollup`（7d 档缺桶，回退实时口径标注 §5.3）／`second_phase`（二期物，隐藏不可达）；接口/tab 按各自数据源落 type 与文案。**v1.13 空态分页归位**：总览 = no_traffic/no_rollup（沿上）；接口双 tab 均空 = no_traffic（有桶才出明细 section）；**异常/LLM 失败的空列表 = 「窗口内无异常 / 无 LLM 失败现场」有效空态，非 no_traffic**（各自 section 自带准确空文案，payload 未就绪不渲染该文案以免误导，§9.2 行注）。
 
 ### 9.2 页面功能点 → 数据源（API §8）
 
@@ -1250,7 +1255,7 @@ CREATE TABLE `trace_judge_state` (
 | trace 详情（共享抽屉） | ~~`(ts,parent,seq)` 树时间轴~~ **（v1.23 反查订正）实为 `seq asc`**；异常节点红显；日志行分页懒加载；input/output/error_msg 脱敏展示；llm_call 高亮；正文查看受 `body_search` | §8.2 traces + logs |
 | 回流-错误聚类 `/backflow`（v1.20 已实现） | cluster 列表/筛选 + overview 卡；**代表 trace（`first_trace_id`，点击跳 trace 详情）**、input_hash、状态 pill·generation·count·first/latest ts·fix_version；复验总览（cluster 状态分布 / link verify 分布 / 待修复集规模标注「本地近似 offline 权威集」/ by_agent 分布）；筛选 agent·interface（近 7d 实测并集）·layer·status·watch + 分页；静态 + 手动刷新（不轮询） | §8.4 backflow/clusters + overview |
 | 回流-聚类详情 `/backflow/clusters/:id`（v1.20 已实现，独立路由） | links 表（case_type/offline_status/verify_status/source + **admin** invalidate/requeue）、版本×pass/fail 时间线、conversion_record 中文时间线、人工操作区（ignore/claim/needs_review-resolve/fixed-review/admin 动作，按 §9.4 门控置灰）、claim 复核窗倒计时（1s tick + 45s 可见轮询，超时回退 open 提示）；**input_truncated 当前判定态警示 + 被未决 unclean_run 批挂起徽标 + open_batches「处置整批」入口（v1.8 R-13/R-14、v1.20 R-14 批读面：读 `link_refs` 关联、不新增存储列）**；**reentry_observe 复发 caption（v1.20，§9.3）** | §8.4 cluster/{id} + link 操作 |
-| Agent 与接口字典 `/admin/agents` | agent 启停；接口字典（llm 补标/疑似漏标告警/归一化核对/正文开关）；凭证查看/轮换；**agent 上报健康小卡**（未接入/无流量区分依据，§9.1） | §8.5 |
+| Agent 与接口字典 `/admin/agents` | agent 启停；接口字典（llm 补标/疑似漏标告警/归一化核对/正文开关）；凭证查看/轮换；**agent 上报健康小卡**（窗内无心跳/无流量区分依据，§9.1；⚠️ 区分不了「从未接入」与「断联超窗」，2026-09-14 收窄） | §8.5 |
 | 配置管理 `/admin/configs` | dict_config 两组渲染（v1 生效/二期灰置）；词表维护（空表守卫提示） | §8.6 |
 | 用户管理 `/admin/users` | 账号 CRUD、角色、启停 | §8.6 |
 

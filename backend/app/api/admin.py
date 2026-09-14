@@ -612,12 +612,13 @@ async def get_agent_health(
 
     **数据源 = ES 心跳 doc**（与 §8.3 `/metrics/agents` 的「近 7d 有流量的 agent」不同面）：
     有心跳 = 该 agent 的 SDK/consumer 还活着。无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出
-    「未接入 SDK」——这正是 §9.1 要区分「未接入 vs 无流量」的那条判据。
+    「查询窗内无心跳上报」——这正是 §9.1 区分「窗内无心跳（`no_agent`）」与
+    「有流量无请求（`no_traffic`）」的那条判据。
 
     ⚠️ **查 ES 用 `row.name` 而非 `agent_id`**：MySQL 主键是 int，ES 的 `agent` 字段是
     agent 名（`good-question` 这类）。两者混用会得到一个恒空的查询。
 
-    ⚠️ **先查 MySQL 确认 agent 存在**：否则一个笔误的 id 会返回「未接入 SDK」，把「没有这个
+    ⚠️ **先查 MySQL 确认 agent 存在**：否则一个笔误的 id 会返回「查询窗内无心跳上报」，把「没有这个
     agent」伪装成「有这个 agent 但没上报」。
 
     **[裁定 4] 不返回 `spool_pending`**：detail §3.6（`:432`）的心跳 body 定义了该字段，但

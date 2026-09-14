@@ -484,7 +484,7 @@ def build_heartbeat_body(*, agent: str, start_ts: int, end_ts: int, size: int = 
 def summarize_heartbeats(docs: list[dict], *, now_ms: int) -> dict:
     """心跳 docs → 健康卡字段（**纯函数**，单测直接喂列表，ES 查询本身由真库探针覆盖）。
 
-    - `last_seen_ts` = 最大 ts；无 doc ⇒ None ⇒ 前端出「未接入 SDK」。
+    - `last_seen_ts` = 最大 ts；无 doc ⇒ None ⇒ 前端出「查询窗内无心跳上报」。
     - `report_1min` / `report_5min` = 窗内条数（条数 =「有上报的分钟数」，见上）。
     - `dropped` = **最新一条心跳的 `dropped` 快照**（见下方「为什么不是求和」）。
     - `sdk_connected` = 存在 form A（`source="consumer"`）之外的心跳，即 SDK 自报心跳透传。
@@ -532,7 +532,7 @@ async def fetch_heartbeats(
 
     ⚠️ 取 `_hits_result(...)["hits"]`——它**已经**是 `_source` 列表（`_hits_result:197`）。
     此前写成 `.get("items")`，而该函数从不返回 `items` 键 ⇒ **恒返回空列表**（2026-09-14
-    取证修正；当时只读码未实测，端点一旦接上会表现为「所有 agent 都未接入 SDK」）。
+    取证修正；当时只读码未实测，端点一旦接上会表现为「所有 agent 都无心跳」）。
     """
     body = build_heartbeat_body(agent=agent, start_ts=start_ts, end_ts=end_ts, size=size)
     resp = await client.options(request_timeout=request_timeout_s).search(

@@ -105,7 +105,7 @@ _HEALTH_URL = f"/api/v1/admin/agents/{_AGENT_ID}/health"
 
 
 def test_summarize_empty_is_not_connected():
-    """无心跳 ⇒ `last_seen_ts=None`（前端据此出「未接入 SDK」，§9.1 判据）。"""
+    """无心跳 ⇒ `last_seen_ts=None`（前端据此出「查询窗内无心跳上报」，§9.1 判据）。"""
     out = es_store.summarize_heartbeats([], now_ms=1_000_000)
     assert out == {
         "last_seen_ts": None,
@@ -209,7 +209,7 @@ def test_health_with_heartbeats():
 def test_health_queries_es_by_agent_name_not_id():
     """**防回归**：ES 的 `agent` 字段是 agent 名（`good-question` 这类），不是 MySQL 主键。
 
-    用 id 去查会得到一个恒空的查询（表现为「所有 agent 都未接入 SDK」）——这条断言钉住它。
+    用 id 去查会得到一个恒空的查询（表现为「所有 agent 都无心跳」）——这条断言钉住它。
     """
     fake = FakeES(response=_hb_resp([]))
     with _enter(_session([_agent(aid=99, name="named-agent")]), fake) as c:
@@ -221,7 +221,7 @@ def test_health_queries_es_by_agent_name_not_id():
 
 
 def test_health_unknown_agent_is_400():
-    """未知 id ⇒ 400（不是「未接入 SDK」的空态）：否则笔误的 id 会被伪装成「有这个 agent」。"""
+    """未知 id ⇒ 400（不是「窗内无心跳」的空态）：否则笔误的 id 会被伪装成「有这个 agent」。"""
     with _enter(_session([]), FakeES(response=_hb_resp([]))) as c:
         r = c.get(_HEALTH_URL, headers=_hdr())
     assert r.status_code == 400

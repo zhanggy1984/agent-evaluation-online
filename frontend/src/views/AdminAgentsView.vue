@@ -2,13 +2,16 @@
 // 系统管理 · Agent 页（T-3.12 批 2a-1 / detail §8.5）：agent 清单 + 启停 + 接口字典人工补标。
 //
 // ⚠️ 与「接口」页（§8.3 看板）的区别：那是 **ES 观测面**（近 7d 有流量的 agent 名），
-// 零流量 / 已停用的 agent 在其中**完全不可见**；本页读 **MySQL 字典面**，因此能看到
-// 「接入但掉线」与「本来就没接」的差别。
+// 零流量 / 已停用的 agent 在其中**完全不可见**；本页读 **MySQL 字典面**，因此**两种 agent 都列得出来**。
+// ⚠️ 但「列得出来」≠「分得清」：health 卡**无法区分**「接入后掉线」与「本来就没接」——两者都表现为
+//    「查询窗内无心跳」（2026-09-14 订正：原注释写「能看到二者的差别」，说过头了）。
 // ⚠️ 本页**没有**凭证查看/轮换区（§8.5 凭证两端点属批 2b，未实现）——不留占位，
 // 免得后人把占位读成「功能在、只是没数据」。
 // ⚠️ 接口串**不可改**（唯一键列 + 后端入参无该字段）；本页只改 llm / llm_source / body_search。
 // ⚠️ 展开行内的「上报健康」读的是 **ES 心跳面**（第三个数据源），故与接口字典分开报错；
-//    `last_seen_ts` 为空即「未接入 SDK」，这是 §9.1 用来区分「未接入 vs 无流量」的判据。
+//    `last_seen_ts` 为空时文案只说「查询窗内无心跳上报」——**不再断言「未接入 SDK」**（2026-09-14 收窄）。
+//    该判据（§9.1 `no_agent`）承载的是「窗内无心跳」，**它区分不了**「从未接入」与「曾接入但断联超窗」
+//    （窗 = `keyword_search_days`）；把后者说成前者方向相反——前者是待办、后者是故障。
 import { onMounted, ref } from 'vue'
 
 import {
@@ -187,14 +190,19 @@ onMounted(() => void load())
                 <span v-else-if="healthErr" class="err">{{ healthErr }}</span>
                 <template v-else-if="health">
                   <span v-if="health.last_seen_ts === null" class="err">
-                    未接入 SDK（查询窗内无心跳上报）
+                    查询窗内无心跳上报
                   </span>
                   <template v-else>
                     <span>最后上报 {{ fmtTs(health.last_seen_ts) }}</span>
                     <span>近 1 分钟上报 {{ health.report_1min }} 次</span>
                     <span>近 5 分钟上报 {{ health.report_5min }} 次</span>
                     <span>SDK 自报心跳 {{ health.sdk_connected ? '有' : '无' }}</span>
-                    <span>丢弃计数 {{ fmtDropped(health.dropped) }}</span>
+                    <span>
+                      丢弃计数 {{ fmtDropped(health.dropped) }}
+                      <em v-if="Object.keys(health.dropped).length" class="hint">
+                        （进程内累计快照，重启归零）
+                      </em>
+                    </span>
                   </template>
                 </template>
               </div>

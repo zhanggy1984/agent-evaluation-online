@@ -19,7 +19,7 @@
   H-3  走**真 Kafka（obs.selfmonitor）**造一条活心跳 → 端点应见 `report_1min>=1`、
        `last_seen_ts≈now`、`sdk_connected=true`（form A 之外的 source 才算 SDK 自报）
   H-4  空态：自建隔离 agent（无任何心跳）→ `last_seen_ts=null` + 全零 + `sdk_connected=false`
-  H-5  未知 agent id → 400 ERR_CONFIG_0001（不伪装成「未接入 SDK」的空态）
+  H-5  未知 agent id → 400 ERR_CONFIG_0001（不伪装成「查询窗内无心跳上报」的空态）
 
 **未覆盖（如实标注，不当作通过）**：
   - **form A（`source="consumer"`）心跳本批不现造**：consumer 的消费循环在**启动时**按
@@ -324,7 +324,7 @@ async def h4_empty_state(client, admin_jwt: str, aid: int) -> None:
     body = r.json()
     check(
         "H-4 无心跳 agent → last_seen_ts=null + 全零 + sdk_connected=false"
-        "（§9.1「未接入 SDK」判据的载体）",
+        "（§9.1「查询窗内无心跳上报」判据的载体）",
         r.status_code == 200
         and body["last_seen_ts"] is None
         and body["report_1min"] == 0
@@ -338,7 +338,7 @@ async def h4_empty_state(client, admin_jwt: str, aid: int) -> None:
 async def h5_unknown_agent(client, admin_jwt: str) -> None:
     r = await client.get(f"{API}/admin/agents/{UNKNOWN_ID}/health", headers=_hdr(admin_jwt))
     check(
-        "H-5 未知 agent id → 400 ERR_CONFIG_0001（不伪装成「未接入 SDK」的空态）",
+        "H-5 未知 agent id → 400 ERR_CONFIG_0001（不伪装成「查询窗内无心跳上报」的空态）",
         r.status_code == 400 and r.json()["code"] == "ERR_CONFIG_0001",
         f"{r.status_code} {r.text[:80]}",
     )

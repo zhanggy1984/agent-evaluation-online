@@ -138,7 +138,8 @@ class InterfaceUpdateRequest(BaseModel):
 class AgentHealthOut(BaseModel):
     """agent 上报健康卡（§8.5）：聚合 ES 事件 index 的 `node=heartbeat` doc。
 
-    无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出「未接入 SDK」（§9.1 据此区分「未接入 vs 无流量」）。
+    无心跳 ⇒ `last_seen_ts=None` ⇒ 前端出「查询窗内无心跳上报」（§9.1 据此区分
+    「窗内无心跳（`no_agent`）」与「有流量无请求（`no_traffic`）」）。
 
     ⚠️ **不含 `spool_pending`**：detail §3.6（`:432`）定义的心跳 body 含该字段，但**双端都无
     写入方**——平台侧 `consumer/main.py:76-83` 构造的 doc 是 `{node, agent, ts, dropped, source}`，
