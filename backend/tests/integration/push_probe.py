@@ -897,7 +897,7 @@ async def s20_legacy_row_without_cases_not_missing(engine, client) -> None:
                               claim_k=1)
     lid = await _seed_link(engine, cid)
     async with AsyncSession(engine) as s:  # 老格式行：raw 只有列值，无 cases 键
-        s.add(VerifyRunRecord(link_id=lid, run_id=f"{RUN_ID_PREFIX}s20legacy",
+        s.add(VerifyRunRecord(link_id=lid, cluster_id=cid, run_id=f"{RUN_ID_PREFIX}s20legacy",
                               bound_version="1.5.0", case_pass=0,
                               run_status="completed", raw_json={"case_pass": 0}))
         await s.commit()

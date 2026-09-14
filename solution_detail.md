@@ -643,13 +643,14 @@ CREATE TABLE `error_case_link` (
 CREATE TABLE `verify_run_record` (
   id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   link_id       BIGINT UNSIGNED NOT NULL,
+  cluster_id    BIGINT UNSIGNED NOT NULL,            -- 幂等键与归属的簇锚（= 载荷 trigger_signal_id，v1.23 幂等键改造新增）
   run_id        VARCHAR(64) NOT NULL,                -- offline run id
   bound_version VARCHAR(64) NOT NULL,                -- 该 run 绑定的 agent 版本（=fix_version 对应）
   case_pass     TINYINT NULL,                        -- 该 case 在 run_results 的 pass_fail（0/1；null=对应 run_results pass_fail='na'，run 缺行则不产生本记录——Task #4-② B-1(b) 修正）
   run_status    VARCHAR(16) NOT NULL,                -- offline error_regression run 终态字面量（completed/partial_failed/timeout/cancelled；与 verify_status 五值域不同源，勿混用，Task #4-② B-6）
   raw_json      JSON NULL,                           -- run_results 原样留档
   verified_ts   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uk_verify_run (link_id, run_id)
+  UNIQUE KEY uk_verify_run (cluster_id, run_id)      -- **不是 (link_id, run_id)**：link_id 由推送时现算（link 在 pending 时 = cluster_id，判出终态后退化为哨兵 0），随 link 生命周期变 ⇒ 旧键下同一 (簇, run) 在 link 两侧落成两个键、重推不命中首推行，且哨兵 0 被**所有簇共用**（后到的簇会命中别的簇的行）。`cluster_id` 不随 link 生命周期变（v1.23 幂等键改造，2026-09-14；迁移 `b7c31f0a94e2` 含历史行回填与重复行归并）
 ) COMMENT='回归 run 单错级结果（终态只读：已定 passed/failed/superseded 不被迟到 run 改写，见 §7.6）';
 -- 消费注（v1.4，B-11/R6；v1.5 R-1/R-2 修订）：verify_run_record = 跨版本稳定序列 K 的逐版本时间线载体（§7.6 判定语义 v1.5）——每「claimed case 纯净可判」版 error run 终态判定后追加一行（run_status=该版终态字面量）；K 读 claim 固化值 `claim_k`（cluster.claim_k，claim 生命周期内不可变、同 link 时间线共享同值 → 不加逐行快照列，R6 载体承诺保持）；纯净性由判定内核从「该 case 行 + run 内 na 行的 error_type 影响域（环境/case）」派生（**v1.23：数据源 = 本 link 已落的 `raw_json` 载荷原样留档**，非 offline 读面），run 级 na_case 不再直接作判据（保留读面：展示/审计/告警）
 
@@ -1199,7 +1200,7 @@ CREATE TABLE `trace_judge_state` (
 | `run_status` | 是 | ∈`{completed, partial_failed, timeout, cancelled}`——**只推终态**（原 B-1(c) 值集不变，改由 offline 保证而非 online 过滤 running/pending） |
 | `agent_latest_version` | 是 | **替代原 R-5 只读面的最小信息（其二，v1.23 第 2 刀补）**：offline 侧该 `agent` **已有终态 run 的最大版本**（与上一字段同一次查询产出，按 §7.5 日期前缀门控序求最大）。online 据此恢复**发版水位**——`V > agent_latest_version` = offline **还没跑到**该版本 → 停在此、保持 `no_progress`（不推进）。**本字段只能判「跑到没跑到」，判不了「水位之内是否漏收了一笔」——后者由下一字段承载**（v1.23 第 3 刀）。**offline 不带此字段则水位守卫失效** |
 | `prev_terminal_version` | 是 | **本 run 之前、该 `agent` 最近一个已到终态 run 的版本**；**值可 `null`**（= 该 agent 此前无任何终态 run，非省略）。**v1.23 第 3 刀新增 = 防假连续的第二道闸（缺行中断的推送源重建）**：若本字段非空、且 online 本地（**该 agent 的已收版本全集**，v1.23 第 4 批由「本 link 行集」改全局，见 ⑭(a)）**无该版本记录** → 判定「上一笔结果推送丢失」→ **`gap` 中断、不累计 K**。**为什么单值水位（`agent_latest_version`）不够**：水位只回答「已覆盖到哪个版本」，**无法枚举中间版本**——推送源手上只有一个 max 值，v2 的推送三次全败时 online 只见 v1(pass)、v3(pass)，两条都是纯净 pass，K 会**跨缺版误累计**到 K 满 → 簇被**静默误判 `fixed`**（最危险的错向：假修复）。水位闸只拦得住「还没跑到」的版本（`V > 水位`），拦不住「跑过但结果推送丢了的中间版本」；`prev_terminal_version` 是 online 唯一能**自证「我漏收了一笔」**的信息，故必须由 offline 带出。**为什么只看 `≥ fix_version` 的前序版本**：claim 锚定 `fix_version`，`fix_version` 之前的终态 run 正是促成本次 claim 的那次失败，**不属本轮 K 序列**（`reopen` → 改版重 claim 会换新 link，其记录天然不在本 link 上）；不加该界会把该现场**永久钉在 `gap`**、claim 永远判不出 `fixed`。**offline 不带此字段则防假连续第二道闸失效** |
-| `trigger_signal_id` | 否 | = payload 信封 `source.cluster_id`，offline 收单时留档、推送时回带。空 → 落 orphan run 行、**不推进任何 link 判定**，仅留档（防关联断裂丢数据） |
+| `trigger_signal_id` | **是**（v1.23 幂等键改造后由「否」收口） | = payload 信封 `source.cluster_id`，offline 收单时留档、推送时回带。**缺失/null → 422 拒单**（属下方 §8.9 ② 模型层校验那一类，不带 `ERR_PULL_*` 码；与 `case_id` 缺失同层同例）。**为什么不能再「空则留档」**：幂等键已由 `(link_id, run_id)` 改为 `(cluster_id, run_id)` = 本字段 + `run_id`，`cluster_id` 列 `NOT NULL`——**NULL 在唯一索引中不参与去重**，空值落行等于给幂等键开洞（同一 (簇, run) 静默积行、重推拿不到 `duplicated=true`）；且无簇锚的行既关联不到 link、也无法与任何簇对账。**值指向不存在的簇**（占位 `0`、簇已删）仍走原路径：落 orphan run 行、**不推进任何 link 判定**，仅留档。 |
 | `finished_ts` | 是 | run 终态时刻，ISO8601 UTC；**非法 ISO8601 → `ERR_PULL_0002` 拒单**（v1.23 第 2 刀收口；时间线字段进库前必须校验，否则脏值一路脏到 UI） |
 | `cases[]` | 是 | 逐 case 原始行 `{case_id, case_type, pass_fail, error_type?, error_detail?}`；**空数组合法**（落 run 级行、`case_pass=null`）。`case_type` 非白名单 → **丢该行 + 计入 `cases_dropped`，不整体拒单**（与 pull 侧「非白名单返空集」同为「不因单行断整批」策略）；`pass_fail='na'` 必带 `error_type`（**R-22 不变量不变**，收尾三路径统一 `scheduler_unexecuted`）；**`case_id` 在载荷内必须唯一——重复 → `ERR_PULL_0002` 拒单**（v1.23 第 2 刀收口：同一 case 出现两条即载荷自相矛盾，静默取首条会**掩盖 offline 侧拼装 bug**；与 `case_type` 丢行策略不冲突——那是「行不认识」，这是「行互相打架」） |
 

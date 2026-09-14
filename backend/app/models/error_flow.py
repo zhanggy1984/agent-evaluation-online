@@ -127,6 +127,19 @@ class VerifyRunRecord(Base):
 
     id: Mapped[int] = mapped_column(BIGINT_UX, primary_key=True, autoincrement=True)
     link_id: Mapped[int] = mapped_column(BIGINT_UX, nullable=False)
+    # **幂等键与归属的簇锚**（= 载荷 `trigger_signal_id`）。
+    #
+    # 为什么幂等键用它而不是 `link_id`（v1.23 C2-补）：`link_id` 是**推送时现算**的——link 在
+    # `pending` 时等于其 `cluster_id`、link 一旦被判出终态就退化成哨兵 0（`ORPHAN_LINK_ID`）。
+    # 于是**同一个 (簇, run) 在 link 生命周期两侧落在两个不同的键上**：首推令 link 终态化后，
+    # 重推查不到现行 link ⇒ 记 (0, run_id) ⇒ 不命中首推行（真机实测：离线 fire-and-forget 的
+    # 「响应丢失重推」正是这个场景，§8.7）——而 0 又是**所有簇共用**的哨兵，后到的簇会命中
+    # **别的簇**的行（实测 3850 拿到 3849 的 run_record_id）。`trigger_signal_id` 是载荷自身
+    # 声明的簇、不随 link 生命周期变，两种状态下降成同一个键。
+    # ⚠️ 与 `link_id` 的关系：有现行 link 时二者恒等（`_find_current_link` 的谓词就是
+    # `cluster_id == trigger_signal_id`）；无 link（orphan）时 `link_id` 仍是哨兵 0，本列仍记
+    # 真实簇 id —— 故 orphan 行从「不可关联」升级为「可关联到簇、只是没判」。
+    cluster_id: Mapped[int] = mapped_column(BIGINT_UX, nullable=False)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)  # offline run id
     bound_version: Mapped[str] = mapped_column(String(64), nullable=False)  # 该 run 绑定 agent 版本
     case_pass: Mapped[int | None] = mapped_column(TINYINT, nullable=True)  # null = pass_fail 'na'
@@ -135,7 +148,9 @@ class VerifyRunRecord(Base):
     verified_ts: Mapped[datetime] = mapped_column(DT3, nullable=False, server_default=TS_DEFAULT)
 
     __table_args__ = (
-        UniqueConstraint("link_id", "run_id", name="uk_verify_run"),
+        # 幂等键 = (簇, run)。**不是 (link_id, run_id)**：见 `cluster_id` 列注释（link 生命
+        # 周期会让同一笔推送落到两个键上，且哨兵 0 被所有簇共用）。
+        UniqueConstraint("cluster_id", "run_id", name="uk_verify_run"),
         {"comment": "回归 run 单错级结果（终态只读）"},
     )
 

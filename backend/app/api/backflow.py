@@ -190,7 +190,11 @@ class RegressionResultsRequest(BaseModel):
     # 改全局，见 `verify._agent_versions`）无该版本记录 = 上一笔结果推送丢失 → gap 中断不
     # 累计 K（见 `verify.judge_link` 缺行中断判据）。
     prev_terminal_version: str | None = Field(max_length=64)
-    trigger_signal_id: int | None = None  # = 信封 source.cluster_id，回关联 cluster_id
+    # = 信封 source.cluster_id。**必填**（offline `error_push.assemble_payload` 恒填）：它既是
+    # 回关联簇的锚、又是幂等键 `uk_verify_run(cluster_id, run_id)` 的一半——缺了它这笔推送
+    # 既关联不到簇、也无法判重（NULL 在唯一索引中不去重 ⇒ 每次重推都落新行、审计面静默积行）。
+    # 缺字段/显式 null 在 pydantic 层即 422（与 `case_id` 同层同例）。
+    trigger_signal_id: int
     finished_ts: str  # run 终态时刻（ISO8601 UTC）
     cases: list[RegressionCaseItem]  # 必填，**空数组合法**（落 run 级行、case_pass=null）
 
@@ -869,8 +873,11 @@ async def requeue_link_endpoint(
 # 取值 0 的理由：error_case_link.id 为 BIGINT UNSIGNED AUTO_INCREMENT（models/base.py
 # BIGINT_UX），InnoDB 自增从 1 起分配、无符号列不能存负数（strict 模式写 -1 即 DataError），
 # 故 0 是唯一「DB 允许写入且永不会被真实 link 占用」的表示；NULL 不可用（列 NOT NULL）。
-# 幂等：orphan 行同样落在 uk_verify_run(link_id, run_id) 上——同一 orphan run 重复推命中
-# (0, run_id) 唯一键 → 走重复分支 200 duplicated=true，不重建行、不重复计数。
+# ⚠️ **哨兵只用于 `link_id` 一列，不参与幂等**（v1.23 C2-补订正）：本常量曾写「orphan 行落在
+# uk_verify_run(link_id, run_id) 上」，据此同一 orphan run 重推会命中 (0, run_id) —— 实测证明
+# 该说法**只对「全表第一条 orphan」成立**：0 被所有簇共用，第二条起会命中**别的簇**的行（真机
+# 拿到过别人的 run_record_id）。幂等键已改为 uk_verify_run(cluster_id, run_id)，orphan 行照记
+# 真实簇 id ⇒ 重推才稳定命中自己那一行。
 ORPHAN_LINK_ID = 0
 
 
@@ -904,10 +911,12 @@ async def _find_current_link(
     """按 trigger_signal_id（= 信封 source.cluster_id）反查现行 link（§8.7 回关联）。
 
     现行 link = `verify_status='pending'`（cur_key 生成列占位；uk_link_current(case_type,
-    cur_key) 保证同 cluster 同 case_type 至多一条，v1 只此一种 case_type）。查不到（含字段
-    缺失）→ 返回 None = orphan：调用方仍落库留档，只是不推进任何 link 判定。
+    cur_key) 保证同 cluster 同 case_type 至多一条，v1 只此一种 case_type）。查不到 → 返回
+    None = orphan：调用方仍落库留档（记真实 cluster_id），只是不推进任何 link 判定。
+    **link 已判出终态的簇重推也走这条**（终态只读 ⇒ 无现行 pending link）——这是正常的
+    「重放」而非异常，幂等由 uk_verify_run(cluster_id, run_id) 兜住。
     """
-    if trigger_signal_id is None:
+    if trigger_signal_id is None:  # 防御：model 层已必填，正常到不了这里
         return None
     return await session.scalar(
         select(ErrorCaseLink)
@@ -939,7 +948,7 @@ def _conv_detail(
 async def record_regression_result(
     session: AsyncSession, body: RegressionResultsRequest,
 ) -> dict:
-    """结果推送落库 + **同事务判定**（§8.7；幂等键 = uk_verify_run(link_id, run_id)）。
+    """结果推送落库 + **同事务判定**（§8.7；幂等键 = uk_verify_run(cluster_id, run_id)）。
 
     v1.23 第 3 刀：判定内核已切推送源（offline 出站读面与轮询链整删），落库即判——**`flush`
     后、`commit` 前**调用 `judge_link`，判定写入与数据位同一事务。**判定异常 → 降级不回滚**
@@ -948,11 +957,13 @@ async def record_regression_result(
     - 落 verify_run_record 一行（run 级；case_pass 由 link.case_id 命中行派生）+ 一条
       conversion_record（action=regression_result，actor_user_id=NULL = 系统动作）。
     - orphan：仍落库留档（link_id=哨兵 0，防关联断裂丢数据），links_advanced 空、**不调判定**
-      （无 link 可判）；conv 照写（cluster_id=NULL、link_id=0）——审计链要求「收到即留痕」，
-      orphan 正是最需要人工对账的现场，不写就变成静默丢数据。
-    - 重复推送（同 link_id + run_id 已有行）：duplicated=true，不重复落库、不重复写 conv、
+      （无 link 可判）；conv 照写、**cluster_id 记载荷的 trigger_signal_id**（v1.23 C2-补：
+      原先写 NULL，导致「最需要人工对账的现场」在审计面上反而关联不到簇）——审计链要求
+      「收到即留痕」，不写就变成静默丢数据。
+    - 重复推送（同 cluster_id + run_id 已有行）：duplicated=true，不重复落库、不重复写 conv、
       **不重跑判定**（该 run 的首推已判过；重判只是对全链重放，副作用见 verify.judge_link
-      unclean 闸）。
+      unclean 闸）。**这条在 link 已判出终态的簇上同样成立**（旧键做不到：那时 link_id 已变
+      哨兵 0，重推被判成新推送）。
     - links_advanced 语义 = **本次真正发生终态迁移的 link**（passed/failed/superseded 三类，
       判据单一来源 = verify.TERMINAL_OUTCOMES）。**这是相对第 2 刀的收窄**：第 2 刀该字段只表达
       「数据位推进」（落了 run 行即列），现在只有 link 真正离开 pending 才列——offline 的对账读法
@@ -1021,22 +1032,26 @@ async def record_regression_result(
     link = await _find_current_link(session, body.trigger_signal_id)
     link_id = link.id if link is not None else ORPHAN_LINK_ID  # 见 ORPHAN_LINK_ID 注释
 
+    # 幂等查按 **(簇, run)**，与 `uk_verify_run` 同键——**不能按 link_id 查**：link 生命
+    # 周期会让同一笔推送落到两个不同的 link_id 上（pending 时=簇 id、终态后=哨兵 0），按
+    # link_id 查会把「已判出簇的重推」误判成新推送（本批修，见 models 的 cluster_id 列注释）。
     existing_id = await session.scalar(
         select(VerifyRunRecord.id).where(
-            VerifyRunRecord.link_id == link_id,
+            VerifyRunRecord.cluster_id == body.trigger_signal_id,
             VerifyRunRecord.run_id == body.run_id,
         )
     )
     if existing_id is not None:
-        # 幂等重放：行已由首次推送落库（orphan 哨兵行同样命中 uk_verify_run）→ 零写
+        # 幂等重放：行已由首次推送落库（orphan 行同样命中）→ 零写
         return {"accepted": True, "duplicated": True, "run_record_id": existing_id,
                 "links_advanced": [], "cases_dropped": dropped}
 
-    # 幂等 = 先查后写 + uk_verify_run 兜底：并发同 run 双推的窄窗口里后到者会撞唯一键
+    # 幂等 = 先查后写 + uk_verify_run 兜底：并发同 (簇, run) 双推的窄窗口里后到者会撞唯一键
     # （IntegrityError → 500，零脏写），offline 侧退避重试即命中上面的 duplicated 分支，
     # 不丢数据（fire-and-forget 3 次重试，§8.7）
     record = VerifyRunRecord(
         link_id=link_id,
+        cluster_id=body.trigger_signal_id,
         run_id=body.run_id,
         bound_version=body.agent_version,  # = 原 verify_run_record.bound_version
         case_pass=_case_pass_of(link, kept),
@@ -1047,7 +1062,8 @@ async def record_regression_result(
     )
     session.add(record)
     session.add(ConversionRecord(
-        cluster_id=link.cluster_id if link is not None else None,
+        # orphan 也记载荷声明的簇（不写 NULL）：审计面要能按簇 join 到这笔推送
+        cluster_id=body.trigger_signal_id,
         link_id=link_id,
         action="regression_result",
         detail=_conv_detail(body, link, kept=len(kept), dropped=dropped),

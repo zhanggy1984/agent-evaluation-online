@@ -83,6 +83,7 @@ def _body(**over):
     body = dict(
         schema_version="1.0", agent="agent-x", agent_version="1.5.0",
         run_id="run-1", run_status="completed",
+        trigger_signal_id=10,
         agent_latest_version="1.5.0", prev_terminal_version=None,
         finished_ts="2026-01-05T08:00:00Z",
         cases=[{"case_id": "c-1", "case_type": "regression_error",
@@ -360,18 +361,20 @@ def test_push_orphan_archives_without_advancing():
         assert r.json()["run_record_id"] == 900  # 哨兵行确有 id
     rec = _added(session, VerifyRunRecord)[0]
     assert rec.link_id == ORPHAN_LINK_ID == 0  # 见 api 常量注释：UNSIGNED 自增永不分配 0
+    # orphan **也记真实簇 id**（幂等键的一半 + 审计面按簇 join 的锚），只有 link_id 是哨兵
+    assert rec.cluster_id == 999
     assert rec.case_pass is None
     conv = _added(session, ConversionRecord)[0]
-    assert conv.cluster_id is None and conv.link_id == ORPHAN_LINK_ID
+    assert conv.cluster_id == 999 and conv.link_id == ORPHAN_LINK_ID
     assert conv.action == "regression_result" and conv.actor_user_id is None
     assert "orphan" in conv.detail
 
 
 def test_push_duplicate_is_idempotent():
-    # 同 link_id + run_id 已有行 → 200 duplicated=true，零写（不落库、不写 conv）
+    # 同 (cluster_id, run_id) 已有行 → 200 duplicated=true，零写（不落库、不写 conv）
     session = FakeAsyncSession(registry={
         ErrorCaseLink: [_pending_link()],
-        VerifyRunRecord: [ns(id=77, link_id=30, run_id="run-1")],
+        VerifyRunRecord: [ns(id=77, link_id=30, cluster_id=10, run_id="run-1")],
     })
     with _app(session) as c:
         r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=10))
@@ -403,10 +406,14 @@ def test_push_duplicate_keeps_cases_dropped_same_as_first():
     assert len(_added(session, ConversionRecord)) == 1
 
 
-def test_push_orphan_same_run_idempotent_on_sentinel():
-    # 孤儿行的幂等键同样是 uk_verify_run(link_id=0, run_id)：重复推不重建行
+def test_push_orphan_same_run_idempotent_by_cluster():
+    """孤儿行按 (cluster_id, run_id) 幂等：重复推不重建行。
+
+    ⚠️ 名字原为 `..._on_sentinel`——那是**错的**：哨兵 0 被所有簇共用，按它查会把别的簇的
+    行当成本簇的（真机实测踩到）。幂等键已改按簇。
+    """
     session = FakeAsyncSession(registry={
-        VerifyRunRecord: [ns(id=88, link_id=ORPHAN_LINK_ID, run_id="run-1")],
+        VerifyRunRecord: [ns(id=88, link_id=ORPHAN_LINK_ID, cluster_id=999, run_id="run-1")],
     })
     with _app(session) as c:
         r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=999))
@@ -414,6 +421,36 @@ def test_push_orphan_same_run_idempotent_on_sentinel():
         assert r.json()["duplicated"] is True and r.json()["run_record_id"] == 88
         assert r.json()["links_advanced"] == []
     assert session.added == []
+
+
+def test_push_rejects_missing_trigger_signal_id():
+    """缺 trigger_signal_id ⇒ 422（既关联不到簇、也无法判重）。
+
+    代价是收紧对端契约——offline `error_push.assemble_payload` 恒填该字段，故实际不断链。
+    """
+    body = _body()
+    del body["trigger_signal_id"]
+    with _app() as c:
+        assert c.post(_URL, headers=_hdr(), json=body).status_code == 422
+
+
+def test_push_replay_after_link_terminal_hits_first_record():
+    """link 已判出终态后的重推：查不到现行 pending link（走 orphan 分支），但幂等键是
+    (cluster_id, run_id) ⇒ **仍命中首推行**。
+
+    **旧键 (link_id, run_id) 下本用例必红**（判别性所在）：那时重推的 link_id 已退化成哨兵
+    0，与首推行的 link_id=30 不等 ⇒ 判成新推送、落重复 orphan 行；而「响应丢失后重推」正是
+    §8.7 的既定场景（server 已 commit、响应没回来，且首推往往已把 link 判出终态）。
+    """
+    session = FakeAsyncSession(registry={
+        # 无 ErrorCaseLink 注册 = 查不到现行 pending link（终态只读 ⇒ 已判出的簇必然如此）
+        VerifyRunRecord: [ns(id=77, link_id=30, cluster_id=10, run_id="run-1")],
+    })
+    with _app(session) as c:
+        r = c.post(_URL, headers=_hdr(), json=_body(trigger_signal_id=10))
+        assert r.status_code == 200
+        assert r.json()["duplicated"] is True and r.json()["run_record_id"] == 77
+    assert session.added == []  # 零新增行（旧键下这里会多一条 orphan 行）
 
 
 # ---------- case_pass 派生（纯函数） ----------

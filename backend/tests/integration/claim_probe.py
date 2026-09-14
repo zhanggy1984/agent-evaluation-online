@@ -314,8 +314,12 @@ async def _seed_run(engine, *, agent: str, link_id: int, case_id: str | None,
     body = _push_body(agent=agent, version=version, run_id=run_id, cases=cases,
                       latest=latest, prev=prev, run_status=run_status)
     async with AsyncSession(engine) as s:
+        # cluster_id 由 link 反查（幂等键的一半，C2-补后必填）：探针内省一步，
+        # 免给本函数所有调用点各加一个参数
+        cid = await s.scalar(select(ErrorCaseLink.cluster_id).where(
+            ErrorCaseLink.id == link_id))
         row = VerifyRunRecord(
-            link_id=link_id, run_id=run_id, bound_version=version,
+            link_id=link_id, cluster_id=cid, run_id=run_id, bound_version=version,
             case_pass=_case_pass_of(case_id, cases), run_status=run_status,
             raw_json=body,
         )

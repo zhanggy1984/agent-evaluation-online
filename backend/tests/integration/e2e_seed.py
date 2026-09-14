@@ -194,7 +194,8 @@ async def seed(engine) -> None:
         # ---- verify 时间线（版本×pass/fail，含 excluded）----
         for rid, ver, passed in (("e2e-run-1", "e2e-v1", 0), ("e2e-run-2", "e2e-v2", 1)):
             c.add(VerifyRunRecord(
-                link_id=l_assemble_failed.id, run_id=rid, bound_version=ver,
+                link_id=l_assemble_failed.id, cluster_id=cid["fixed"],
+                run_id=rid, bound_version=ver,
                 case_pass=passed, run_status="passed" if passed else "failed",
                 raw_json={"e2e": True}, verified_ts=D(3),
             ))
