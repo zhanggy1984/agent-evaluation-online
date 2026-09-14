@@ -53,3 +53,22 @@
 ---
 
 *创建：2026-09-08（online 阶段 0 T-0.2 编码推进首轮，材料面交付）*
+
+---
+
+## 4. 网关/SSO 定案提问单（2026-09-14 立；**待 infra 回执**，§17 #14b）
+
+> **背景**：`solution.md` §17 #14 已于 2026-09-14 **拆半**——**#14a（SSO）已定** = 平台内部自持 JWT、登录取代网关侧 SSO（带条件，见 `solution.md` 该行）；**#14b（网关拓扑）仍待定**，因其**依赖 infra 侧对象**，我方无法单方面落定。本节即 #14b 的提问单，四项逐条要求 infra 回执。
+>
+> **为什么必须外部回执（实测依据，2026-09-14）**：`infra/api-gateway` = `nginx:1.27-alpine`，仅 `listen 8099` **明文**，**无 443 / 无证书 / 无 `auth_request` / 无 JWT 模块**；6 个 server 块（`gq.local`/`cs.local`/`cc.local`/`sp.local`/`eval.local` + `default_server` 兜底 403），**无 online 的 server 块与 upstream**（`eval.local` 指的是 **agent-evaluation-offline**）。全仓 `oidc|oauth|sso|keycloak|casdoor|auth_request|auth_jwt` **零命中**，compose 内无任何认证类服务。
+
+| # | 提问 | 我方当前设计口径 | 为什么我方定不了 |
+|---|---|---|---|
+| Q1 | **TLS 终止在哪一层**？ | `solution.md:682` 写「浏览器 → 公共网关（终止 TLS）→ backend」 | 实测网关**无 443、无证书**；而 offline 的实际链路是 **app 自己的前端 nginx 才是公网边缘**（`offline/frontend/nginx.conf:9/33`：`browser → 前端 nginx → api-gateway:8099（明文）→ ai-eval-backend`）⇒ 设计与实现形态不一致，**是改网关加 TLS，还是各 app 自负边缘**，须 infra 定 |
+| Q2 | **online 是否需要网关 server 块**？ | 设计上 online 走公共网关（同其余 agent） | 网关现有 5 个 server 块**全部面向 agent**，online 是**平台**（infra 侧仅以「ES/Kafka 消费方」身份登记）；且 online 是单实例，套 `{env}.` 参数化是否成立存疑——**建议 infra 明确 online 的接入形态**（是否与 agent 同列） |
+| Q3 | **「backend 仅接受网关转发来源」落哪一层**？ | `solution.md:682`「backend 服务仅接受网关/白名单来源」；T-5.3 承接 T-4.9 断言「绕过网关直连 backend 被拒」 | online **当前零实现**（无 `TrustedHostMiddleware`/`ProxyHeadersMiddleware`/来源校验，仅有「backend 不映射宿主端口」部署缓解）⇒ 落地形态是**容器网络隔离**（infra 侧）还是**应用层来源校验**（我方代码），须分工 |
+| Q4 | **`{env}.` 前缀与 infra 现有命名规则的关系**？ | `solution.md` §17 #15 = `{env}.obs` 库 / `{env}.obs-*` index / `{env}.obs.*` topic（与 infra 登记一致） | infra 网关用的是 **`{name}.local`**（按服务名，非 `{env}.` 按环境）；两者**命名维度不同**——上线前需对齐是「一环境一套网关」还是「一网关多服务名」 |
+
+> **回执后动作**：四项有结论后，`solution.md` §17 #14b 由「待 infra 回执」转「已落」并就地标注；随即按 T-5.3 执行网关联调与验收（含「绕过网关直连 backend 被拒」）。
+>
+> **⚠️ 不阻塞声明**：本提问单**不阻塞**阶段 4/5 的其余非网关项，也不阻塞本地 dev 联调（沿用 `docs/infra-access-matrix.md:51` 既有口径）。
