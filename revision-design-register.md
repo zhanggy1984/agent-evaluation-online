@@ -439,6 +439,12 @@
 > 本区登记**不属于 Task #4 error 回流修订**、但与同一批 online 权威文档（solution / solution_detail / task）联动的实现收口批次。
 > 单独成区以免污染上方 Task #4 台账的语义边界；性质同 header——工作台账、**非权威方案**，权威口径仍在 solution / solution_detail / task。
 > 状态机沿用 header：`recorded` → `designed` → `reviewed` → `approved` → `landed`。
+>
+> **状态列时效口径（2026-09-15 立）**：本区各行的「未 commit / 未 push（等授权）」记于**该批落地时点**，
+> 是当时的真实状态，**不随后续推送回溯改写**——故旧行字面停留在「未 push」并不代表现在还欠一次推送。
+> 某行是否已推送，一律以 `git` 实测为准：`git rev-list --left-right --count origin/main...main` 输出 `0 0`
+> 即本地无未推送提交，本区一切「未 push / 未 commit」断言**在当时之后已全部为假**。
+> 按此口径，453 / 455 / 456 / 459 四行的「未 push」即为时效残留（经 2026-09-15 实测确认），**有意不回填**。
 
 | 批次 | 内容（实现/裁定要点） | 落点 | 状态 |
 |---|---|---|---|
