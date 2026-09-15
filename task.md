@@ -237,6 +237,31 @@
   - **待查/待裁三问（本轮只登记，均未决）**：**(a)** 是否补一条迁移去掉该枚举值——⚠️ MySQL 改 enum 会**重建表**（A 级 DDL），且若将来人工复核机制回归则等于白删，**收益未证**；**(b)** 若保留，读到该值的失败模式是否可接受——SQLAlchemy `Enum` 结果处理遇未声明值抛 **`LookupError`（非静默）**，即**不会静默错判**，但会把一个「本可解释」的状态变成 500，**需要按 `Enum(...)` 是否带 `validate_strings`/`native_enum` 实测确认**（**该实测本轮未做**）；**(c)** 该分叉使 `alembic check` **恒报红**，噪音**会掩盖真漂移**（本轮同类红里就混着 `agent_circuit.opened_at` 一处真漂移）——是「一次性裁定」还是「给 `alembic check` 建已知偏离白名单」，二选一。
   - **边界**：**不进上线门**（不改契约、不改状态机、零业务行为影响：库内零行 + 代码无写点）；**本批不实现任何 DDL 改动**，仅登记。**开工前置** = 先答 (a)(b)(c)，且 (a) 若做须走 A 级流程（改数据库）。
   - **附注 · 同批暴露的另一处同类漂移（独立于本条，一并登记以免再立一项）**：`agent_circuit.opened_at` **库侧 = `double`**（2026-09-14 实测），模型侧声明 `Float(precision=53)`（`app/models/misc.py`）——**属同一类「模型↔库形态偏离」**，但**成因不同**（本条是枚举值域、那处是浮点精度写法），**处置可分开**。⚠️ **本条标题只含 `judge_task`**，勿把两处并作一个动作。
+  - ✅ **施行记录（2026-09-15，三问已裁、裁定 (a) 已落地）**：新增迁移 offline
+    `backend/alembic/versions/e5f6a7b8c9d0_shrink_judge_task_status_enum.py`（`down_revision='d4e5f6a7b8c9'`，
+    `upgrade` 收窄为 4 值 / `downgrade` 把 `pending_human` 加回，**可逆无损**）。三问回填：
+    - **(a) 做**（原「收益未证」不成立）。⚠️ **理由已补正**：不是「删干净」——零行 + 全仓 `pending_human`
+      零写点 ⇒ `LookupError` **不可达**，单说「删干净」答不出「不做会出什么具体故障」。真收益在 **(c)**：
+      该分叉使 `alembic check` **恒报红**，而**真漂移就混在这片红里**（`opened_at` 那处当时就没被独立注意到）。
+    - **(b) 已实测（补做，原行「该实测本轮未做」已失效）**：SQLAlchemy 结果处理遇未声明值的路径 =
+      `sqlalchemy/sql/sqltypes.py:1711-1724` `_object_value_for_elem`，找不到即 **`raise LookupError`**
+      （逐字 `"'%s' is not among the defined enum values…"`）—— **显式抛错、非静默错判**，与原文推测一致，
+      现为源码级证据。**但该失败模式在本场景不可达**（零行 + 零写点）⇒ **不构成「保留枚举值」的理由**。
+    - **(c) 随本批消解**（走近路：删掉源头，不建白名单）。收窄后 `alembic check` 输出中
+      **`judge_task` 已完全消失**，只剩 `agent_circuit.opened_at` 一处（**预期**，`task.md:239` 明说勿并作一个动作）。
+    - **验收（全绿）**：A 真库 `upgrade head` → `COLUMN_TYPE = enum('pending','processing','done','failed')` 恰 4 值 ·
+      B 行数 **1430 逐字不变**、分布 `{done:1429, failed:1}` 不变（改前已复核真值，未沿用 2026-09-14 快照）·
+      C 见上 · D `upgrade→downgrade→upgrade` 往返三步每步回查列型与行数均符合预期 · E offline 全量单测
+      **933 passed / 96 skipped**（与基线逐字一致）· F ruff 新文件**零命中**（借 online venv 配置；首次报 I001
+      属新增命中，已修）。
+    - **性质声明补正**：原文「**不是欠债**（无文档承诺过要删枚举值）」**结论仍成立，但理由要换** ——
+      实为 `a9e6b4c2d8f1_drop_governance_features` 那次改造**声明的处置范围 = 模型 + 三张遗留治理表**，
+      **枚举值从未进入该次范围**（不是「漏删」，是「从未进入视野」）。
+    - **本批的绿不能证明**：`opened_at` 那处漂移已处理（**显式不碰**，`alembic check` 仍红一处）；其他表无同类
+      残留（**由 `alembic check` 的全局比对兜住**，它报的是全集非抽样）；「人工复核机制不会回归」（回归须重写迁移
+      把枚举值加回，成本与现在删掉相当 ⇒ 不构成「白删」顾虑）。
+    - **交付**：**未 commit、未 push**，等逐项授权。风险等级 A（真库 DDL，MySQL 改 enum 会**重建表**；
+      本表仅 1430 行，重建瞬时完成）。
 
 **阶段出口**（solution §15 P2 / detail §14.3，error-only）：E-1~E-29 主链 + 修订包语义通过——其中 E-23~E-29（R-13~R-24 修订包端到端）的双端/环 2 形态在阶段 4 验收（E-1~E-22 online + offline 配套，含 §11.5 维度 3 开放验收 checklist #4/#8/#10 + 兜底吸收埋点前提用例 S-4 真实 agent 复验 + 词表覆盖度对照 §13.1 兜底逻辑盘点）。
 
