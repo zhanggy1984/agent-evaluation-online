@@ -321,6 +321,14 @@
 
 **阶段出口**（solution §15 P2 / detail §14.3，error-only）：E-1~E-29 主链 + 修订包语义通过——其中 E-23~E-29（R-13~R-24 修订包端到端）的双端/环 2 形态在阶段 4 验收（E-1~E-22 online + offline 配套，含 §11.5 维度 3 开放验收 checklist #4/#8/#10 + 兜底吸收埋点前提用例 S-4 真实 agent 复验 + 词表覆盖度对照 §13.1 兜底逻辑盘点）。
 
+- **T-3.19 sp `config_service.load_all()` 收尾审计日志写法错 ⇒ 启动日志「系统配置加载跳过」是假警报**（**2026-09-15 立**，来源 = 批 6a 重建 sp 镜像后翻 `sp-app` 启动日志时发现；用户拍板「登记」）：
+  - **事实（全部由真机命令产出）**：`smart-procurement/app/services/config_service.py:101` 的 `logger.info("config.load_all", count=len(rows))` 传了 `count=` 关键字参数，而**本模块的 logger 是标准库 logger**（`:21` = `logging.getLogger(__name__)`，**不接受任意 kwargs**）⇒ 抛 `TypeError: Logger._log() got an unexpected keyword argument 'count'`。该调用位于 `load_all()` 的**最后一行** —— 缓存 `_cache` 填充与 `_last_full_load` 更新**均已完成之后**（`:96-101`）。
+  - **级别依赖（决定了它「有时炸有时不炸」）**：标准库 `Logger.info` 先做 `isEnabledFor(INFO)` 过滤，**被过滤时根本走不到 `_log`**。实测对照（同一容器、同一镜像、同一份代码）：root 级别 = 默认 `WARNING` ⇒ `load_all: OK (no raise)`；以 `logging.getLogger().setLevel(logging.INFO)` 拉起后重跑 ⇒ `load_all RAISED: TypeError ...` **逐字复现容器启动日志**。⇒ **该缺陷仅在 INFO 级别开启时暴露**（本部署 `setup_logging` 开了 INFO，故容器每次启动必触发）。
+  - **⚠️ 本条的落点与「报错」的字面相反（后续引用必须照此，勿按日志字面转述）**：`app/main.py:115-119` 以 `try/except` 包住 `config_service.load_all()`，异常统一打印 `[startup] 系统配置加载跳过: {e}`。但**同一次调用中实测 `_last_full_load > 0` 为真**（该赋值在抛异常的日志行**之前**执行）⇒ **缓存实际已填充完毕，配置并未被跳过**。**「跳过」是假警报**。**我最初照日志字面判「系统配置整段被跳过」，已被自己的探针推翻**，登记口径以此处的订正版为准。
+  - **真问题（这才是值得修的理由）**：① `main.py:119` 的**同一句话承载两类互斥失败** ——「加载真失败」与「加载成功但收尾日志写法错」，**二者不可区分**；且 `except` 分支只 print、不 re-raise ⇒ **真失败时同样打印「跳过」且启动照常**，排障时无法据日志判定到底哪一类；② 被吞掉的是 **TypeError 而非配置错误**，掩盖了「本模块 logger 用法与其余模块不一致」这一事实（sp 其余模块用 structlog 风格 `logger.info("event", key=...)`，此处**混用两种日志库**）。
+  - **现状与边界**：**本批只登记，未修**。修法极小（改标准库风格 `logger.info("config.load_all count=%d", len(rows))`，或统一换 structlog），但改的是 sp 仓**运行期代码**、需重走单测与镜像重建，按「一批一验收」另立。**行为影响 = 零**（缓存已填充；`get_all` 的 TTL 兜底路径同此理）；**不进上线门**。
+  - **未取证（不得据本条外推）**：① **未全仓 grep** sp 其余模块是否还有同型「stdlib logger 传 kwargs」调用（本轮只看 `config_service.py` 这一处）；② 未核「`system_config` 表零行」是否另有问题 —— 实测 `cache_size_after: 0` 指表内无自定义行，与模块 docstring「DB 只存有自定义值的行，未覆盖的键回落默认值」的设计**一致，属正常**。
+
 ---
 
 ## 阶段 4｜集成测试与端到端验收（富化）
