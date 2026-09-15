@@ -291,7 +291,23 @@
   - **推论 4（T-2.5 本体）**：T-2.5 **从未整体验收**（`task.md:97`/`:101` 明确 defer agent 整改轨）⇒ **不存在「已作废的 T-2.5 验收结论」**；风险在**将来**——凡以四仓**运行实例**为证据面的验收，默认验的是 **Sep 8 的码**。
   - **四仓自身文档自 Sep 8 起零「已部署/已上线/重新构建镜像」记录**（逐仓 grep 无命中）⇒ **不存在「声称部署过」的假账**；缺的是**部署动作本身**，属**流程缺口**而非记录失真。
   - **边界（本批显式不做）**：**只登记 + 查清波及范围**，**不重建镜像、不重跑真机验收**。理由 = 重建属部署级动作，且「部署漂移」与「T-2.5 真机验收」是**两个验证面**，并作一批会让「重建引入的新问题」与「本批改动的问题」无法区分。
-  - **待裁**：(1) 何时重建四镜像（与 T-2.5 真机复验的排期绑定）；(2) 重建后是否重跑 `integration-report.md` §2 序号 10 的真机复验；(3) 是否需一条**部署后置检查**（构建时把烤入提交写进镜像、或跑完验收核对实例指纹），防同类漂移复发。
+  - **待裁**：(1) ~~何时重建四镜像（与 T-2.5 真机复验的排期绑定）~~ **已于 2026-09-15 执行（批 6a，见下「施行记录」）**；(2) 重建后是否重跑 `integration-report.md` §2 序号 10 的真机复验；(3) 是否需一条**部署后置检查**（构建时把烤入提交写进镜像、或跑完验收核对实例指纹），防同类漂移复发。
+  - ✅ **施行记录（2026-09-15，批 6a = 「结构面」；用户拍板「先出重建镜像方案」后执行）**：**四仓 backend 镜像已全部重建并上线**，烤入提交追上重建当刻 HEAD：
+
+    | 仓 | 重建后烤入提交 | 抽样指纹复验点 | 结果 |
+    |---|---|---|---|
+    | good-question | `94c27be` | `services/llm_service.py`、`services/chat_service.py`、`frontend/nginx.conf`（镜像内 `/etc/nginx/conf.d/default.conf`） | MATCH ×3 |
+    | customer-service | `16f92c0` | `app/infrastructure/deepseek_gateway.py` | MATCH ×1 |
+    | smart-procurement | `4fbd631` | `app/obs.py`、`app/ai/llm/deepseek_client.py` | MATCH ×2 |
+    | contract-check | `68dbff1` | `app/obs.py` | MATCH ×1 |
+
+    **判据面（不许读大）**：指纹复验是 **7 个抽样点的正面比对**（两侧 `tr -d '\r'` 归一后 `sha256`），**不是整个镜像的逐文件比对**；「MATCH」只证明**这些点**与宿主 HEAD 逐字节一致，**不证明镜像内其余文件无残留旧码**（未逐文件全比）。
+    **容器确已换用新镜像**（`up -d` 重创，非「只构建」）：gq `rag-backend`/`rag-nginx`、cs `customer-service-backend-1`、sp `sp-app`/`sp-worker`、cc `contract-check-backend`（Healthy）/`contract-check-frontend`。探活实据：gq `/api/health` **200** + `/openapi.json` **200**；cs 日志 `Application startup complete` + `[obs] obs_sdk 已初始化 topic=dev.obs.agent.customer-service`；sp `sp-app` `health=healthy` + `/health/ready` **200**；cc backend `Healthy`。
+    **⚠️ 现场事实（如实记，勿读成缺陷）**：`sp-app` 首启失败过 1 次（`[startup] 硬依赖不可用: ['mysql']，退出进程`，`RestartCount=1`）——**这是 sp 自身 `main.py:104-105` 的 fail-loud 设计行为，非本次镜像引入**（同一镜像第二次启动即成功且 healthy）。
+    **不可逆保护**：重建前已把 7 个 `:latest` tag 备份为 `:pre-b6`（回退路径可用）。**顺带恢复**：`shared-neo4j`/`shared-redis`/`api-gateway` 当日 11:0x 前被停过，本次一并 `start` 恢复；三容器 `RestartPolicy=unless-stopped` + `RestartCount=0` ⇒ 当时为**手动停止**（非崩溃、非 OOM，`OOMKilled=false`）。
+    **本批不覆盖（显式，勿被整批的绿盖过）**：① **`integration-report.md` §2 序号 10 的真机复验未重跑**（属 6b 行为面）；② **T-3.18 的「取消是否真落在那两个窗口」未观测**（本批只换码，不含触发）；③ **offline/online 两个平台仓的镜像同样漂移**——批 4 的双 Host 修复**不在任何镜像里**，本次未重建。
+    **推论 2 据此订正**：原写「线上仍在产自由字符串 `error_type`」**自本次重建起失效** —— 四仓 `error_type` 白名单折叠的**码已上线**（但其**行为**仍未经真机验收，见 6b）。
+
 - **T-3.18 sp `chat()`（非流式）的 obs 记账取消窗口（已结清 — 同日改判为补齐）**（**2026-09-15 立**，源起 = 同批修「流式生成器弃用黑洞」时顺带查明；**立条时用户拍板「登记不修」，随即因下述自查而改判为「补齐」，同日落地 `4fbd631`**）：
   - **事实**：`smart-procurement/app/ai/llm/deepseek_client.py` 的 `chat()` 有两处**待取消悬点**——① 成功路径 `await self._circuit.record_success()` 在 `_obs_llm_ok` **之前** ⇒ 取消落在 Lock acquire 上时**成功调用丢 ok**；② 失败路径处理器内的 `await record_failure` / `await asyncio.sleep` ⇒ 取消时 `_obs_llm_error` 未执行，**账目半截**。`asyncio.CancelledError` 承 `BaseException`，`except Exception` 不接 ⇒ 结构性成立。上游触发与流式侧同为客户断连；唯一差别是协程没有 `aclose()`/GeneratorExit 那条独立出口。
   - **⚠️ 改判的起因（立条时我的理由错了一处，当场自查订正）**：我原以「窗口窄」判不修，但那**只对悬点① 成立**；悬点② 的窗口 `asyncio.sleep(delay)`（退避 **0.5~4s**）与流式批刚补的第二出口**同形同宽**。⇒ **拿「窗口窄」当不修理由是错的**，用户据此错前提做的决定已当场重新拍板。
