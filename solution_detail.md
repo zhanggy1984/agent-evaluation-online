@@ -341,6 +341,21 @@ P2(回流): analyzer 聚类/去重 → converter 信封+落库 → offline pull-
 | `db_error` / `redis_error` | DB / Redis 访问失败 | **L2** | 同上 |
 | `auth_error` / `validation_error` 等 | 非 LLM 接口业务错误 | 不出回流 | 出指标、出 trace |
 
+**值域约束（分层不同，勿混）**：
+
+- **LLM 级（`llm_call` 子节点）的 `error_type` 是上表 `llm_*` 七词的强制值域，不是自由字符串**。
+  agent 侧须把 provider 异常（超时 / 限流 / 断连 / 4xx / 5xx / 解析失败 …）**折叠**进这七词后上报。
+  折叠时原始信息（HTTP 码、异常类名）由 `error_msg` 保留，故不透出码值不丢证据。
+  典型折叠口径（四 agent 一致）：仅 429 单列 `llm_rate_limit`，其余状态码统一 `llm_other`。
+- **白名单外的值怎么办**：`analyzer/classify.py:_layer_for` 返 `None` → 调用点跳过 ⇒ **不产候选、
+  不报错、不落标记**，且**逐值判定**（同一 trace 内其他白名单值照常产候选，非整条作废）。
+  故值域写错的后果是**该 error_type 静默失去回流资格**，现场无任何提示。
+- **值域正确是必要条件、非充分条件**：值域命中后仍须过门控（root 终态 / `backflow_allow` 等，§6.1）
+  才成候选。尤其「LLM 失败被业务兜底、request 终态 ok」的现场按 `solution.md` 降级型异常归属条
+  属 L3、**v1 不回流**——LLM 级值域正确并不使该现场回流。
+- **request 级 `error_type` 仍是自由字符串**（表末行 `auth_error` / `validation_error` 等为开放集合，
+  只出指标与 trace、不出回流），此处不加值域限制。
+
 **catch 转抛归属规则**（L1/L2 边界，SDK 侧必须按此打标）：
 - LLM provider 错误未被业务 catch、直接冒泡成接口错误 → 接口标 `llm_*`（L1）。
 - LLM 错误被业务 catch 后转抛为自身业务/程序错误暴露给客户端 → 接口标 `llm_interface_business`（L2）。
