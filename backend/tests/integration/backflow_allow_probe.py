@@ -91,7 +91,8 @@ async def main() -> int:
             cc, cs = _row("contract-check", "cc"), _row("customer-service", "cs")
             db.add(cc)
             db.add(cs)
-            await db.flush()  # 先取 id/hash 再 commit：commit 后属性过期，读它会触发同步 lazy refresh
+            # 先取 id/hash 再 commit：commit 后属性过期，读它会触发同步 lazy refresh
+            await db.flush()
             cc_id, cs_id, cc_hash, cs_hash = cc.id, cs.id, cc.root_input_hash, cs.root_input_hash
             await db.commit()
             print(f"种入未判行：cc={cc_id} cs={cs_id}（唯一差异 = agent）", flush=True)
@@ -106,12 +107,19 @@ async def main() -> int:
             cc_j = cc_r.judgement_json or {}
             cs_j = cs_r.judgement_json or {}
             cc_gate = cc_j.get("gate") or {}
-            print(f"cc 判定产物：judged={cc_r.judged} layer={cc_j.get('layer')} gate={cc_gate}", flush=True)
+            print(
+                f"cc 判定产物：judged={cc_r.judged} layer={cc_j.get('layer')} gate={cc_gate}",
+                flush=True,
+            )
             print(f"cs 判定产物：judged={cs_r.judged} layer={cs_j.get('layer')}", flush=True)
 
             check("cc 行已判定", cc_r.judged == 1, f"judged={cc_r.judged}")
             check("cc 层=none（负对照）", cc_j.get("layer") == "none", f"layer={cc_j.get('layer')}")
-            check("cc gate.backflow_allow=False", cc_gate.get("backflow_allow") is False, str(cc_gate))
+            check(
+                "cc gate.backflow_allow=False",
+                cc_gate.get("backflow_allow") is False,
+                str(cc_gate),
+            )
             check("cs 行已判定（正对照）", cs_r.judged == 1, f"judged={cs_r.judged}")
             check("cs 层=L1（正对照）", cs_j.get("layer") == "L1", f"layer={cs_j.get('layer')}")
 
@@ -120,7 +128,11 @@ async def main() -> int:
             cs_c = (await db.execute(select(ErrorCluster).where(
                 ErrorCluster.input_hash == cs_hash))).scalars().first()
             check("cc 未建簇", cc_c is None, f"cluster={None if cc_c is None else cc_c.id}")
-            check("cs 已建簇（正对照）", cs_c is not None, f"cluster={None if cs_c is None else cs_c.id}")
+            check(
+                "cs 已建簇（正对照）",
+                cs_c is not None,
+                f"cluster={None if cs_c is None else cs_c.id}",
+            )
 
         async with AsyncSession(engine) as db:
             await _cleanup(db)
