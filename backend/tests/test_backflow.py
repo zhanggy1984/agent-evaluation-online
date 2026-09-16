@@ -189,6 +189,32 @@ def test_requeue_guard_debounce_boundary():
     assert requeue_guard_errors(_ns_link(assembled_ts=now), cluster, now=now) is not None
 
 
+def test_requeue_guard_rejects_cap_gap():
+    """cap_gap 一律禁 requeue（2026-09-16 补）：恢复面在离线侧，重推是假动作。
+
+    离线端对 `offline_cap_gap` 只放 `ack_status ∈ {none,pending}` 重处理，而这类行已
+    acked ⇒ requeue 后离线必跳过 ⇒ admin 看到 200 但零处理，且 requeue_count 被计入
+    R-7 可愈性标注（前端 ≥2 转强确认）。故判据 = 拒绝，文案须指出「离线侧」而非泛泛。
+    """
+    now = _now()
+    msg = requeue_guard_errors(
+        _ns_link(invalidate_reason="offline_cap_gap"), ns(status="open"), now=now)
+    assert msg is not None
+    assert "offline_cap_gap" in msg and "离线侧" in msg
+
+
+def test_requeue_guard_allows_other_reasons():
+    """正对照：另两个 reason 仍放行 —— 证明是**按 reason 分流**，不是把守卫整体打死。
+
+    无此对照，「cap_gap 被拒」与「守卫本来就全拒」观测特征相同（判据无判别力）。
+    """
+    now = _now()
+    cluster = ns(status="open")
+    for reason in ("online_content_gap", "manual_invalidate"):
+        assert requeue_guard_errors(
+            _ns_link(invalidate_reason=reason), cluster, now=now) is None
+
+
 # ---------- pull cursor / since_ts（纯函数） ----------
 
 

@@ -240,13 +240,16 @@ function doRequeueLink(lk: BackflowLink): void {
   void runAction(() => linkRequeue(lk.link_id), 'link 已重推')
 }
 
-// link 行内 admin 动作门控：invalidate 仅 assembled/draft；requeue 仅 invalidated∧verify pending∧cluster 可处置
+// link 行内 admin 动作门控：invalidate 仅 assembled/draft；requeue 仅 invalidated∧verify pending∧
+// cluster 可处置∧**非 offline_cap_gap**（该 reason 的恢复面在离线侧：online 补不了 agent/interface
+// 登记，重推会被离线重处理谓词跳过 ⇒ 假动作 + 污染可愈性计数；走后端守卫同一条判据）
 function linkCanInvalidate(lk: BackflowLink): boolean {
   return isAdmin && (lk.offline_status === 'assembled' || lk.offline_status === 'draft')
 }
 
 function linkCanRequeue(lk: BackflowLink): boolean {
   return isAdmin && lk.offline_status === 'invalidated' && lk.verify_status === 'pending'
+    && lk.invalidate_reason !== 'offline_cap_gap'
     && ['open', 'claim', 'needs_review'].includes(detail.value?.status ?? '')
 }
 

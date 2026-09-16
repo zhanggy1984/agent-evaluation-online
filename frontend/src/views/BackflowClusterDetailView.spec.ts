@@ -298,6 +298,24 @@ describe('link 行内 admin 动作门控', () => {
     expect(String(confirmMock.mock.calls[0][0])).toContain('确认重推 link#42')
     expect(apiMock.linkRequeue).toHaveBeenCalledWith(42)
   })
+
+  it('invalidate_reason=offline_cap_gap：不渲染「重推」按钮（恢复面在离线侧，重推是假动作）', async () => {
+    const w = await mountWith(mk({
+      status: 'open', links: [link({
+        link_id: 42, ...invalidated, invalidate_reason: 'offline_cap_gap',
+      })],
+    }))
+    expect(btn(w, '重推')).toBeUndefined()
+  })
+
+  it('正对照：同结构但 reason=online_content_gap → 按钮仍在（按 reason 分流，非整块打死）', async () => {
+    const w = await mountWith(mk({
+      status: 'open', links: [link({
+        link_id: 43, ...invalidated, invalidate_reason: 'online_content_gap',
+      })],
+    }))
+    expect(btn(w, '重推')).toBeDefined()
+  })
 })
 
 describe('认领表单：请求体形状', () => {

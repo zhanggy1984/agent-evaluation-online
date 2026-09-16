@@ -2,7 +2,8 @@
 
 - `requeue_guard_errors` 纯守卫（R-24 状态域精确化）：仅 invalidated ∧ verify=pending ∧
   cluster.status ∈ {open, claim, needs_review} ∧ 防抖 ≥5min（锚 = assembled_ts）可复位；
-  fixed/inactive（已 closed）禁 requeue（需 superseded+reopen 重建新 link/新 payload_id）。
+  fixed/inactive（已 closed）禁 requeue（需 superseded+reopen 重建新 link/新 payload_id）；
+  **`offline_cap_gap` 一律禁**（2026-09-16 补：恢复面在离线侧，重推是假动作 —— 见守卫内注）。
 - `requeue_link`：复位 = invalidated→assembled，**复用 payload_id + 重填 payload_json
   （以现 cluster + 现词表重组装 → 内容缺愈）+ 刷新 assembled_ts=now()**；清
   invalidate_reason/invalidated_by；verify_status 保持 pending（仍占现行位 §5.1）；
@@ -31,6 +32,9 @@ from app.models.error_flow import ConversionRecord, ErrorCaseLink, ErrorCluster
 REQUEUE_DEBOUNCE_MINUTES = 5          # §7.4：同一 link 人工重推间隔 ≥5min（锚 = assembled_ts）
 REQUEUE_ALLOWED_CLUSTER = ("open", "claim", "needs_review")   # R-24：fixed/inactive closed 禁
 MANUAL_INVALIDATE_REASON = "manual_invalidate"
+# cap_gap 的识别码（与 ack.py 的 R2 例外同源取值）。本仓只此一处消费：requeue 守卫据此拒绝
+# 人工重推；批量入口 `requeue_batch` 的 where 本来就把候选限在 online_content_gap。
+CAP_GAP_REASON = "offline_cap_gap"
 # R-7 可愈性标注（换判据 = 行为数据）：已重推过 ≥该次数仍 invalidated 回来 = 疑似不可自愈
 # （如版本不识别 / 配置长期未补齐），前端据此转强确认（二次确认）。该值系拍定、无数据支撑，
 # 上线后按真实 conversion_record 分布调。
@@ -47,6 +51,20 @@ def requeue_guard_errors(link, cluster, *, now: datetime) -> str | None:
     """§7.4 R-24 守卫链：通过返回 None，否则返回给 ERR_CLUSTER_0003 的可读信息。"""
     if link.offline_status != "invalidated":
         return f"仅 invalidated 可 requeue（当前 offline_status={link.offline_status}）"
+    if link.invalidate_reason == CAP_GAP_REASON:
+        # cap_gap 的恢复面在**离线侧**（补登记 agent/interface），online 补不了 ⇒ 人工重推
+        # 没有任何有效作用，只会造成三个真实损失：①**假动作**——离线端拉到该 payload 后
+        # 被重处理谓词跳过（`_needs_reprocess` 对 offline_cap_gap 只放 {none,pending}，
+        # 该行已 acked）⇒ admin 看到 200 而实际零处理；②**载荷分叉**——requeue 会用现
+        # cluster+现词表重渲染 payload_json 并刷新 assembled_ts，而离线 inbox 里仍是旧
+        # envelope_json ⇒ 日后探测态自愈建出的 case 来自旧载荷；③**污染 R-7 可愈性计数**
+        # ——requeue_count +1，前端 ≥SUSPECT_REQUEUE_THRESHOLD 转强确认，把「从未被受理」
+        # 记成「重推多次仍不行」。正确路径 = 离线探测态每小时自愈（离线详设 §5.8）。
+        return (
+            "offline_cap_gap 不可 requeue：该行的恢复面在离线侧（补登记 agent/interface），"
+            "online 补不了登记；重推会被离线重处理谓词跳过（假动作）并污染可愈性计数。"
+            "正确路径 = 离线「等待接入」探测态每小时自愈（§5.8）"
+        )
     if link.verify_status != "pending":
         return (
             f"verify 兜底：仅 verify_status=pending 的 invalidated link 走此路"
