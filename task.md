@@ -334,7 +334,13 @@
     - **补记原登记「未取证①」（现已取证）**：AST 扫全仓 `logger.<level>(...)` 是否传非 `%` 位参数 + 逐个判定 logger 绑定形态 ⇒ **sp 恰 2 处**（`:101` `count=` / `:159` `keys=`+`operator=`），**gq / cs / cc 各 0 处**；绑定形态 = 39 文件 `structlog.get_logger()`、2 文件 `logging.getLogger`（含本文件）、**零导入期绑定**（假设漏洞已封堵）。
     - **判别力证据（三级，缺一不可）**：① **改前**：默认级别 `pytest tests/unit/test_config_service.py -q` = **7 passed**，同命令加 `-o log_level=INFO` = **2 failed / 5 passed** ⇒ **既有测试本就覆盖这两处，是日志级别把它挡住了**（`isEnabledFor` 为假 ⇒ `_log` 不被调用 ⇒ kwargs 被静默丢弃）；② **改后**：两跑法均 **7 passed**；③ **反事实** = 把绑定临时还原为 stdlib，在**加了 ini 项的默认跑法**下自报 **2 failed / 5 passed** ⇒ ini 项确实堵住盲区（非摆设）；还原后残留 0。
     - **回归与静态检查**：全量 `370 passed / 118 deselected`（与加 ini 项**前**逐字一致）；ruff 借 online venv（**sp venv 无 ruff**）逐规则对照 —— 改动文件 HEAD 版与工作区版**均 `All checks passed`** ⇒ **零新增**。（全仓存量 **321** 处红，非本批引入、未处理。）
-    - **⚠️ 本条的未验收（不得被「已修」盖过）**：**真机层未复验** —— `de5a77b` **未进镜像**，生产仍跑旧码 ⇒ 启动日志与 `PUT /config` 两条症状在真机上**尚未观测到消失**；需 sp 镜像重建 + 重启（**属上线动作，另行授权**）。
+    - **⚠️ 订正上条续记的误判：真机层已于同日复验通过，且「需 sp 镜像重建」不成立**：`smart-procurement/docker-compose.yml:78` 的 `- ./app:/app/app:ro` 表明 **`app/` 是 bind mount** ⇒ 宿主源码改动**无需重建镜像**，只需重启容器（本次 `docker compose up -d` 输出**无任何 build 步骤**）；`de5a77b` 改的 `app/services/config_service.py` **正在挂载范围内**（`pyproject.toml` 不在，但那是测试配置、不进运行期）。
+    - **真机验收证据（2026-09-16）**（下引行号为**验收当时** `docker logs sp-app | grep -n` 的序号，日志增长后会变 —— **定位以事件内容与时刻为准，勿据行号回查**）：
+      - **启动路径 = 同容器内前后对照**（最强档）：`RestartCount=1`，日志是**同一容器实例**的连续流（镜像、挂载点均未变），仅代码不同 —— 行 **41**（10 小时前，旧码）`[startup] 系统配置加载跳过: Logger._log() got an unexpected keyword argument 'count'`；行 **614**（今日，新码）`{"count": 0, "event": "config.load_all", "level": "info", "timestamp": "…"}` **且无「加载跳过」** ⇒ 症状消失 + 事件**真打出来了**（非被 structlog 静默丢弃）。
+      - **写路径**：`PUT /api/v1/config`（body `{"items":[{"key":"llm.temperature","value":0.3}]}`，取当前值以免改状态）返 **HTTP 200**；日志同时打出 `{"keys": ["llm.temperature"], "operator": "U-001", "event": "config.set", …}` —— **该行即 `:159`**，其正常打出 + 200 直接证明 500 成因已消除。
+      - **⚠️ 证据分档（勿混为一谈）**：写路径**没有**「旧码实测 500」的对照（10 小时前未打过该请求）；「旧码必 500」由三条合成 —— 本仓单测反事实（stdlib 绑定下 `-o log_level=INFO` = 2 failed）+ 真机行 41 证明**同类调用在真机确实抛同型异常** + `api/v1/config.py:63` 只捕 `ConfigError`。
+      - **验收副作用（如实记）**：为验写路径**真的写了一次** `llm.temperature=0.3`（值未变，但 `updated_at`/`updated_by` 被刷新为 U-001）。
+      - **环境状态**：为验收拉起了整套共享 infra + sp 三容器（此前 **26 个容器全 Exited**，Docker Desktop 未运行）。
     - **同批发现、与本案无关（仅登记）**：ⓐ sp 全量跑法有个坑 —— `pytest`（无参、走 `testpaths`）在**收集期**即中断（`Defining 'pytest_plugins' in a non-top-level conftest`），根因 = `tests/unit/conftest.py:14` 的 `pytest_plugins = []` 在 configure 之后才被导入；**必须带参数** `pytest tests/unit tests/integration`（370 passed）。ⓑ **sp 的 pre-commit 覆盖率门禁是真跑的**（`app/` 布局 + `tests/unit` 在场，**未**落入 `backend/` 布局那条死代码），本次报 370 passed / 70.59% ≥ 45%。
 
 ---
