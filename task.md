@@ -411,3 +411,114 @@
 - **假设**：公共 infra 各租户以 `{env}.` 前缀隔离互不可见；词表覆盖度缺口（漏词/变体）在 v1 属如实存在（solution §16 承认），不阻塞闭环、仅登记。
 - **已销（2026-09-07 回填收口）**：T-4.13/T-4.14 中**超出 detail §14 已编号用例**的追加场景（埋点前提用例、检索注入/转义、时间/窗口/数量级/词表边界死角等）已编号化为 **detail §14.5 X-1~X-13**（「集成异常与边界用例」，detail v1.10 修订记录已登记）——集成验收统一以 detail §14.5 X 编号为权威口径，task T-4.13/T-4.14 为来源容器，两文档用例集已对齐、无需再回填。
 - **边界**：L3 quality/会话型回归/collector 组件不入本 WBS（v1 不实装，detail §12.1 二期占位索引为准）。
+
+---
+
+## 任务清单对账（2026-09-16）
+
+**背景**：Claude Code 任务清单（会话内工具、**非本仓文件**）累积 10 条 pending，对账发现它**不可作为「下一步做什么」的导航** —— 其中混着「已完成未更新」「登记项」「已裁不验」三类，却被写成同形的「待办」。判据 = **只认台账白纸黑字 + 行号**，不认印象。
+
+**结果 10 → 3**：
+
+| 条目 | 判定 | 依据（逐字摘引 + 行号） |
+|---|---|---|
+| T-3.15（原记「三问未决」） | **已结清** | 本文件 `:240`/`:263`「三问已裁、(a) 已落地……已 commit + 已 push」（offline `78f1345` / online `7d6f269`）|
+| T-3.17（真机证据对账） | **已结清** | 本文件 `:295`/`:305`/`:313`「四仓 backend 镜像已全部重建并上线……✅ 本条结清（2026-09-16）」|
+| C-5 规格引用行号漂移 | **登记项·不排期** | `offline/error-backflow-pending-phases.md:842`「判 P3 登记项、**只登记不改**」|
+| T-4.15「7d 窗口」/ `inactive` 状态 | **登记项·不排期** | 本文件 `:379`「性质同 T-3.15/T-3.16 = **登记项，不是验收任务**」|
+| R-8 自愈支 + online R2 例外 | **已裁·不验** | `pending-phases.md:732`「无真机证据 —— 用户裁定不真机验」⚠️ **不等于「已结清」**：这是**明知的永久边界**，据实记「已裁·不验」，不得写成「做完」 |
+| 乙项 requeue reason 门 | **两侧拆明** | online 半已落码（本文件 `:115`，482 passed）；offline 半 `pending-phases.md:741`「**仍为登记项**」|
+
+**仍为真待办（3 条）**：C-3 lint 门禁缺口（offline 无 CI、ruff 本机不可用）· `manual_invalidate` 竞态对账未真机触发 · offline §4 未验清单（**6 条** —— 原记「5 条」已过期，第 6 条 2026-09-16 新增）。
+
+**本节的用途**：下次有人（含 AI）看到任务清单只剩 3 条时，能查到这里为什么、以及被移出的 7 条去了哪。**不得据「清单只剩 3 条」推断「项目接近完成」** —— 本仓阶段目标【闭环可用】已于 2026-09-16 收官；剩余 3 条属维护面（补门禁 / 补证据），**做完不产生新目标**。
+
+---
+
+## 真实 agent 端到端联调验收（2026-09-16）
+
+**背景**：本台账与 `docs/` 多处（站点全集见文末）长期记「无真实 agent / 卡 T-2.5·S-4 / 环境无输入」，
+并据此把 T-5.1 / T-5.2 / T-5.4 与「维度 3 开放验收」判为「无法开工」。
+**2026-09-16 据实核查，该前提不成立** —— 四个 agent 早已部署、已接 SDK，且平台**已经真实评测过它们并出分**。
+
+### 一、四层实证
+
+| 层 | 结论 | 证据 |
+|---|---|---|
+| 服务部署 | ✅ 四个 agent 容器均在跑 | `docker ps`：`customer-service-backend-1` / `contract-check-backend` / `sp-app` / `rag-backend`(gq) |
+| 契约可达 | ✅ 四家 `/api/contracts` 全 **HTTP 200** | `curl localhost:{8080(gq)\|8000(cs)\|8003(cc)\|18002(sp)}/api/contracts` |
+| SDK 接入 | ✅ 四层全齐：代码插桩 + 配置项 + 构建接线 + `.env` **`OBS_ENABLED=true`** | 各仓 `.env`（gq:56 / cs:43 / cc:14 / sp:75）+ 各 `docker-compose.yml` 的 `additional_contexts: obs-sdk` |
+| 观测链 | ✅ 四家端到端（Kafka → 消费端 → ES → 查询 API） | 见下 |
+| **评测链** | ✅ **离线平台真打真实 agent 并出分** | run **3666 / 3660 / 3038** |
+
+### 二、观测链证据（online 侧）
+
+- 四个 agent topic 均有数据：`dev.obs.agent.good-question` **2760** / `customer-service` **215** /
+  `smart-procurement` **53** / `contract-check` **1**（`dev.obs.selfmonitor` 3388 = 心跳 1/min）。
+- **`llm_call` 深度已验三家**（含 `model` + `usage` 三分量 + 正确 `parent`）：
+  gq（2 条）、cs（5 条，源自一次 21 秒/5 次 LLM 的真实对话）、sp（2 条，源自一次 58 秒的评审）。
+  cc 按设计仅 request 级（`solution_detail.md:1402`）。
+- **本次可控触发**：分别 `curl` cs/cc/sp 的 `/api/contracts`，三家 topic 各 **+1**，
+  且三家的 `trace_id` 经 online 查询 API **精确回查命中**、`ts` 与 Kafka 原文**逐位相同**
+  （cc `1789536205227` / cs `1789536203221` / sp `1789536207312`）。
+- 一条无 `llm_call` 的 trace 经 Kafka 原文对证 = **agent 未发**（缓存命中未调 LLM），**非下游丢失**。
+
+### 三、评测链证据（offline 侧）+ 交叉验证法
+
+真实 agent 的 run 记录（`eval_run`，跨 15 天、三次成功、分数各异 ⇒ 非复制的绿）：
+
+| run | agent | 套件 | 时间 | 用例 | 结果 | score |
+|---|---|---|---|---|---|---|
+| 3038 | gq | gq 真实业务评测(22) | 2026-09-01 10:01→10:03 | 22 | 22 pass / 0 fail | 99.83 |
+| 3660 | gq | gq 真实业务评测(22) | 2026-09-15 12:07→12:11 | 22 | 19 pass / 3 fail | 92.20 |
+| 3666 | sp | smart-procurement 接入示例(8) | 2026-09-16 02:33→02:35 | 8 | 7 pass / 1 fail | 86.12 |
+
+**交叉验证（本轮新增的硬证据手段）**：run 3666 执行窗口内，online 于 **09-16 02:35:00~02:35:17**
+采到 sp 的真实业务调用 `POST /api/v1/reviews` → `/score` → `/chat`（连续多组，对应用例节奏）。
+两套系统各自的独立记录在时间轴上吻合 ⇒ **确证 offline 真打了 agent**，一次排除「桩执行」与「假绿」两种干扰。
+
+### 四、复核方法（照此可独立复现）
+
+```bash
+# 1) 服务与契约
+docker ps --format '{{.Names}}\t{{.Status}}'
+curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/contracts   # cs；gq:8080 / cc:8003 / sp:18002
+
+# 2) Kafka 侧（容器内脚本无 PATH，须绝对路径；Git Bash 须 MSYS_NO_PATHCONV=1）
+MSYS_NO_PATHCONV=1 docker exec shared-kafka /opt/kafka/bin/kafka-get-offsets.sh \
+    --bootstrap-server localhost:19092 --topic 'dev.obs.agent.*'
+MSYS_NO_PATHCONV=1 docker exec shared-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server localhost:19092 --topic dev.obs.agent.good-question --partition 0 --offset 2759 --max-messages 1
+
+# 3) online 查询面（平台无宿主端口映射，须容器内访问；token 由 admin 登录取得）
+MSYS_NO_PATHCONV=1 docker exec obs-backend python3 -c "
+import os, json, urllib.request as U
+b=json.dumps({'username':'admin','password':os.environ['ADMIN_PASSWORD']}).encode()
+r=U.Request('http://localhost:8000/api/v1/auth/login',data=b,headers={'Content-Type':'application/json'})
+tok=json.loads(U.urlopen(r).read())['access_token']
+q=U.Request('http://localhost:8000/api/v1/traces?agent=good-question&trace_id=<TID>',headers={'Authorization':'Bearer '+tok})
+print(json.loads(U.urlopen(q).read()))"
+
+# 4) offline 侧 run 记录
+MSYS_NO_PATHCONV=1 docker exec ai-eval-backend python3 -c "
+from app.core.config import Settings
+from sqlalchemy import create_engine, text
+u=Settings().sqlalchemy_url.split('://',1)
+e=create_engine(u[0].split('+')[0]+'+pymysql://'+u[1])
+with e.connect() as c:
+    print(list(c.execute(text('select id,agent_id,status,total_case,pass_case,agent_score,started_at from eval_run where agent_id in (2297,2298,2299,2300) order by id desc limit 10'))))"
+```
+
+### 五、本验收证不了什么（显式声明，勿外推）
+
+- **真实用户流量仍是 0** —— 上述全部是「平台主动打 agent」产生的流量。T-5.1（灰度放量门禁）要的是
+  **真实用户**的灰度流量 + 连续 7d 观测窗，**这一层未变，仍不可达**。
+- 容量型结论（T-5.2 / T-3.14）**不因此改变** —— 它们要的是量级，不是「链路通」。
+- 维度 3「在真实 agent 上复验」**仍需真实流量**，本验收不覆盖。
+- `llm_call` 深度只验了 gq/cs/sp；cc 无 `llm_call` 样本（设计如此，但其「折叠后行为」仍无样本）。
+
+### 六、据此需订正的台账站点（**逐条判、不打包**）
+
+`无真实 agent` 类表述的实际站点数 = **10 处**（非早期记的「≥7」—— 数目本身也不许凭印象报）。
+**其中并非全部作废**：凡指「需**真实流量**」的仍成立，只是措辞把「无流量」写成了「需接入 agent」。
+逐条判定与处置**另起一笔**，不夹在本验收记录里。
