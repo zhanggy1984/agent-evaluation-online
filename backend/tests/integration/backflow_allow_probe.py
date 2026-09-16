@@ -2,6 +2,15 @@
 
     docker exec obs-backend python /app/tests/integration/backflow_allow_probe.py
 
+**前置（换环境跑之前先看这条）**：库里须有 cc（`contract-check`，seed D18 置
+`backflow_allow=0`）与 cs（`customer-service`，`backflow_allow=1`）**两条 agent 行**。
+库未 seed 出 agent 时 gate 的 `agent_exists=False` ⇒ 两行**都不会被判**（`judged=0`），
+探针必红 —— 那是**环境缺 seed，不是本模块的缺陷**。
+
+本探针**不在** `.github/workflows/ci.yml` 的真库探针 job 内（那批只有
+cluster/claim/pull/push/assemble 五个）；是否纳入**未拍板**，前置 = 先核 CI 那个 job 的库
+有没有 seed 出这两条 agent 行，没有则加进去只会恒红成噪音。
+
 **为什么单测不够**：`test_analyzer_classify.py:86` 已覆盖 `decide()` 纯函数层
 （backflow_allow=False ⇒ layer=none）。但那只证函数，证不了**链路**——本探针走真实
 `run_judge_scan` + `run_cluster_merge`，断言该行在真机上确实不产簇。
