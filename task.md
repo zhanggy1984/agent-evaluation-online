@@ -397,9 +397,200 @@
   - **容量/灰度批次的归并声明（2026-09-14，用户拍板）**：**`T-5.1`（灰度放量门禁）与 `T-5.2`（容量与索引实测）已归并至本条（`#219` 批次）统一跟踪**——理由 = 二者与本条接收的容量型批次**缺的是同一类输入**（真实流量 / 长周期真实到期 / infra 实际分配回执）。**⚠️ 归并 ≠ 降级**：两条的**验收目标原样有效**（见各自条目的「状态」注），**不记「未验」而记「环境无输入、无法开工」**（**⚠️ 2026-09-16 订正**：「环境无输入」= 缺**真实流量 / 长周期 / infra 回执**，**不指缺 agent** —— agent 接入已证实成立），并已逐条写明**开工所需输入**。**故本阶段（阶段 5）的出口不因这两条而未达成——它们是「无输入则无法开工」而非「有输入未做」**；此区分须在阶段 5 复盘时据实引用，**不得**据本条把「未做」写成「已验」或反之。
 - **T-5.4 运营清单与交接**：TTL 告警/顶置提示 owner 明确（offline 拉取/确认 owner 归 offline；online 仅"已待 N 天"展示不设时钟）；保留期与审计导出；看板口径文档（双指标、rollup 缺口标注语义）交付；**回归假绿残余承认 + 词表维护流程**（新增兜底话术即补词表、admin-only 留审计）写入运营 SOP。**验证目标**：运营手册与实现行为一致；维度 3 开放验收项（checklist #4/#8/#10）在真实 agent 上最终复验通过。
   - **交付回填（2026-09-14；证据 = `docs/ops-manual.md` + `docs/integration-report.md` §6 F-23）**：**已交付 `docs/ops-manual.md`**（此前全仓**无任何 SOP/runbook 成品件**）——形态 = **每节带「实现现状」栏**，故本条的验证目标「手册与实现行为一致」**在写作层面即可核**。
-    - **✅ 已达成的交付项**：① 归口一览（§0，含「无告警通道」「不设 online 时钟」两条否定口径——`api/backflow.py:320/421` 逐字「不落列、不设时钟」，`waiting_days` 是**展示值、不触发动作**，运营期**不得当告警用**）；② 看板口径文档（§4：双指标 `request`/`llm_call` 语义 + 「LLM 级失败 ≠ request 级故障」+ **rollup 缺口语义 = 读侧现算**）；③ 保留期（ILM 30d 已登记）+ 审计现状；④ 假绿残余与挂账边界 7 条（§5）。
-    - **⚠️ 两条实现缺口（手册照实标注，不写成已有能力）**：**① 词表（`fallback_utterance`）维护流程当前无执行载体**——无写入端点（`api/router.py:13-20` 只挂 5 个 router）、`require_admin` 无路由使用、**无审计落点**、**无 version 自增实现**（`models/config.py:23-24` 与 `no_fallback_cfg.py:4-5` 的「变更 +1、admin-only」**均为注释**）⇒ 本条要求的流程**写得出、做不了**。**归口 = `T-3.12`（本文件 :135）范围内、已在册不新立**；**在此显式列为 T-3.12 的验收内容**（§8.6 `PUT /configs` 落地时须一并含**写入 + `version` 自增 + 审计**三项，**勿只做端点**）。⚠️ **过渡期风险**：T-3.12 落地前改词表**只能改库**，会造成 **`wordlist_version` 失真**，而该 version 是 **D19 信封**组成部分 ⇒ **过渡期应避免改词表**。**② 审计导出零实现**（跨 cluster 检索亦无：审计仅内嵌于 cluster 详情端点，`api/backflow.py:555-558`）——**已于 2026-09-14 用户拍板立 `T-3.13`**（见上，本文件 T-3.13 条目）；⚠️ **性质 = 运营需求驱动的补实现**（上游设计零命中「导出」），**与 T-3.12 的欠债性质不同**，勿并成同类。（**我原建议「定为 v1 边界、不立 T 项」未被采纳**；未采纳的理由我未记录用户陈述，故此处只记决策结果，不代写理由。）
+    - **✅ 已达成的交付项**：① 归口一览（§0，含「无告警通道」「不设 online 时钟」两条否定口径 —— **⚠️ 2026-09-16 订正：「无告警通道」一条已拆半改判，见 `T-5.5`（「不设 online 时钟」一条不受影响、原样有效）** ——`api/backflow.py:320/421` 逐字「不落列、不设时钟」，`waiting_days` 是**展示值、不触发动作**，运营期**不得当告警用**）；② 看板口径文档（§4：双指标 `request`/`llm_call` 语义 + 「LLM 级失败 ≠ request 级故障」+ **rollup 缺口语义 = 读侧现算**）；③ 保留期（ILM 30d 已登记）+ 审计现状；④ 假绿残余与挂账边界 7 条（§5）。
+    - **⚠️ 两条实现缺口（手册照实标注，不写成已有能力）**：**① 词表（`fallback_utterance`）维护流程当前无执行载体**——无写入端点（`api/router.py:13-20` 只挂 5 个 router）、`require_admin` 无路由使用、**无审计落点**、**无 version 自增实现**（`models/config.py:23-24` 与 `no_fallback_cfg.py:4-5` 的「变更 +1、admin-only」**均为注释**）⇒ 本条要求的流程**写得出、做不了**。**⚠️ 2026-09-16 订正（本段过半已作废，勿再引用）**：上列三个「无」**实测全部不成立** —— `api/admin.py:162` 已有 `PUT /configs`，docstring 逐字「键/形状校验 → upsert → `version + 1` → 写审计（`config_change`）→ 清读缓存」，并明写「`fallback_utterance` 走同一路径不特判：其 `version` 即 D19 `wordlist_version`」⇒ **写入端点 / version 自增 / 审计落点三项均已在 T-3.12 批 1 落地**（单测 478 passed / 真库探针 31-31 / 浏览器 e2e 双账号）。本段写于批 1 落地之前 ⇒ **词表维护流程缺口不存在，过渡期「避免改词表」的风险随之消解；勿据本段立任何任务。**~~**归口 = `T-3.12`（本文件 :135）范围内、已在册不新立**；**在此显式列为 T-3.12 的验收内容**（§8.6 `PUT /configs` 落地时须一并含**写入 + `version` 自增 + 审计**三项，**勿只做端点**）。⚠️ **过渡期风险**：T-3.12 落地前改词表**只能改库**，会造成 **`wordlist_version` 失真**，而该 version 是 **D19 信封**组成部分 ⇒ **过渡期应避免改词表**。~~**② 审计导出零实现**（跨 cluster 检索亦无：审计仅内嵌于 cluster 详情端点，`api/backflow.py:555-558`）——**已于 2026-09-14 用户拍板立 `T-3.13`**（见上，本文件 T-3.13 条目）；⚠️ **性质 = 运营需求驱动的补实现**（上游设计零命中「导出」），**与 T-3.12 的欠债性质不同**，勿并成同类。（**我原建议「定为 v1 边界、不立 T 项」未被采纳**；未采纳的理由我未记录用户陈述，故此处只记决策结果，不代写理由。）
     - **❌ 验证目标有一半不可达（如实标「未达成」，非「已验」）**：「维度 3 开放验收项在**真实 agent** 上最终复验」**~~卡 `T-2.5`/`S-4`（无真实 agent）~~ → 卡点重述为「缺真实用户流量」**（**⚠️ 2026-09-16 订正**：agent 接入**已成立**、offline 已真打并出分；`T-2.5`/`S-4` 不再是本条前提。**「未达成」的结论不变**），**阶段 5 内无法完成**——不得因手册已交付而把本条整体记绿。
+
+- **T-5.5 上线告警通道与回流断流自检（G3）**（**2026-09-16 立**，用户拍板；来源 = 本日「距上线闭环还差哪些」范围梳理，逐条取证后立项）：**系统级告警（漏采/断档、offline 停摆、inbox ack 积压、ES 容量）在权威文档中从未被裁定，却被 `docs/ops-manual.md` §0 一行否定连带取消**。本条建立四项判据与一个主动出口。
+  - **⚠️ 性质分半（勿并成一种——本文件 `:218` 明令「性质不同勿套错措辞」）**：
+    - **offline 侧 ack 告警 = 欠债**——规格里**写了**：offline `error-backflow-phase1.md:369`「404 → **即时告警**端到端连通性 + `ack_status='blocked'` + `last_error`，不静默长期重试」、`:347`「重放持续失败 → `last_error` 累计 + 日志告警」、`:624`「blocked 行需**运维面板可见**（inbox 管理查询）+ 人工复位入口」；而**实现整块缺失**（`backflow_client.ack` 对非 200 只抛、响应体从不解析；两个调用点只 log+return；`blocked` 值域第四值零赋值点）——该结论已由 **#324 独立证成**，权威处 = offline `error-backflow-status.md` O-D.4。**性质 = 规格承诺过、实现没做**（同 T-3.12）。
+    - **通道本身（webhook 出口）= 自主加范围**——上游规格 `grep webhook` **两侧零命中**，属运营需求驱动的补实现（同 T-3.13 性质）。
+  - **为什么今天才立**：`ops-manual.md` §0 把 `waiting_days` 的 TTL 裁定（`api/backflow.py:320/421`「不落列、不设时钟」）**通用化成了整行否定**「告警发出 ❌ 无通道」，把两件事**合并成一件事**——**(a) TTL 类告警确实不要（裁定正确）**；**(b) 系统级告警从未被裁定过**。且**与 T-5.1 自相矛盾**：T-5.1 放量门禁要求「观察窗内核对**无告警**」，而系统无告警通道 ⇒ **该句没有主语**。
+  - **不做会出的具体故障**（本仓判据「答不上就不做」，此处答得上）：**offline 停摆或 ack 卡住时无人知晓，错误回流静默断流**。同形已踩两次（R-28 恢复路径被自家谓词挡死；T-3.19 sp 启动日志假警报），二者**均只能靠翻日志才发现**。
+  - **四项归属与判据载体（逐项取证）**：
+
+    | # | 项 | 归属 | 载体 | 现成 |
+    |---|---|---|---|---|
+    | ① | 观测漏采/断档 | online | `consumer/main.py` `_selfmonitor_loop` | ⚠️ **函数体未读，待取证** |
+    | ② | offline 停摆 | **无归属** | —— | ❌ **需新建** |
+    | ③ | inbox `ack_status != 'acked'` 积压 | offline | `error_backflow_inbox` + 索引 `idx_status_ack(status, ack_status, updated_at)` | ✅ 全现成 |
+    | ④ | ES 容量水位 | online | `consumer/main.py` `self._es` | ✅ client 现成 |
+
+  - **⚠️ 本条查出的结构性洞（比四项本身更重）**：「offline 停摆」在现有架构里**没有任何观测点**——① offline **自己检测不了自己**（进程死了就不打日志，判据随之消失）；② online 侧**零 ack 记载**（`models/error_flow.py:69` `ErrorCaseLink` 有 `payload_id`，但全 models `grep acked|push_status|delivered` **零命中**）⇒ online **不知道信封发出去后有没有被收**。**故 ② 只能做到「卡死」、做不到「进程死」**；后者需 infra healthcheck 或 online 侧新增 ack 记载（**设计变更，不在本条内**）。**如实标注，不得读作「四项已齐」。**
+  - **通道形态（2026-09-16 用户拍板）**：新增 `core/alert.py` 薄封装（`async def notify(level, title, detail)`）+ 配置项 `ALERT_WEBHOOK_URL`；**未配置 ⇒ 降级为 `logger.warning`**（不配也能跑、不阻塞部署）；用两侧已有 `httpx`，**不引依赖**。**这是本条唯一一处 A 级改动（改配置）。**
+  - **阈值（2026-09-16 用户拍板）**：`_STALE_MINUTES = 10`，**模块常量**（同 `_INTERVAL` 既有惯例，**不新增第二个配置项**）。依据 = offline `runner/pull_loop.py:34` `_INTERVAL = 30.0`（pull 周期 30s）× 20 轮 ⇒ 容忍 online 重启/网络抖动，**避免误报吃掉告警可信度**（`chronic-noise-defeats-gate` 的老路）；正常 ack 为**秒级**（`_ack_active` 内同步 HTTP）⇒ 10min 对观察窗足够快。
+  - **判据（不排除任何 `ack_status` 值）**：`ack_status <> 'acked' AND updated_at < NOW() - INTERVAL 10 MINUTE`；门禁 `backflow_enabled=false` 时不告警（同 `cap_gap_probe` 门禁形态）。**不排除 `blocked`**——`none`/`pending`/`blocked` 三者语义**都是「回写没成功」**，排除 `blocked` 会让最需人介入的状态静默。（**自订正**：立条初稿曾担心「不排除则永不触发」，**方向反了**。）
+  - **方案内置修正（防首版即成噪音源）**：60s 周期直发会**刷屏** ⇒ **只在告警集合变化时发**——新进入告警态发一条（带新增 `payload_id`）、集合清空发「已恢复」、集合不变只 `logger.debug`。**这是状态比较，不是去重平台。**
+  - **批次切分（按仓切 = 按验证面切）**：**批 1** = ③ ack 积压 + 通道基建（`alert.py` / 配置项 / 判据循环 / 注册 / 单测）；**批 1b** = ②半 僵尸锁检测（**前置 = 先勘察锁形态**——DB 锁 or 文件锁未取证，**不掺没勘察完的进批**）；**批 2** = online 侧 ①④（**第一步是取证**：读 `_selfmonitor_loop` 函数体确认 ① 是否已被部分覆盖，**不是写码**）；**② 进程死** = 不在本轮。
+  - **批 1 验收**：单测（判据真/假两分支 + 降级路径 + 集合变化三态）+ **真库探针**（正向：造 `pending` + `updated_at` 回拨 11min → 断言触发；**负对照**：造 `acked` 同样回拨 → **断言不触发**；恢复：改回 `acked` → 断言发「已恢复」）；**连跑两遍才算验收**。
+  - **⚠️ 探针写的是真表**：`ai_evaluation.error_backflow_inbox` 实机 12 行、**12/12 `acked`**。探针**必须**用 `probe-ackstale-<uuid>` 前缀唯一化（`probe-repeatability-and-unique-input`），**造前记基线水位、造完当场删、撤销后回读**（`self-injected-fault-looks-like-real-defect`：人为故障与真缺陷**逐字同形**）。
+  - **不做（边界）**：不建告警服务 / 不建表 / 不建页面 / 不做分级·静默·去重·告警历史 / 不引第三方 SDK。
+  - **未验边界**：②「进程死」**无观测点**（见上）；① 是否已有基础**未取证**；通道 URL 属**环境输入**，落地以「未配置降级」形态交付。
+
+- **T-5.6 上线门：真实链路端到端（G1 六条改判接收项）**（**2026-09-16 立**，用户拍板；来源 = `docs/integration-report.md` §3）：
+  - **改判**：§3 六条（T-4.2 offline 半边 / T-4.3 真实驳回 / T-4.6 恢复拉取 / T-4.12 全条 / 阶段出口 E-23~E-29 环 2 / T-4.13 ⑤ 真实对端）**从「本阶段不可开工」改判为「上线门必做项」**——**「本阶段」是时间限定，不是需求取消**。这些验不了就是没验；上线后 offline 必须真跑。
+  - **失效条件（挂闸）**：**真实流量到位后 N 天内未完成 ⇒ 阻断放量**。**N 待定**，随放量档定义（T-5.1 / solution §13.0 checklist #1~#3）一并裁定。
+  - **保留原判定的部分**：六条**当前确实无法开工**（缺真实 offline 行为 / 真实对端）⇒ 本条**不是「现在开工」而是「登记为上线门并挂闸」**，避免它继续被时间限定词藏住。
+  - **落地前须做**：`docs/integration-report.md` §3 标题与表前加改判块（**权威现场就地改判**）；本条为其**平台阶段表落点**（先例 = T-3.8「offline 配套轨在平台阶段表的落点」）。
+
+- **T-5.7 真实用户流量归口与请求（**2026-09-16 立**，用户拍板；来源 = 本日「距上线闭环还差哪些」取证）**：
+  - **归口裁定（用户拍板 2026-09-16）**：真实用户流量**归业务/产品侧，不归 infra**。⇒ `docs/infra-access-matrix.md` §4（网关四项）**原样不动**（它完整且面向 infra，缺的只是「发出去」这个动作，非文档）；另立对外请求件。
+  - **交付物** = `docs/real-traffic-request.md`（**2026-09-16 起草**）：面向业务/产品侧的接入请求，含「我方已就绪（对方无需等待）」+ 请对方明确的三件事（哪个 agent 先上 / 量级 / 起点时间）+ 拿到后的时间线 + 挂闸。
+  - **⚠️ 本件尚未发出、收件人未定**（`docs/real-traffic-request.md` 头部「提交人 / 收件方」两处**待填**）——**「起草了」≠「要了」**。**待办 = 用户填对口人并发出**；发出后此处回填发出日期与对口人，再据此推 T-5.6 的 N。
+  - **为什么单独立条**：本项自 2026-09-14 起被登记为「环境无输入、无法开工」，但**从未有「向谁要」的载体**——不是缺文档，是**没有归口**。台账里长期以「等」的形态存在，等于把外部排期问题伪装成内部待办。
+  - **取证订正（同轮查出，只登记不擅改）**：T-5.1 `:392` 把「**放量档定义**（solution §13.0 checklist #1~#3）」列为开工所需输入，但 `solution.md:619` **该 checklist 就在本仓**（放量门禁 `#1/#2/#3/#6/#7/#9` + 维度 3 开放验收 `#4/#8/#10`）⇒ 「放量档定义」**不缺**；真实缺的是 checklist #2 要用的**预估值基线**。**⚠️ 未穷举 `#219` 批次上下文，故只标可疑、不判死**（原句重音可能落在「与预估值基线」上）。
+
+- **T-5.8 阶段 B/C：4 agent 回流闭环「前置补齐 + 端到端验证」**（**2026-09-16 立**，用户拍板；来源 = 用户令「阶段 B 和 C，4 个 agent，验证场景要充分，尽量补足一些」）：
+  - **本条同时是该批次的持久化载体**（用户 2026-09-16 提出「怕 compact 后丢失，先持久化」）——批次排期原先**只存在于会话上下文**，未落任何台账；立此条即补上。
+  - **批次划分**：**阶段 A = 复核既有回流样本**（3 条「对不上」的 link，2026-09-16 已完结，**未查出任何缺陷**；⚠️ 样本主要来自验收/探针批次而非真实流量 ⇒ 只证明「链路能正确运转」，**不证明「真实场景下正确」**）；**阶段 B = 前置补齐**（使 4 个 agent 具备走完回流闭环的前提，**走真实 admin API `PUT /admin/configs`，不改任何 agent / platform 代码**）；**阶段 C = 端到端验证**（4 agent × 多场景，观察七环）。
+  - **⚠️ 本条含一处对 D18 的例外，显式登记（防后人读成缺陷）**：`solution.md:65` **D18** 明写「**contract-check（后台任务型）第一版只出 request 级指标与链路，维度 3 不纳入**」，另在 `:121` / `:365` / `:392` / `:609` / `:649` 五处复述（`§13.1 #9` = `:649`）。⇒ **线上 cc `backflow_allow=0` 是设计值、不是缺陷**（**2026-09-16 取证订正**：本人上一轮汇报据 `backflow_allow=0` + 空词表把 cc 判为「走不完 e2e 的障碍」并据此提问，**该前提作废**）。**本次依用户两次拍板（2026-09-16）把 cc 纳入维度 3** —— 记为**对 D18 的临时例外**，**不改 `solution.md` 原文**；若例外长期保留，须另立 D18 修订（当前**未立**）。
+    - **🔄 同日内即撤销该例外（2026-09-16，用户拍板）**：C1 七环本体实测证明该例外的**立论前提不成立**。纳入 cc 的隐含假设是「cc 本可成簇，只是配置把门关了」——**实测为两层结构不可达**：① **值域外**：根侧 `error_type` = `TIMEOUT` / `CANCELLED` / `INTERNAL_ERROR`（`contract-check/backend/app/service/check_task_service.py:179-180`），三者全在 `classify._layer_for` 承认的 11 词（L1 七类 ∪ L2 四类）**之外**；② **结构解耦**：`run_task_async`（同文件 `:184`）是 `asyncio.create_task` **后台异步**，那个合成 `POST /internal/check-tasks/{id}/run` span **派发完即返** ⇒ root 与 LLM 故障不在同一条 HTTP 生命周期上，**即便开门也不成簇**。⇒ **cc 回归 D18「维度 3 不纳入」**，`solution.md` 原文**不动**（其本就写着 cc 不纳入，无需改）。
+    - **⚠️ 撤销的是「例外」这一口径，不是「那次改库动作」这一事实**：阶段 B 施行记录（下条）里 `contract-check` 词表 `[]→3 条` + `backflow_allow 0→1` 是**已发生的真实操作，原地保留、不回滚**。理由：① `backflow_allow` 保持 1 与改回 0 在**行为上完全等价**（两层不可达 ⇒ 两种取值都产不出候选），不做不会出任何具体故障；② 该列**无运行期写入面**（`api/admin.py:8` 自陈「只能改库/seed、无审计」），再改一次 = **再留一笔无审计痕迹**。⇒ 处置 = **只登记，不动库**。
+    - **⚠️ 与第一批「seed 事实订正」同源的一处**：`seed.py:122` 是 `ON DUPLICATE KEY UPDATE updated_at = updated_at`（存在则保持原样）⇒ D18 的 `backflow_allow=0` **从未落库过**，改建前实测即 =1。故「cc 的 allow 取值」**不取决于阶段 B 那一次改库**——它本来就不是 0。**勿把这两处当两件事重复登记。**
+    - **⚠️ 由本条引出、只登记不擅改的一处**：`analyzer/classify.py:8` 注释称「cc 双保险 = `agent.backflow_allow=0`（seed D18）+ `backflow_enabled`」——实测**该双保险只剩一重**（`backflow_allow` 实为 1，仅 `backflow_enabled=false` 仍在），**方向 = fail-open（少一重）**。**不影响 cc 现状**（两层不可达，候选本就产不出），故**本轮不改注释**，登记备查。
+  - **阶段 B 起点快照（2026-09-16 取证，4 agent 就绪度）**：
+    - `good-question`：`backflow_allow=1`，词表 **5 条**（v6）——**待复核是否覆盖真实兜底话术**（⚠️ 首轮本表误记为「6 条」，实为把**版本号 v6 当成了条数**；2026-09-16 执行阶段 B 回读时订正）
+    - `customer-service`：`backflow_allow=1`，词表 1 条（v2）——**同上**（注：`.tmp-probe/c1_write_wordlist.py`（今早 10:20）曾按其源码 `rule_engine.py:21 DEFAULT_REPLY` 写过一轮）
+    - `contract-check`：`backflow_allow=0` + 词表 `[]`（v1）——**缺口 = 开闸 + 词表**
+    - `smart-procurement`：`backflow_allow=1` + 词表 `[]`（v1）——**缺口 = 词表**
+    - 另：`agent` 表第 5 行 `probe-unknown-agent`（id 853，词表 2 条）**是探针残留**，不在 4 家之内，**勿计入就绪度**。
+  - **✅ 阶段 B 施行记录（2026-09-16 完成，用户批准「照草案全量写入」）**：
+    - **执行脚本** = `.tmp-probe/b_write_wordlists.py`（临时探针，未提交；经 `docker exec -i obs-backend python -` 以 stdin 灌入容器执行）。
+    - **结果（以回读库内实值核对，未采信接口回执）**：`smart-procurement` 词表 `[]`→**11 条**（`v1→v2`，11/11 逐字命中）；`contract-check` 词表 `[]`→**3 条**（`v1→v2`，3/3 逐字命中）+ `backflow_allow` **0→1**（`affected=1`）。**4 家最终态：cc allow=1/v2/3 条、cs allow=1/v2/1 条、gq allow=1/v6/5 条、sp allow=1/v2/11 条**。
+    - **⚠️ 顺带查出、须记（防后人照抄那份探针）**：`.tmp-probe/c1_write_wordlist.py`（今早 10:20）用的 `BASE` 拼出的是 **`/api/admin/configs`**，而真实路径是 **`/api/v1/admin/configs`**（`api/admin.py:56` `prefix="/admin"` + `main.py:70` `include_router(api_router, prefix="/api/v1")`）⇒ **该探针若真跑过必然 404**，其「自报成功」不可信；**cs 现存那 1 条词表的实际来源本轮未查明**（`dict_config.updated_by` / `updated_ts` 未查）。**不影响 cs 现状正确性**（值是 cs 源码 `rule_engine.py:21 DEFAULT_REPLY` 逐字），但**「谁写的」在台账上仍是空白**。
+    - **开闸走的不是 API**：`agent.backflow_allow` **无运行期写入面**（`app/api/admin.py:8` 自陈「只能改库/seed、无审计」），故本轮为**直接 UPDATE**（**无审计留痕**）；seed 为 `ON DUPLICATE KEY UPDATE updated_at = updated_at`（`seed.py:122`）⇒ **存在则保持原样，改库不会被启动 seed 覆盖**（已核）。
+  - **🔄 阶段 C 施行记录（进行中，2026-09-16）**：
+    - **C2 / C3 / C3b（判定面）—— ✅ 已验**。探针 = offline `.tmp-probe/c2c3_wordlist_judge.py` + `.tmp-probe/c3_real_answers.py`（临时，未提交）。**均用 offline 真实算子 `KeywordNotContainsOp` 跑，非复写匹配逻辑**：
+      - **C2 命中面**：4 家兜底回话（**刻意嵌在更长文本里**，兼验「子串」语义而非全等）⇒ **4/4 判 fail**，符合。
+      - **C3 不误伤面（自造回话版）**：4/4 PASS —— ⚠️ 但此版回话**是我自己写的**，落「入参自造」盲区，**不足为据**，故另起下条。
+      - **C3 不误伤面（真实样本版 = 真正有判别力的那条）**：取 offline `eval_result.answer` **线上真实历史回答**（`JOIN eval_run ON agent_id`）逐条过算子 ⇒ **gq 279 条 / cs 153 条 / cc 174 条 / sp 91 条，合计 697 条；命中 4 条、全部落在 cs**，且该 4 条**逐字等于** cs 词表条目（= cs 历史上真实降级过 4 次）⇒ **属「真兜底、该命中」，不是误伤 ⇒ 假红 = 0**；其余 3 家真实样本**零命中**。**此条同时构成 C2 的真实数据佐证**（命中面在真实数据上成立，不只是在我造的回话上成立）。
+      - **C3b 空答**：4 家 ×（空串 / 纯空白）= **8/8 判 fail**（R-12 空话术证据）。
+      - **结论一句话**：词表在 **697 条真实回答**上表现为「**零误伤 + 命中真实兜底 4 次**」。
+    - **C1（主链路七环，4 家）—— 🔶 只做了「数据/契约层」的两侧对账，七环本体 ❌ 未跑**（详见下条）；**C4 / C5（复用既有探针抽样）—— ❌ 未做**。
+    - **C1 · 数据/契约层 两侧对账（2026-09-16 完成；探针 = online `.tmp-probe/c1_dual_side_online.py` + offline `.tmp-probe/c1_dual_side_offline.py`，均临时未提交）**：
+      - **取数面先穷尽确认（不按表名猜）**：online **全库 13 表 / 142 列**内搜 `payload|envelope|wordlist` ⇒ 只命中 `error_case_link.payload_id` / `payload_json` 两列（**online 无独立信封表**，早前按表名猜 `backflow*` 得零命中）；offline 侧 = `test_case.backflow_envelope`（信封**原文副本**，`models/case.py:59`）。
+      - **A 存在性**：6 个真实 `payload_id` 在 online 侧 **6/6 命中**。
+      - **B 逐字一致**：`no_fallback_config`（words **原序原大小写** + `wordlist_version`）**两侧 6/6 逐字相同**，`cluster_id` 亦一一对应（3861/3860/3859/3856/3841/3840）；且 `config_ref.wordlist_version` 与 `no_fallback_config.wordlist_version` 两处同源自洽 ⇒ **信封在传输与落库环节未被改写**。
+      - **offline 侧内部一致性**：`sanitize_words(信封 words)` == `case.assertions[0].args.keywords` ⇒ **真实回流 6/6 相符**；`op=keyword_not_contains`、`args.path=answer` 6/6 相符。
+      - **⚠️ 我自己的判据写错过一次（假红，已订正，留档防复现）**：首版 ① 写成「信封 words **逐字等于** 断言 keywords」，报 **16/17 不符**；dump 原始值 + 类型后定案 = **不是缺陷**，差异仅一条 `"AI 暂时不可用"` vs `"ai 暂时不可用"` —— 信封留**原文**、断言存 `sanitize_words` **净化后**（strip→lower→去重），**两者本就该不等**。改用**真实 `sanitize_words` 函数**重判 ⇒ 6/6 全绿。**教训 = 判据里别自己重写规范化/匹配逻辑，直接调被测代码那个函数**（同 [[unreachable-assertion-vs-false-red]]：同一片红，须回查实现才知该信谁）。
+      - **16/17 里另 11 条 = 探针残留，非缺陷**：`payload_id` 为字面量 `probe-c1..c5`、`agent=None`、早于词表机制 ⇒ 信封无 `no_fallback_config`，而断言里却有个**信封中没有**的关键词 `抱歉，我暂时无法回答`。**已 grep 定性**：该串是 offline 仓**探针自造常量**（`backend/tests/integration/{auto_schedule,circuit_domain,error_run,push,reconcile,shared_pool}_probe.py` 六文件 `KEYWORD=`），**非产品侧硬编码兜底** ⇒ **「空表 fail-closed」（`pull_loop.py:178`）未被绕过**；处置 = 登记为残留（见「撤销面」），不计入不符。
+      - **⚠️ 顺带查出、须记（口径级）**：`4b1801ce` / `7cdf6182` 的 `wordlist_version=4` 与现行 **v6 词条逐字相同** ⇒ **`wordlist_version` 不是内容指纹**，改版本号可以不改内容 ⇒ **不能用它检测/断言「词表内容变了」**。
+      - **本条能证明什么 / 不能证明什么（不许被这片绿盖过）**：证明「**信封从 online 构造 → 传输 → offline 落库 → 构造 case 断言**这一路的载荷与规范化**两侧一致、未失真**」；**不证明七环跑通** —— 本条**不发任何新 error、不产生新回流样本**，是对**既有**样本的静态对账。
+    - **C1 七环本体 · 施行预案（2026-09-16 立，用户拍板「四家硬推，逐家注入→触发→立即还原」；⚠️ 截至立此条时**尚未注入任何故障、系统干净**）**：
+      - **驱动方式（已取证）**：环①~③ 由 `obs-worker` 四个 job 循环自动跑 —— `cluster_job` 15s / `assemble_job` 60s / `judge_scan_job` 60s / `claim_ttl_job`（`app/worker/main.py:35-41`）；环④~⑥ = offline `ai-eval-backend` 的 pull_loop / runner / 回推；环⑦ = online verify。**无 tick 端点、无 scheduler**，全靠 worker 轮询。⚠️ **但「等 2 分钟」是错的（2026-09-16 实测推翻）**：trace 的 `ttl_until` = `root_ts + 360s`（`trace_judge_window_s`=60 + `trace_judge_grace_s`=300）⇒ **trace 要过 6 分钟宽限才被判**（`judge_scan_job.py:84` 扫描谓词 = `judged=0 ∧ ttl_until<=now`）⇒ **端到端起板 6~7 分钟**，不是 2 分钟。等短了会把「还没到点」读成「注入无效」。
+      - **注入面（已逐容器回读实际进程值，非读 .env 文件）**：4 家统一走 `DEEPSEEK_BASE_URL`，原值 = gq `https://api.deepseek.com/v1`、cs `https://api.deepseek.com`、cc `https://api.deepseek.com`、sp `https://api.deepseek.com/v1`（`sp-app` 与 `sp-worker` 两个容器都有）。⚠️ compose 是 `${DEEPSEEK_BASE_URL:-...}`（**create 时求值**）⇒ 改 `.env` 后必须 `docker compose up -d` **重建**，`docker restart` 无效（同 [[hot-mount-is-not-process-reload]]）。
+      - **注入必须让「根请求失败」，否则故障白造（本预案最关键的一条）**：`analyzer/classify.py:17-19`（T-3.10）明写**子节点候选以 `root_status != "ok"` 为前提** —— agent 若把 LLM 异常 catch 成 200 + 兜底话术，即「兜底吸收现场」，**不产 L1/L2 候选**。故黑洞地址须造成**根请求失败/超时**，且**须逐个实证**（不能假定某家一定会 5xx）。
+      - **触发面无现成装置（本预案最大成本项，出选项时曾低估）**：online 仓**零 curl 样例**；`e2e_seed.py` / `backflow_e2e_seed.py` 均**不触发 agent**（前者直接在库内建 cluster，**绕过环①观测**）⇒ 4 家的鉴权 + 建会话流程要从零摸；**cc 额外要文件上传 + 后台任务轮询**（文件型、`asyncio.create_task` 后台流，无 HTTP lifecycle 覆盖 LLM）。
+      - **顺序铁律**：**逐家**「注入 → 重建 → 触发 → **立即还原 → 重建** → 再等待观察」。还原插在等待之前，使故障暴露面最短 —— 预算耗尽时不会留下「某家 LLM 还指着黑洞」的最危险残留态。
+      - **造故障前基线水位（2026-09-16 容器内 UTC 07:49:21 = 本地 15:49 取证，`error_cluster` 22/max 3861、`error_case_link` 21/max 2243、`verify_run_record` 16/max 828、`conversion_record` 69/max 3243）** —— 事后据它区分「我造的红」与真缺陷（同 [[self-injected-fault-looks-like-real-defect]]，前例 = cs LLM 指黑洞产出 4 笔假红 run 3662–3665）。
+      - **撤销面**：逐家把 `DEEPSEEK_BASE_URL` 写回上列原值 + `up -d` 重建 + **回读容器内进程值确认**（不信「文件已写/容器已 up」）；造完**当场**把「这批红是我造的 + 起止时刻 + 撤销动作」写进两仓台账。
+    - **C1 七环本体 · 施行记录（第一批：gq + cs；2026-09-16 容器内 UTC 07:56~08:16）**：
+      - **注入手法（已实证）**：各 agent 仓 `.env` 的 `DEEPSEEK_BASE_URL` → `http://127.0.0.1:9`（容器内该端口无监听 ⇒ **立即 ECONNREFUSED**，不挂起；挂起会永远等不到错误事件）→ `docker compose up -d <svc>` 重建 → **`docker exec <c> printenv DEEPSEEK_BASE_URL` 回读进程内值**。触发后**立即**写回原值 + 重建 + 再回读。
+      - **⚠️ 新增必备一步：重建后必须等就绪（`/healthz` 200）再触发**。首轮 cs 未等，触发打在启动窗口上返 **502**，被读成「失败了」——实为**假信号**（真因：容器还没起完）。
+      - **结果 ①【cs】✅ 环② 走通**：`cluster 3865 / customer-service / POST /api/v1/sessions/{id}/messages / L1 / llm_connection / status=open / count=1 / first_ts 08:16:00`（基线 3861 ⇒ 增量唯一且归属明确）。判定书 `gate` 四项全 true、`candidate_error_sets=[{llm_connection, evidence=root, count=2}]`。**注入窗口 = 08:09:17 触发 → 08:09:25 还原已回读**。
+        - **cs 反直觉但关键的一对观测**：黑洞下客户端收到 **HTTP 200 + `fallback_utterance` 兜底话术**（`total_tokens=0`），**但该请求的根事件仍是 `root_status=error / root_error_type=llm_connection`** ⇒ cs 的兜底只作用在 SSE 给客户端那一层，**没有把根事件吸收**。与 gq 恰成对照（下条）。**此差异只记录事实、不作机制解释**（未查 cs 实现为何如此）。
+      - **结果 ②【gq】❌ 环② 按设计不可达**：trace 18493（注入那次）`root_status=ok / root_error_type=None`，`err_summary.entries=[{error_type:"llm_connection", error_msg:"[Errno 111] Connection refused"}]`，判定书 `layer=none`、候选集空。⇒ **子节点埋点完全正常，是根部被吸收**，命中 §6.1「兜底吸收现场（request ok + llm_call error）不产 L1/L2 候选」——**这是 v1 明写的设计行为，不是缺陷**。
+        - **顺带证伪一个既往印象**：gq 现有 5 簇（3856~3860）的 `first_trace_id` 是 `clm-good-question-1` / `b6b1-e2e-2026091511…` 这类**手工构造 ID** ⇒ 它们是**探针直接播种进簇表的（绕过环①）**，**不是真实流量**。同类：`probe-c2-push` 的 3847~3854。
+      - **⚠️ 我自己的三处探针缺陷（均差点造成假结论，逐条记以免重犯）**：
+        1. **`c1_trigger_cs.py` 判 `建会话 != 200` 提前 return** —— 该接口成功返 **201**，于是**消息压根没发出去**，却与「触发了但没成簇」**同形**。修：判 `>=300` 才算失败。（同类：[[unreachable-assertion-vs-false-red]]）
+        2. **`c1_wait_cluster.py` 用 pymysql 默认 `autocommit=False`** ⇒ 连接首条 SELECT 即开事务，**InnoDB REPEATABLE READ 下此后全程同一快照**，轮询 420s 看到的永远是旧数据，**差点把 08:16 已成的簇 3865 写成「环②不可达」**。修：`autocommit=True`。**凡轮询脚本必须显式开 autocommit**。
+        3. **把「建会话 201」与「建会话 200」当同一件事**（同上第 1 条根因：只按自己脑中的状态码写判据，没按被测接口的契约）。
+      - **结果 ③【sp】❌ 环② 不可达（与 gq 同因，已实测非推断）**：trace 18521（注入那次）`root_status=ok / root_error_type=None`，`err_summary=[{error_type:"llm_connection", error_msg:"Connection error."}]`；**过 TTL 后判定书实测** `layer=none`、`candidate_error_sets=[]`（`decided_at 08:31:56`）。SSE 侧 = `meta→thinking→error→usage→done` + HTTP 200 + 「LLM 调用失败，请稍后重试」。注入窗口 08:25:50 触发 → 08:26 已还原回读。
+      - **结果 ④【cc】按裁定跳过注入，留证两条**：① **触发面在**——正常上传 `data/test-contracts/good.pdf` 成功（`task_id=640`），并落 trace **18524** `POST /internal/check-tasks/{id}/run`、`llm_fact=1` ⇒ **后台任务确实产事件**（**推翻我此前「后台任务可能连事件都产不出」的未验推断**，该推断当时已标注无证据，现证伪）；② **门是关的**——`backflow_enabled='false'`（v1），且 `agent.backflow_allow` **实测 = 1**（非 `seed.py:40` 声明的 0）。
+        - **⚠️ 由②带出的事实订正（非本轮 C1 目标，但须记）**：`seed.py:122` 用 `ON DUPLICATE KEY UPDATE updated_at = updated_at` ⇒ **已存在的 agent 行永不被种子订正**，故 D18 的 `backflow_allow=0` **从未落库**。`classify.py:7-9` 文档所称「cc 双保险」**实际只有一重在工作**（`backflow_enabled`）。方向是 **fail-open**：谁按文档去翻 `backflow_enabled`（以为另一重还兜着），cc 会当场打开。**未改动任何值**，仅登记。
+      - **⚠️ 本轮踩到的三处操作坑（都产生过假信号）**：
+        1. **sp 的 compose 服务名是 `app`，`sp-app` 只是 `container_name`** ⇒ `docker compose up -d sp-app` 报 `no such service: sp-app` 并**空跑**，而该命令在管道尾接 `tail`，**`set -e` 不触发**（管道退出码取末命令）⇒ 脚本继续跑完，产出一次「容器全程持原值的正常调用」。**救场的是预案里那条「回读容器内进程值」**——`printenv` 显示原值才没把它当成注入结果。**凡注入脚本，回读不是可选项**。
+        2. **`localhost` 在 sp 上走 `::1` 返 502**（同一地址 curl 走 IPv4 返 200）⇒ 探针一律写 `127.0.0.1`。
+        3. **sp 的 SSE 是 `id:/event:/data:` 三段式**（事件名在 `event:` 行，不在 data 内）⇒ 首版解析只读 `data` + 找 `type` 字段，**全漏**，误报「未调用 LLM」。
+      - **cs 的规则短路（选输入必须用判别器，否则注入窗口空转）**：`{"content":"我要退货 ORD-20240801-001"}` 在**黑洞下仍成功作答**且 `total_tokens=0` —— 走的是规则短路（`intent=order_query` + 本地 `query_order` 工具），**根本没调 LLM**。⇒ **触发前先用 `usage.total_tokens>0` 判定「这次真的调了 LLM」**（正常 `你好，请介绍一下你自己` = 1685 tokens、`你们的售后政策是什么` = 5068 tokens）。**判据 = token 数，不是回答内容**。
+      - **本批结论的边界（不许被 cs 的绿盖过）**：只走通 **环②**；环③（assemble→link）**尚未等够**，环④~⑦ 未验。且 cs 的这一簇是本批唯一的真实增量。
+    - **C1 七环本体 · 施行记录（第二批：cs 环③~⑦ **全通**；2026-09-16 容器内 UTC 08:16~08:46）**：
+      - **环③ 组装 ✅**：`error_case_link 2244`（cluster 3865 / payload `4bf40a77-a25a-478b-8cd6-fd515cb1fed4`）+ `conversion_record 3244`（`action=assemble`，08:16:54）。
+      - **环④ 拉取 ✅**：offline `error_backflow_inbox 16`（`status=case_created` / `ack=acked`）→ `test_case 4076`（08:17:18）→ **ack 回写 online**：`link.offline_status` 由 `assembled` → **`active`**、`case_id=4076`。
+      - **⚠️ 环⑤ 的入口是「信号 run」，不是「回流 case 建成」——本轮最重要的根因发现**：
+        - error_regression run 的唯一自动入口 = `orchestrator.maybe_auto_schedule()`，挂在 **`_finish` 末尾**，语义 =「**信号 run（manual/held_out）到达终态**」。**没有任何东西会因「回流 case 建成」而建 run**——回流 case 只是坐进 error suite 等下一个信号。
+        - **cs 的信号 run 全部停在 2026-09-01**（最后一条 `3026`）⇒ 该函数 **15 天未被触发**。**这不是缺陷，是本环境没有发版/手测流量**（与既往「缺真实用户流量」是同一根因的第二个面：那个卡采集面，这个卡**信号面**）。
+        - **`_decide_schedule` 按 `version` 查 latest error run** ⇒ 复用旧 version 会被那条 `completed` 挡成「不建」；**必须用一条从未用过的新 version** 才走「首建」分支——这正是真实发版的路径。
+        - 施行：建 **manual run 3699**（suite 2158 / version `c1-signal-20260916`，刻意可辨认以免被后人读成真实发版）→ 终态 `completed`（17 用例，16 pass/1 fail，score 96.56）→ **触发 error run `3700`**（`trigger_signal_id=3699`，**`case_ids=[4076, 4075]`**——回流 case 4076 被带入；对比历史 3662~3665 均为 `[4075]`）。
+      - **环⑤ 判定 ✅**：`eval_result 4798`（case 4076）`pass_fail=pass`、`total_tokens=1500`（确证真调 LLM）；`assertion_results`（JSON 字符串）解析后 = `[{"op":"keyword_not_contains","args":{"path":"answer","keywords":["系统繁忙，请稍后再试，或通过在线客服或留言转人工。"]},"pass":true,"actual":"<cs 真实作答>",...}]` —— **断言明细落库（C-4）在这条真机链上验到**，关键词正是黑洞注入时 cs 返的兜底话术。
+      - **环⑥ 回推 ✅**：`verify_run_record 830`（`link_id=2244`、`run_id=3700`、`case_pass=1`、`run_status=completed`）+ `conversion_record 3246`（`action=regression_result`）。
+      - **⚠️ 环⑦ 的前置是「人工 claim」——第二个根因发现**：`verify.judge_link` 首句 `if not fv or not case_id: return no_progress`；簇的 `fix_version` **只在 claim 时由运营指定**。未 claim ⇒ **判定链根本不启动**（不是判成 pending，是压根不判）。cs 实测 `fix_version=NULL` / `status=open`。
+        - **⚠️ 代做动作（自造物自带标记）**：本轮由探针代做 `POST /api/v1/backflow/clusters/3865/claim`（`fix_version=c1-signal-20260916`，k=2，复核窗至 09-30）。**真实运营里这是人工业务动作**；`conversion_record 3247` 的 detail 已逐字写入 note「C1 七环验收：探针代做的认领动作（非真实运营）」。**后人勿读成真实认领**。
+        - `claim_k=2` ⇒ 需**连续两次纯净 pass**。第二轮建 manual run **3701**（version `c1-signal-20260916-2`）→ error run **3702** → `verify_run_record 832`。
+        - **结果：`error_cluster 3865.status → 'fixed'`；`error_case_link 2244.verify_status`：`pending → 'passed'`；`conversion_record 3250` `action='auto_fixed'`，detail 逐字「K 满纯净序列（c1-signal-20260916→c1-signal-20260916-2 连续2版纯净 pass）」。**
+      - **⚠️ gq / sp / cc 的环②~⑦ 定案：按规格不可达，不动任何代码（用户拍板）**：
+        - **规格依据**（回读原文，不靠印象）：`solution_detail.md:323`「LLM 最终失败**无论上层是否 catch 转兜底**，`llm_call` 一律 `status=error`……异常先记后传（先记 error 事件、再抛给业务兜底分支）」；`:1561` X-3 把「被业务 catch 转兜底返回 200 → `request ok + llm_call status=error`」定义为**基础可见性前提**（进指标 + trace 红显），**不产候选**。
+        - **gq / sp**：业务刻意 catch 转兜底 ⇒ root 恒 ok ⇒ 落 T-3.10「兜底吸收现场（request ok + llm_call error）v1 不回流（L3 二期）」象限。**这是规格正确执行，不是缺陷**；其 `llm_call` 子节点 error 均已如实落库（符合 X-3 指标面前提）。
+        - **⚠️ 三家的根侧 error_type 全部落在 L1∪L2 值域之外**（本轮实测 + 读码，**这是「即便根失败也回流不了」的第二道闸**）：gq `main.py:90/94/253` = `CLIENT_DISCONNECT` / `HTTP_{code}` / `UNHANDLED_EXCEPTION`；sp `core/middleware.py:33/37/59` **同构同值**；cc `check_task_service.py:179-180` = `TIMEOUT` / `CANCELLED` / `INTERNAL_ERROR`。而 `classify._layer_for` 只认 11 个值（L1 七类 + L2 四类）⇒ **判不到任何层**。**四家里只有 cs 通，是因为其业务层显式把 LLM 故障透传成 `llm_connection`**（`cs` 的兜底只作用在 SSE 给客户端那一层，没吸收根事件）。
+        - **cc 更彻底一层**：`run_task_async`（`check_task_service.py:184`）是 `asyncio.create_task` **后台异步**，那个 `POST /internal/check-tasks/{id}/run` **派发完即返**，root 与 LLM 故障**结构上解耦** ⇒ 即便开门也不成簇。**故 `dict_config backflow_enabled` 保持 `false` 不动，门不开**（避免一次注定无效的配置变更）。
+        - **⚠️ 措辞订正（自纠）**：我在本轮汇报中一度把此现象称为「**双端契约缺口**」，**该措辞过重、已收回**。正确表述 = SDK 接入模板给出的根侧状态码**规格未赋 L1/L2 值**，故判不到层；而 §2.5 的 L2 四类落点也在**子节点**（`:314` db/redis 失败）⇒ **v1 本就不在根侧认任何非 LLM 状态码**，行为自洽。
+        - **🔴 2026-09-16 订正：上面两条「cc」的定案均被真机实测推翻（**仅 cc，gq/sp 的结论不变**）**：
+          ① **`cc` 的 `llm_call` 子节点走的是白名单值域** —— `contract-check/backend/app/obs.py:140 llm_error_type()` 把 LLM 异常映射为 `llm_connection` / `llm_timeout` / `llm_rate_limit` / `llm_other`（docstring 自陈「平台错误分类白名单值域，**口径对齐 cs**」）。故**本条的判据取的是子节点 `error_type`，不是根侧那个值域**——把根侧 `TIMEOUT/CANCELLED/INTERNAL_ERROR` 当「第二道闸」，**属判据取错了面**。
+          ② **「结构解耦 ⇒ 即便开门也不成簇」被实测推翻**：cc 已实测产出 **10 个 L1 簇**（`error_cluster` 3866~3875，`layer=L1` / `error_type=llm_connection`，interface 含 `POST /internal/check-tasks/{id}/run` 与 `GET /api/tasks/{id}/result`）⇒ 后台 `asyncio.create_task` 并不阻止成簇。
+          ③ 顺带订正 `:525` 的处置前提：cc 的 `dict_config backflow_enabled` 实测**本就是 `true`（v1，`updated_by='seed'`，非本批次改动）**，不存在「门不开」——「保持 false 不动」一句与库内实值不符。⇒ **cc 的七环在本轮已真实走通（①~⑦），见下「第三批」。**
+      - **新增探针（`online/.tmp-probe/`、`offline/.tmp-probe/`，均未提交）**：`c1_signal_run.py`（造信号 run + 等终态）、`c1_claim_cluster.py`（代做 claim）。两处踩坑已写进脚注：① offline 响应有 `{code,data}` 信封，token 不在顶层；② `_ver_key` 对非数字段记 0 ⇒ `c1-signal-20260916` 与 `c1-signal-20260916-2` 同归一为 `(0,)`，故都能 ≥ claim 的 fix_version。
+      - **本轮人工造物的清单（供后人区分自造 vs 真实，勿混）**：manual run **3699 / 3701**（探针造，version 带 `c1-signal-` 前缀）、error run **3700 / 3702**、cluster 3865 的 **claim**、`online` 侧 `vrr 829/830/832`、`conv 3245~3250`。**真实流量侧的唯一样本 = cs trace `d1994368`（黑洞注入那次）。**
+    - **C1 七环本体 · 施行记录（第三批：cc 环①~⑦ **全通**；2026-09-16）**：
+      - **本批的核心是一处「参数口径」修复，不是代码缺陷修复**（本批只改了 cc 一个文件 + 一个探针，见下）：
+        - **现象**：cc 的候选**成了簇（环②③ ✓）却卡在环④** —— `error_backflow_inbox 20`（同 agent 同接口、`task-645`）`status='rejected'`、`reject_code='online_content_gap'`。**判别力干净：与行 21 的变量只有 `file_path` 一个。**
+        - **根因**：online 侧 `evidence.input` 没有下游（offline 评测）能用的路径键。offline 契约 `prepare` 走 multipart，取 `{case.input.file_path}`，且出站前有白名单 `_assert_inside_uploads`（`offline backend/app/adapters/base.py:84`，realpath 必须落在 `/app/uploads` 内）⇒ **online 给的路径必须是「离线容器内」的路径**。
+        - **修法（用户拍板「拉齐两边的参数，不是共享卷」）**：cc 合成 span 的 `input` 按**下游口径**写成 `{"task_id": N, "file_path": "/app/uploads/<原始文件名>"}`；`file_path` 取自 `ContractFile.file_name`，**两侧指同一份文件**（离线评测时正是从该路径把这份原件传上来的，multipart 用 `basename` 作文件名，`base.py:73`）。**共享真实文件靠两边口径一致，不靠共享卷。**
+        - **对照实证**：行 21 `status='active'` / `reject_code=None` / `case_id=4077`（10:21:22）✅ vs 行 20 `rejected`/`online_content_gap`；**端到端旁证**：cc 于 10:24:52 新建 `task=650, file=61`，与 offline `run 3706` 的 `started_at=10:24:52` **逐秒吻合** ⇒ 离线**真读到了** `/app/uploads/b1_missing_date.pdf` 并上传。
+      - **⚠️ 两处「我以为对不对」的事实订正（同一族：跨仓套用）**：① **cc 代码是烤进镜像的、无源码 bind mount** ⇒ `docker compose restart` 对代码改动**无效**，须 `up -d --build backend`（`/app` 是 bind mount 是 **sp** 的事实，**跨仓套用是本 session 第二次犯**）；② 改 `.env` **只需**重建容器（`docker-compose.yml:28` 是 `env_file: ./backend/.env`，注释自陈「本地文件，不入镜像」）—— 我曾口误称「烤进镜像」。
+      - **✅ 环⑥ 回推（本批两条机制级新发现）**：
+        - **新发现 A —— 环⑥ 有两条独立触发路径，此前台账只记了一条**：`fire_auto_schedule`（挂在信号 run 收尾，§5.3）**之外**，还有 **`reconcile_loop` 的「版本差集对账」（`_INTERVAL=60s`）** —— `anchors`（该 agent 有 manual/held_out **终态** run 的 version）减 `_have_versions`（**已有 error_regression run** 的 version），差集非空则每周期补建 1 个（`reconcile_loop.py:88-115`）。**⚠️ 两条路径本轮只有前者被真机跑到**（见下「触发路径已由日志定案」）；**`reconcile_loop` 这条本轮的绿不能算数** —— 它是读码所得的「存在性」事实，**未取得运行证据**。**而「差集对账能补建 `0.2.0` 之外的版本」这一判断，其前提已在库内核对**：`2299` 的 error_regression **按 version 去重后实测为 5 个** = `0.1.0` / `0.2.0` / `1.16.0` / `1.16.1` / `0.2.1`（查法：`select distinct version from eval_run where agent_id=2299 and trigger_type='error_regression'`）。⇒ 同版确不再建，而 `0.2.1` 是本轮新增的那个。
+        - **新发现 B —— `version` 不在 `agent` 表**（该表**无 `version` 列**），完全由 `POST /api/runs` 的**调用方**给出（`api/runs.py:280` `version=body.version`）⇒ **「造版本变更」零配置改动**。
+        - **施行**：`POST /api/runs`（`agent_id=2299` / `suite_id=2159` / **`version=0.2.1`** / `manual` / **`case_ids=[3141]` 定向 1 例**，最小成本）→ run 3707 `completed` → **自动补建 error run `3708`**（`trigger_signal_id=3707` **确证因果链**；`case_ids=[4082,4081,4080,4079,4078,4077]` 六例，对**健康的 cc**）→ **六例全 `pass`** → 于 **14:25:46.5** 推送 online：`verify_run_record 837~842`（`bound_version='0.2.1'` / `case_pass=1` / `run_status='completed'`）。
+        - **✅ 触发路径已由日志定案（原稿两处凭印象，均订正）**：`ai-eval-backend` 日志（同一 `trace_id` 贯穿）逐毫秒为 ——
+          `14:25:08.968 run 3707 _finish 进入（status=running）` → `14:25:08.974 _finish 完成（status=**scoring**）` → **`14:25:08.995 error run 建单：agent=2299 version=0.2.1 signal_run=3707 cases=6`** → `14:25:09.015 run 3708 error 开始复现 6 个 case`；3707 真正 `completed` 在 14:25:18（scoring 走完）。
+          ① **实际走的是 `fire_auto_schedule`（信号 run 收尾钩子），不是 `reconcile_loop`** —— 后者虽存在（见新发现 A），**本次事件未用到**。原稿写「自动补建」未区分二者，且曾写「60s 内补建」（实为**同一毫秒级链**，无 60s 分量）。
+          ② **顺带订正「信号 run 到达终态」的准确语义**：钩子在 **`_finish` 转入 `scoring` 时**就触发，**不是**等 `completed` —— `scoring` **不在** `_NON_TERMINAL = ('pending','running')` 里（`reconcile_loop.py:36`），故 `_signal_anchors` 把它算作可锚的「终态」。这同时解释了「3708 的 `started_at`(14:25:09) 早于 3707 的 `finished_at`(14:25:18)」这处看似矛盾的值。
+        - **干净对照**：同一 link 2249 的历史行 `833~836`（0.1.0 / 1.16.0 / 1.16.1 / 0.2.0）**全部 `case_pass=None` / `run_status='partial_failed'`**（当时 cc 正被注入搞坏）。
+      - **✅ 环⑦ 收口（第三个根因发现 + 一处代做动作）**：
+        - **根因**：`verify.judge_link` 首句 `if not fv or not case_id: return no_progress`（`verify.py:240-243`）⇒ **簇不认领则判定链根本不启动**；`fix_version` 只在 **claim** 时由运营指定（`backflow/claim.py:107`）。与 cs 批的发现同源，**本条第二次独立复现**。
+        - **新发现 C —— 认领后由 `rejudge_job` 重判，不依赖新推送**：`worker/rejudge_job.py:_scan_candidates` 扫 `status=='claim' ∧ 有现行 pending link` 的簇 → 对**已落库行集**重放 `judge_link`（周期 `REJUDGE_INTERVAL_S=60`，`worker/main.py:41`）。
+        - **施行（用户拍板「认领，`claim_k=1`」）**：`POST /api/v1/backflow/clusters/3870/claim`（`fix_version=0.2.1`、`k=1`、TTL 14 天）。
+        - **结果**：`conv/3271` claim（14:29:06.033，actor=1）→ **`conv/3272` `action='auto_fixed'`（14:29:09.059）**，detail 逐字「K 满纯净序列（0.2.1→0.2.1 连续1版纯净 pass）」；簇 3870 `status='fixed'`、link 2249 `verify_status='pending'→'passed'`。**worker 自打日志为独立佐证**：`14:29:09 INFO [obs.worker.rejudge] rejudge 补判收敛: cluster=3870 link=2249 outcome=fixed_auto`（`_apply_auto_fixed` 全仓**唯一**调用方 = `verify.py:412` 的 `passed` 分支 ⇒ 收口非人工写入）。
+      - **⚠️ 本批自造物清单（供后人区分自造 vs 真实，勿混）**：**注入窗口 #1** ≈ 09-15 17:11 本地 ~ 09-16 14:17:58 UTC、**#2** 14:17:21→14:17:58 UTC（`.env` 的 `DEEPSEEK_BASE_URL` → `http://127.0.0.1:1`，已还原并回读进程内值 = `https://api.deepseek.com`）；**cc 簇 3866~3875**；**inbox 行 17/19/20/21/22~25**；**error run 3706/3707/3708**；**manual run 3707**；**簇 3870 的 claim**（`note` 已逐字写明「⑤⑥⑦ 闭环真机验证（0.2.1 为验证用版本）」）；`conv 3265/3271/3272`。**真实流量侧样本 = cs 的 inbox id=16。**
+        - **⚠️ 一处自造缺陷（探针）**：`online/.tmp-probe/c1_cc_trigger.py` 原**写死** multipart 文件名 `good.pdf` ⇒ 会让 cc 记下 offline 侧不存在的名字（回流 case 的 `file_path` 指向空文件）。已修 = `os.path.basename(PDF)`，与离线出站口径（`base.py:73`）一致。
+        - **⚠️ 一处作废的实验（不许读成「验过了」）**：**窗口 #2 的再注入**基于**错误前提** —— 当时我误以为环⑥ 按「信号」触发，实为按 `(agent, version)` 判且 `0.2.0` 已被 run 3706 占位 ⇒ **task 651 的 case 注定拿不到 run**。该实验**作废**；**但它仍产出真实后果**：case **4082** 已建（簇 3875），此后被 run 3708 一并跑到（`pass`）。**cc 已于 14:17:58 还原，无残留注入。**
+      - **⚠️ 一处已知边界（未证伪）**：`ContractFile.file_name` 以「**该 sha 首次上传的名字**」为准（`save_uploaded_file` 命中去重即复用、**不更新 `file_name`**）⇒ 若首次上传名在 offline `/app/uploads` 下不存在，**case 仍会建出**，直到重放时才读不到文件。本轮两个同内容文件恰好都在 offline uploads 才未暴露。
+      - **本条能证明什么 / 不能证明什么**：证明 **cc 的七环 ①~⑦ 端到端真实走通**（含 ⑥ 的两条触发路径、⑦ 的 claim→rejudge→auto_fixed）；**不证明**「cc 在全量真实流量下稳定」——本批的 error 样本**全部来自我注入的故障**，无一条真实流量。
+      - **未验收边界（显式标，不许被这片绿盖过）**：① **`claim_k=2` 的 `seq≥2` 分支真机未验**（纯函数 `decide_k` 有单测；本批用 `k=1` 只覆盖 `seq=1`）；② 簇 3871~3875 **保持 `open`**，未认领；③ 上条「首名不在 offline」的路径未验。
+      - **代码改动（✅ 已提交 cc 仓 `d53be2f`，5 文件 / 162 insertions / 27 deletions）**：`backend/app/api/files.py`（置 `request.state.obs_input`）+ `backend/app/main.py`（四条出口带出）+ `backend/app/obs.py`（`end_request` 增 `input` 形参）+ `backend/app/service/check_task_service.py`（新增 `_obs_task_input()`、`_end_task_span` 增 `input_payload` 口子、四处出口传入）+ `backend/tests/test_obs_wiring.py`（同步改 + 新增 `TestObsTaskInput` 4 例）。单测 **24 passed**；全量 **416 passed / 1 failed**（`test_manifest_fields` 为既有失败，HEAD 上同样红）。
+      - **⏳ 未认领项（不是本批产物）**：`task 647~650` 的来源未查明（cc 坏着时**每分钟一次**的上传，每个造出独立 cluster + case）；其后代 case 4078~4081 **已在 run 3708 一并跑到**。
+    - **⚠️ 覆盖面如实声明（不许被上面那片绿盖过）**：本轮至今**未产生任何真实 error → 回流样本**；C2/C3 验的是「**词表 × 算子**」这一层，**不能读作「4 家闭环已走通」**——那是 C1 的事。
+  - **词表写入的三条硬约束（取证自 offline；写错即假红/假绿，故先定死口径）**：① 匹配 = **子串**（`assertions/ops/text.py:33` `k.lower() in val.lower()`，两侧 lower）；② `KeywordNotContainsOp` 默认 `match="all"` ⇒ **任一关键词命中 `answer` 即判 fail**（= 该 run 落入兜底、回归不通过）；③ `sanitize_words`（`core/error_payload.py:130-153`）= strip→lower→弃空→**弃 `len>200`**→保序去重；**空表 fail-closed**（`runner/pull_loop.py:178` 净化后为空 ⇒ 驳回 `empty_words`，整案收不下）。⇒ **词表条目 = 「一旦作为子串出现就说明这是兜底回话」的辨识性片段**；`MAX_WORD_LEN=200` 使整句安全（无「写长了被静默丢弃」风险）。
+  - **阶段 B 待写词表草案（cc / sp；逐条带出处。⚠️ 写前须用户过目——词表归属属运营/业务知识，允许「盘不全」，但不允许编）**：
+    - **sp（`smart-procurement`）—— 源码硬编码常量、逐字进 `answer`**：
+      1. `根据当前标书内容，未找到与您问题直接相关的信息。` ← `app/ai/agent/agent_loop.py:65` `_NOT_FOUND_ANSWER`
+      2. `抱歉，我还没完全理解您的问题。` ← 同文件 `:72` `_UNKNOWN_ANSWER`
+    - **sp 降级/拒答提示**（`app/ai/rag/degradation.py:25` `DegradationHint`，8 条逐字）：
+      3. `该标书正在解析中，请稍后再试`（`PARSING`）　4. `未找到与该问题相关的依据`（`NO_EVIDENCE`）
+      5. `语义检索暂不可用，以下分析仅基于结构化数据`（`SEMANTIC_DOWN`）　6. `AI 推理引擎暂不可用，已切换为人工评审模式`（`LLM_DOWN`）
+      7. `核心数据暂不可用，请稍后重试`（`MYSQL_DOWN`）　8. `未识别到有效分数，请人工评分`（`NO_SCORE`）
+      9. `LLM 输出分数超出范围，已忽略，请人工评分`（`SCORE_OUT_OF_RANGE`）　10. `AI 未返回有效内容，请人工评分`（`EMPTY_OUTPUT`）
+      - ⚠️ **第 3~10 条的落地位置未坐实**：`services/review_service.py:357/427/432` 显示其挂在 SSE `hint` 字段（`thinking` / `score` / `done` 事件），而 offline `core/assembler.py:57` **只把事件类型为 `answer` 的分片拼进 `answer`** ⇒ 这 8 条**可能根本不进 `answer`**。**处置 = 照收（防御性冗余，误伤风险≈0：这些措辞不会出现在正常回话里），但不得据此为「覆盖率」背书**；坐实需查 sp 的 SSE→统一事件映射（**未查**）。
+    - **sp LLM 转述项**（`agent_loop.py:88` `_RETRIEVAL_UNAVAILABLE_HINT` **要求 LLM 在回答开头写出**该句 ⇒ 取**核心片段**而非整句，以覆盖改写）：
+      11. `检索暂不可用，答案可信度偏低，未经标书验证`
+    - **cc（`contract-check`）—— `answer` 构造函数 `app/service/check_task_service.py:436-450`**：
+      12. `合同校验失败：任务处于失败状态，未产出有效校验结果` ← `:438`
+      13. `合同校验已取消，未完成校验` ← `:440`
+      14. `合同校验未完成（当前状态：` ← `:444`（**动态尾**，子串匹配天然覆盖任意 status 值）
+      - **存疑、暂不列入（列此以免后人重复盘）**：`合同校验完成，待人工审核`（`:442`，是终态但非失败态）；`合同校验完成，未检出违规项`（`:445`，SUCCESS 基线，**绝不能收**——收了每次正常通过都判 fail）。
+      - **未收入（经判定不属兜底面）**：`main.py:53` 的 500 响应体（HTTP 层，不进 `answer`）；`check_task_service.py:689`「文件解析失败」与 `extractor.py:488`「合同文本为空或过短」（均为 **400 / 异常路径**，不构成一次已完成的 run 的 `answer`）。
+  - **阶段 C 验证场景清单（4 agent 全覆盖，按「验证面」切分而非按端点数）**：
+    - **C1 主链路七环**：真实 error → 观测→聚类→组装→拉取→判定→回归回推→收口 全环走通（**4 家各跑**；唯一能证明「该 agent 能走完闭环」的场景）
+    - **C2 `no_fallback` 命中面**：喂**兜底回话**的回归 run ⇒ **必须判 fail**（验本轮新写词表；4 家各跑）
+    - **C3 `no_fallback` 不误伤面**：喂**正常回话**的回归 run ⇒ **必须不判 fail**（验词表假红；**与 C2 成对，缺 C3 则「判据」只验了一半**）
+    - **C4 状态机恢复**：`requeue` / 重推路径（**复用既有 `r27_positive_seed.py` / `r28_requeue.py` 装置**，抽样，不重复建）
+    - **C5 告警面**：停摆 / 积压 / `cap_gap` 探测（**复用 offline `cap_gap_probe_loop` / `ack_stale_probe_loop`**，抽样）
+    - **⚠️ 场景充分性的边界（如实标，不许被 C1~C5 的绿盖过）**：C1~C5 的输入仍由**我方自造**，与「真实用户触发的 error」不是一回事（真实流量缺失归 T-5.1 / T-5.6）；**本批次证明「4 家在自造输入下闭环正确」，不证明 T-5.6 的验收目标**。
+  - **撤销面（如何回到起点）**：cc `backflow_allow`（0→1）与 cc/sp 词表写入**均可由同一 admin API 反向覆盖**（写回 `0` / 写回 `[]` 即恢复原值，`dict_config.version` 自增留痕）；**阶段 C 探针造出的样本须在收口时清理并登记**（条数 + id 区间 + 清理动作）。
+  - **阶段 C 起点基线（2026-09-16 15:31:57 取证，造样本前）**：`error_cluster` 22（max id 3861）/ `error_case_link` 21（max 2243）/ `verify_run_record` 16 / `conversion_record` 67 / `inbox` 12（max id 12）；末尾 cluster = 3861 `cs·llm_timeout·open`、3860 / 3859 `gq·claim`。
+  - **复核命令（本条目全部「现状」断言均可由它重取，勿凭印象）**：
+    `docker exec obs-backend python -c 'import os,pymysql; c=pymysql.connect(host=os.environ["DB_HOST"],port=int(os.environ.get("DB_PORT") or 3306),user=os.environ["DB_USER"],password=os.environ["DB_PASSWORD"],database="dev.obs",charset="utf8mb4"); cur=c.cursor(); cur.execute("SELECT a.name,d.config_value,d.version FROM dict_config d JOIN agent a ON a.id=d.agent_id WHERE d.config_key=%s ORDER BY a.name",("fallback_utterance",)); [print(r) for r in cur.fetchall()]'`
+    （`shared-mysql` 容器**无** `DB_USER`，只有各业务库的 `MYSQL_*` ⇒ 查询须借 `obs-backend` 容器自身的连接串；**此法不回显凭据**。）
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
