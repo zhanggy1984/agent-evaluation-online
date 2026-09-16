@@ -115,11 +115,14 @@ def _base(ctx: TraceCtx, *, node: str, seq: int, parent: int | None, ts: int,
 
 def build_request_event(ctx: TraceCtx, *, ts: int, duration_ms: int, status: str,
                         error_type: str | None = None, error_msg: str | None = None,
-                        output: Any = None, extra: dict[str, Any] | None = None) -> dict:
+                        input: Any = None, output: Any = None,
+                        extra: dict[str, Any] | None = None) -> dict:
     """request 锚点：seq=0 + parent=null + duration_ms 必填（§2.4）。"""
     ev = _base(ctx, node="request", seq=0, parent=None, ts=ts)
     ev.update({"duration_ms": duration_ms, "status": status,
                "extra": _trunc_extra(extra)})
+    if input is not None:  # 入参：消费侧据此产 root_input_hash（聚类去重键）与明文快照，
+        ev["input"] = input  # 缺了则 cluster_job 不建簇 —— 同 output 惯例，显式传才落键
     if output is not None:  # v1 正文默认不采（§2.7 逐接口评估 #8），显式传才落键
         ev["output"] = output
     if status == "error":

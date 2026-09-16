@@ -128,9 +128,12 @@ def begin_request(*, method: str = "GET", path: str = "/", trace_id: Optional[st
 
 
 def end_request(status: str, *, error_type: Optional[str] = None,
-                error_msg: Optional[str] = None, output: Any = None,
+                error_msg: Optional[str] = None, input: Any = None, output: Any = None,
                 duration_ms: Optional[int] = None, extra: dict[str, Any] | None = None) -> None:
-    """request 出口（中间件 finally）：算 duration 产 request 事件（seq=0 锚点）。"""
+    """request 出口（中间件 finally）：算 duration 产 request 事件（seq=0 锚点）。
+
+    input 为该请求的入参（§6.2 root 去重键与 evidence 现场的数据来源），不传则事件不带该键。
+    """
     state = _require_span("end_request")
     if state is None or _state.sink is None:
         return
@@ -149,7 +152,7 @@ def end_request(status: str, *, error_type: Optional[str] = None,
     ctx.update({"trace_id": state.trace_id, "interface": state.interface})
     ev = build_request_event(ctx, ts=state.start_ms, duration_ms=duration, status=status,
                              error_type=error_type, error_msg=error_msg,
-                             output=output, extra=extra)
+                             input=input, output=output, extra=extra)
     _state.sink.emit(EVENT_TOPIC, ev)
     reset()
 
