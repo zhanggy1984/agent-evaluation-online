@@ -628,7 +628,7 @@
     - **③ 吞点全量 grep** —— 今天是**关键词命中法**（命中「LLM 调用失败」），**不是穷尽法**：换措辞写的吞点（熔断专用文案、降级引导语、兜底话术分支）不会被命中。**结论须连 grep 范围一起报**（范围 = 两仓 `backend/` 全包根，非单文件）。
   - **已发现、登记备查的两处不一致（不在本批擅改）**：① **sp 断路器「同因不同果」**——流**开始前**熔断 OPEN ⇒ 路由直接 503（`reviews.py:211`）⇒ root 记 `HTTP_503`（**值域外，不产候选**）；流**中途** `CircuitOpenError` ⇒ error 帧 + 200 ⇒ 改后标 `llm_other` **能**产候选。**同一个「AI 不可用」两种形态、一种能回流一种不能。** ② **漏标记即静默退化**——逐点标记意味着将来新增兜底点若忘标记，会**静默回到今天的状态且无任何告警**；本批**不建机制兜底**（不造无人用的抽象），只在台账写明。
   - **批次已拍板（2026-09-17）= gq 先行**：gq 单独一批（2 处标记 + `obs_input` 透传）→ 真机跑通七环 → 验收；绿了再复制 sp。理由：两家**结构不同**（gq 路由带 `request`、sp 路由不带且出口分散 10 处）⇒ 本来就不是同一批；先把「标记 + 透传 + 七环验收」链在一家跑通，第二家是**复制**而非探索。符合「可单独出方案、可单独验收」。
-  - **未做（如实声明）**：**代码改动面 = 0，尚未动手**。三件只读检查 ① ② ③ **均已实跑**（结论见上，各带复核命令与正对照）；仍空白的只有「空返回兜底」的判断条件/是否有重试/是否仅限主对话（已另立待办）。⚠️ 本条立条时环境曾停（容器全 Exited），上述结论**是后来起栈才取得的**，非立条当时所有。
+  - **未做（如实声明）**：~~**代码改动面 = 0，尚未动手**~~ **⚠️ 2026-09-17 失效标注：本句已被本条自己的施行记录（`:633` 起）推翻 —— gq 侧实际落了 4 改 1 新增并已提交 `1945ac9`、真机七环验收通过。出现原因是施行记录**追加在后**、而本行未回改；见 T-5.14**。三件只读检查 ① ② ③ **均已实跑**（结论见上，各带复核命令与正对照）；仍空白的只有「空返回兜底」的判断条件/是否有重试/是否仅限主对话（已另立待办）。⚠️ 本条立条时环境曾停（容器全 Exited），上述结论**是后来起栈才取得的**，非立条当时所有。
 
   - **施行记录（2026-09-17，gq 一家已跑通七环）** —— ⚠️ **本段与 `:599-601`、`:630` 的「6 个吞点各加一行」「2 处标记」口径不一致，以本段为准**（旧条不改写，同 `:596` 惯例）。偏离原因见下「为何不是 6 个吞点」。
     - **实际落码形状 = 1 处置位 + 1 处撤销 + 1 处入参透传**（`git status` 实测：**4 改 1 新增**，`chat_service.py` **未改**）：
@@ -656,7 +656,7 @@
       MSYS_NO_PATHCONV=1 docker exec obs-backend python -c "import os,pymysql; c=pymysql.connect(host=os.environ.get('DB_HOST') or 'localhost',port=int(os.environ.get('DB_PORT') or 3306),user=os.environ['DB_USER'],password=os.environ['DB_PASSWORD'],database='dev.obs',charset='utf8mb4'); cur=c.cursor(); cur.execute('SELECT id,status,fix_version,claim_k FROM error_cluster WHERE id=3880'); print(cur.fetchone()); cur.execute('SELECT id,verify_status FROM error_case_link WHERE id=2255'); print(cur.fetchone()); cur.execute('SELECT id,run_id,case_pass,bound_version FROM verify_run_record WHERE link_id=2255 ORDER BY id'); print(cur.fetchall()); cur.execute('SELECT id,action,closed_by,detail FROM conversion_record WHERE cluster_id=3880 ORDER BY id'); [print(r) for r in cur.fetchall()]"
       ```
       ⚠️ `DB_NAME` 在该容器内可能是**空串**（`os.environ.get('DB_NAME','dev.obs')` 取到 `''` ⇒ `No database selected`），须写 `or 'dev.obs'`；`verify_run_record` **无 `verify_status` 列**（查询须先 `SELECT *`，勿凭列名猜）。
-    - **未做/未提交（如实声明）**：① **未提交任何东西**（gq 仓 4 改 1 新增、online 仓本条均在**工作区**）；② **单测与回归**：gq 侧新增 6 例已跑（见 `test_llm_hard_fail_marker.py`），**服务进程端到端未验**（沿用既有裁定：不补）；③ **「空返回兜底」仍不纳入**（`:602` 口径不变）；④ **sp 尚未开工** —— 复制那一批须**另行核实**其 `deepseek_client.py` 9 处的最终失败点（`:600` 已记「sp 侧不可照搬此结论」），以及 sp 路由**无 `request` 参数**这一结构差异（`:603` 已定：两家统一用 contextvar）。
+    - **未做/未提交（如实声明）**：① ~~**未提交任何东西**（gq 仓 4 改 1 新增、online 仓本条均在**工作区**）~~ **⚠️ 2026-09-17 失效标注：已提交并推送 —— gq `1945ac9`（4 改 1 新增）+ online `ea3d008`。本句写于提交之前，属「状态类断言落笔即腐」（见 T-5.14）；同一段的 `:652` 也记了该笔内容，读时以本条为准。**；② **单测与回归**：gq 侧新增 6 例已跑（见 `test_llm_hard_fail_marker.py`），**服务进程端到端未验**（沿用既有裁定：不补）；③ **「空返回兜底」仍不纳入**（`:602` 口径不变）；④ **sp 尚未开工** —— 复制那一批须**另行核实**其 `deepseek_client.py` 9 处的最终失败点（`:600` 已记「sp 侧不可照搬此结论」），以及 sp 路由**无 `request` 参数**这一结构差异（`:603` 已定：两家统一用 contextvar）。
 
 - **T-5.9b sp 真机注入验收（2026-09-17，**已收口**：环①② 真机打通、「环③ 未通」已定因并**转出为独立批次**）**：
   - **⚠️ 自造故障标注**：sp **于宿主 10:56:09 起**被人为切断 LLM（容器内 `/etc/hosts` 注入 `127.0.0.1 api.deepseek.com`；手法同 gq：`grep -v … > /tmp/h.new && cat /tmp/h.new > /etc/hosts`，且**须 `-u root`**——容器以非 root 跑，默认 `exec` 报 `Permission denied`）。**撤销动作 = `docker restart sp-app`**（运行时重生成 `/etc/hosts`），回读 `grep -c 'api.deepseek.com' /etc/hosts` = **0 行 / 总 7 行 = 基线**。本轮产出物（trace `97d26c9a…` / `a397b18e…` / `4f9aa511…`）**全是我造的红，不是真缺陷**。注入前基线水位 = sp trace **33 行**（`agent='smart-procurement'`）、最新 `updated_ts` 2026-09-17 02:26:59。
@@ -675,7 +675,7 @@
     - **⚠️ 2026-09-17 两处订正 + 结清**。**① 行号腐**：上面引的 sp `reviews.py:211`/`:258` 现为 **`:229`/`:279`**（文件已移位，属 memory `memory-status-markers-rot` 的「行号引用腐」）。**② 断言过强**：原文「**没有任何请求**会再调用 `acquire()`」**实测不成立** —— sp `app/api/v1/closeouts.py`（`/close` `/prescreen` `/disqualify`）→ `fraud_detection_service.py:503` → `get_client().chat()` → `acquire()`，**该路由无断路器前置门**（全仓 `circuit_state` 只出现在 `reviews.py:191/229/279`）⇒ 有 closeouts 流量时自愈会被**别的入口**触发。准确说法 = **「reviews 自身无自愈能力，解锁要靠他人流量偶然经过」**。原实测（4 分钟内全 503）仍然有效：那段时间里确实没有 closeouts 流量到达。
     - **处置（2026-09-17 已修，sp 仓）**：抽出同步 `_CircuitBreaker._maybe_half_open()`，由 `acquire()` **与 `state` 属性**共同调用（`app/ai/llm/deepseek_client.py`）——路由唯一读到的面就是 `circuit_state`，让它也参与到期迁移，门才能在窗口过后自行放行；**单一真相源仍在`_CircuitBreaker` 内**（没把到期判断复制进路由，避免两处漂移）。**定性 = 实现缺口而非有意设计**：sp 自己的 `task.md` 降级路径测试行写明「断路器半开探测｜连续成功 1 次｜**断路器自动 CLOSE，AI 功能恢复**」，自动恢复是**承诺过的**（判据依 memory `implementation-odd-is-not-defect`：先回读规格再定性）。
     - **验证（含判别力对照，2026-09-17）**：新增**经过路由**的用例 `tests/integration/test_degradation_api.py::test_circuit_self_heals_after_window_through_route` —— 旧用例用**写死 `circuit_state` 的 MagicMock**、单测**直接调 `acquire()`**，**两者都绕过了那道门**，这正是假绿来源。实测：`tests/unit` **378 passed**；`test_degradation_api.py` **6 passed**（原 5 + 新 1）；`test_review_api.py` + e2e 合计 **19 passed**（e2e 另 1 个 **环境 error**，与改动无关：`tests/e2e/conftest.py:72` 线程内 MySQL 连接被拒 ⇒ 真错被线程包装吞成 `KeyError: 'v'`，发生在 fixture setup）。**判别力对照**：临时把 `state` 改回纯读 ⇒ 新用例**转红**；且**先 `grep -c` 确认替换确实改动了文本**（防 sp `task.md` 记过的「变异是空操作 ⇒ 报绿是假绿」重演），事后已还原。
-    - **未做/未变**：**cs 仓同缺口未动**（cs 熔断拒绝同样在 `:201` 的 `try` 之外，见 `docs/sp-seven-ring-plan.md:120-121`）；**closeouts 无门只作事实记录、未动其代码**（不碰无关代码）；**未重建 sp 镜像**（本地单测/集成绿，**容器内仍是旧码**，真机行为未复验）。
+    - **未做/未变**：**cs 仓同缺口未动**（cs 熔断拒绝同样在 `:201` 的 `try` 之外，见 `docs/sp-seven-ring-plan.md:120-121`）；**closeouts 无门只作事实记录、未动其代码**（不碰无关代码）；**未重建 sp 镜像**（本地单测/集成绿，**容器内仍是旧码**，真机行为未复验）。**⚠️ 2026-09-17 订正：本批之后镜像已重建**（实测镜像创建 = `2026-09-17T03:51:02Z` = 北京 11:51，由 T-5.11 的 input 链触发，见该条 §硬闸与镜像）；且 sp 有 `./app:/app/app:ro` **bind mount** ⇒ app 码本就不靠重建生效。复核：`docker exec sp-app python -c "from app.ai.llm.deepseek_client import _CircuitBreaker as C; print(hasattr(C,'_maybe_half_open'))"` ⇒ **True**（断路器修复在容器内确已生效）。见 T-5.14。
   - **覆盖缺口（如实记）**：`agent_loop.py` 的 **B 组 2 处本轮未被真机覆盖** —— 熔断请求在**路由层**即被 503 拒绝，根本没进 agent；本轮覆盖到的是 `reviews.py` 的 **HTTP_503 出口**，不是 `agent_loop` 的 error 帧出口。
   - **复核命令**：
     ```
@@ -692,7 +692,7 @@
   - **验收证据（2026-09-17 真机，非推断）**：**连跑 2 遍**，均 **8/8 全绿**；gate 实打印 `{'agent_exists': True, 'agent_enabled': True, 'backflow_allow': False, 'backflow_enabled': True}`（归因守卫实测成立）；两遍簇 id **3878 → 3879**（递增 ⇒ 真跑新一轮，非复用上轮行）；残留复核 = 临时 agent 行 0 / `c2-` 未判行 0 / 探针簇 0，`agent` 总行数回到 **5**；`ruff` 对改动文件 **All checks passed**。
   - **复核命令**（⚠️ Git Bash 下**必须**加 `MSYS_NO_PATHCONV=1`，否则 `/app/...` 被转成 Windows 路径，报 `No such file` —— 看着像探针不存在，实为路径转换）：
     `MSYS_NO_PATHCONV=1 docker exec obs-backend python /app/tests/integration/backflow_allow_probe.py`
-  - **未做/未变**：是否纳入 CI 真库探针 job **仍未拍板**（前置不变 = 先核该 job 的库有没有 seed 出 cs 行）；**本条未提交**。
+  - **未做/未变**：是否纳入 CI 真库探针 job **仍未拍板**（前置不变 = 先核该 job 的库有没有 seed 出 cs 行）；~~**本条未提交**~~ **⚠️ 2026-09-17 失效标注：已提交 —— `91dec82`（`test(probe): C2 负对照探针改为自造负对照行（T-5.10）`），工作区 clean。本句与 T-5.9 `:659` / T-5.11 `:732` 是同一型「状态类断言落笔即腐」，见 T-5.14。**（本条主题为 C2 探针，**不属七环收口范围**，仅因同类缺陷就地标注，未展开。）
 
 - **T-5.11 sp 环③ 建簇打通（B 方案：sp 侧补埋点透传）**（2026-09-17；用户拍板「我还是要 gq 和 sp 的七环跑通」+ 选 B 方案）：
   - **症状**：sp 七环跑到 ② 即断 —— `error_cluster` 长期 **0 行**（对照 gq 11 行），后三环全部无输入。
@@ -751,7 +751,7 @@
     - 三处指纹一次取：`docker exec obs-worker python -c "…"`，SQL = `select id,status,fix_version,claim_due_ts from error_cluster where id=3881` + `select id,verify_status from error_case_link where cluster_id=3881` + `select id,action,detail from conversion_record where cluster_id=3881 and id>=3298 order by id`
     - 驱动方证据：`docker logs obs-worker --since <claim 时刻> 2>&1 | grep "rejudge 完成"`
     - 探针脚本（**代做动作的原始载体**）：`.tmp-probe/c1_claim_sp_3881.py`（**已于 2026-09-17 清理，见 T-5.13**；清理前未跟踪，docstring 内含 fix_version / k / note 三项的逐条理由）。**该动作本身仍可复核、不依赖脚本存活**：`conversion_record` 3298 的 `detail` 逐字保留了 `{"fix_version":"0.2.1","k":2,"ttl_days":14,"note":"…"}` 四项 —— 台账的复核命令**不该指向临时文件**，本条下面的 SQL 才是权威入口。
-  - **未做/未变**：gq 侧**未动**（其七环仍未开工）；~~sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**~~ **（⚠️ 2026-09-17 在此行之后变质：断路器已定性与已修，见 `674` 行结清块；fail-soft 兜底仍**仅登记**）。**
+  - **未做/未变**：~~gq 侧**未动**（其七环仍未开工）~~ **⚠️ 2026-09-17 失效标注：gq 七环当日**已全通**（T-5.9 实施 + 真机验收，簇 3880 `fixed` / link 2255 `passed`）。⚠️ 此句**写时即为假**（写在 gq 实施 11:41 之后，却沿用了实施前的状态）⇒ 它不是腐化、是当时就错，见 T-5.14**；~~sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**~~ **（⚠️ 2026-09-17 在此行之后变质：断路器已定性与已修，见 `674` 行结清块；fail-soft 兜底仍**仅登记**）。**
   - **提交指纹（回填）**：online **`2a3f3b8`**（`6d0898e..2a3f3b8`，只提交 `task.md`，1 文件 +22），**快进非 force**，推送后 `git status -sb` 无 ahead/behind。⚠️ 本条正文初稿写「**未提交、未推送**」，那是**提交之前**写的、已回填（与 T-5.11 同型，状态类断言落笔即腐，见 `memory-status-markers-rot`）。探针脚本 `.tmp-probe/c1_claim_sp_3881.py` 清理前**未跟踪、未提交**；**2026-09-17 已连同其余 19 个一并清理**（本句落笔时写的「与其余 20 个同处置」当时尚未定，同日由 T-5.13 落实为「转正 2 删 18」）。
 
 - **T-5.13 `.tmp-probe/` 清理：转正 2 / 删 18 + 台账引用订正**（2026-09-17；用户拍板选项「转正 2 删 18 + 订正台账」）：
@@ -767,6 +767,34 @@
   - **🆕 清理过程顺带查出的一笔旧账**：`:531` 引用的 **`c1_signal_run.py` 在被清理的 20 个文件里根本不存在** ⇒ 那条引用**在本轮清理之前就已是空证据**（第三十一笔为 C2 探针转正，防的正是这种形态；memory `no-evidence-still-explained` 的子面）。已在该处就地标注。
   - **口径（本条的产出，供后续引用）**：**台账的复核命令不该指向临时文件路径**。证据要么入库（转正）、要么别引；一次性载体的价值在结论入账那一刻就兑现了，留下路径只会随清理变成空引用。后续新写复核命令请直接给 **SQL / `docker logs` / 已转正探针路径**。
   - **未做/未变**：offline 仓的 `.tmp-probe/`（`c2c3_wordlist_judge.py` / `c3_real_answers.py` / `cs_cases.py` / `why_stopped.py` 等）**未动** —— 那是另一仓的事，且本轮未扫其全集（**不许把「online 侧清完了」读成「两仓都清了」**）；`.gitignore` **未改**（不把噪音源盖起来，删掉它）。
+
+- **T-5.14 gq/sp 七环「全通」收口 —— 写实 + 陈旧状态订正**（2026-09-17；用户拍板「按『已全通』收口」）：
+  - **由来**：用户令「4，gq 七环出方案」。本件开工**先回仓复取事实**，发现**该命题的前提已不存在** —— gq 七环当日已实施、已真机验收、已提交（T-5.9）。进一步复核发现 **sp 亦已全通**（T-5.11 环③ + T-5.12 环⑦）⇒ **用户总目标「我还是要 gq 和 sp 的七环跑通！」两家均已达成**。本条的产出因此**不是方案，而是把状态写实**。
+  - **⚠️ 本条的元价值 = 一次「视图 ≠ 账本」的实证，记下来防复犯**：「gq 七环未开工」这句在**四处**记录中存活（`docs/gq-seven-ring-plan.md:3`、`task.md:659`、`task.md:754`、memory 台账；写作中又补查出 `task.md:631`，**故陈旧站点全集 = 6，不是 4**，见下），而实物早已 `fixed`/`passed`。**我本轮因此被误导两次**：第一次直接给出「gq 未做」的判断；第二次基于该判断向用户推荐了「转做 sp 环③ 方案」——而 sp 环③ 同样早已完成。**第二次的直接成因 = grep 模式用任务号（`T-5.9`）而非概念词**（「七环全通」/「环③ 打通」）⇒ 整条漏掉 `T-5.11`/`T-5.12`。模式构造纪律见 memory `multi-site-doc-edit-enumerate-first`、`task-list-is-a-view-not-a-ledger`。
+  - **实物复核（本条全部为现场实查，不引台账二手结论）**：
+    - **gq**：`error_cluster` **3880** `status=fixed` / `fix_version=verify-20260917` / `claim_k=2`；`error_case_link` **2255** `verify_status=passed`；`verify_run_record` **848**(run 3710) + **854**(run 3712) 两条均 `case_pass=1`；`conversion_record` 3273 assemble / 3279 regression_result / 3280 claim / 3290 regression_result / **3291 `auto_fixed`（`closed_by=auto_regression`）**。
+    - **sp**：`error_cluster` **3881** `status=fixed` / `fix_version=0.2.1` / `claim_k=2` / `first_trace_id=d005ea43…`（**真 trace，非 `task-NNN` 桩**）；`error_case_link` **2256** `verify_status=passed`（`source_trace_id` 同上）。
+    - **对照（防把桩行误读成七环产物）**：`error_cluster` 3874 / 3875 的 `first_trace_id` 仍是 `task-650` / `task-651` **桩**、`status=open` ⇒ 历史遗留，与本件无关。
+    - **运行侧旁证**：sp `trace_judge_state` 中 `root_input_hash IS NOT NULL` **7 行**（T-5.11 定因时该值「恒为 NULL」）、`root_status='error'` **6 行**；gq `root_error_type LIKE 'llm%'` **1 行**（T-5.9 记的基线为 **0 行**）。
+  - **陈旧状态站点订正（站点全集先 grep 定死再动手；模式 = `未动手|未提交|未推送|未开工|尚未开工|改动面 *= *0`，online 仓 **19 命中**，其中**与本件相关的 6 处**如下。⚠️ 其余 **13 处属别的主题**（§8.5 admin / T-3.13 / 探针清理等），**未动** —— 19 不是本件的改动数。
+    ⚠️ **本条初稿报的是「4 处」，那是我第二次数错**（漏 `task.md:631` 与 `docs/sp-seven-ring-plan.md:210`）。**漏因与上一次同源**：我把「七环」嵌进筛选模式去缩范围，而 `:631` / `:210` 那两行**根本没有「七环」二字** —— 恰是 `multi-site-doc-edit-enumerate-first` 所讲「**连『有几处』这个数目本身也是结论，不许凭印象报**」。⇒ 教训升级：**先按概念词穷举、再人工分类，不要用「概念词 + 状态词同现」去缩范围**，后者会把「同一主题但换了个说法的行」整片滤掉）**：
+    - `docs/gq-seven-ring-plan.md:3`：原文「状态：待审、**未动手**（代码改动面 = 0）」⇒ 就地订正为「已实施并验收」。该文件 `:1` 标题**早已**写「已实施并验收」⇒ 同一文档自我矛盾。
+    - `task.md:659`：「**未提交任何东西**」⇒ 就地加失效标注（gq `1945ac9` / online `ea3d008`）。属「写于提交之前」的落笔即腐。
+    - `task.md:754`：「gq 侧**未动**（其七环仍未开工）」⇒ 就地加失效标注。**此句写时即为假**（写在 gq 实施 11:41 之后），**不是腐化**。
+    - `task.md:678`：「**未重建 sp 镜像**（…容器内仍是旧码…）」⇒ 就地订正。实测镜像创建 = `2026-09-17T03:51:02Z`（= 北京 11:51，由 T-5.11 的 input 链触发）、`sp-app` 启动于 `05:28:30Z`；且 sp 有 `./app:/app/app:ro` bind mount ⇒ app 码本就不靠重建生效。
+    - `task.md:631`（**初稿漏报的第 5 处**）：「**代码改动面 = 0，尚未动手**」⇒ 已被**本条自己的**施行记录（`:633` 起）推翻（gq 实落 4 改 1 新增 + 已提交 `1945ac9`）。成因 = 施行记录**追加在后**、本行未回改。
+    - `docs/sp-seven-ring-plan.md:210`（**初稿漏报的第 6 处**）：「**状态**：本方案**未开工、未改任何文件**」⇒ 与**该文档自己的抬头**（`:3`「改动点 A **已实施、已真机验收**」）直接矛盾。实际进度 = A `382dc82`；B 撤出后由 T-5.11（环③）+ T-5.12（环⑦）补完 ⇒ sp 七环全通。**同文档两处结论相反**，与 `gq-seven-ring-plan.md` `:1`↔`:3` 同型。
+  - **🔴 仍未验（不许让上面两处 `fixed` / 两处 `passed` 盖过去）**：
+    1. **两家七环的 error 全是我注入的**（gq：`/etc/hosts` 黑洞，00:43:53 起约 3 分钟；sp：05:27:56Z~05:28:26Z）⇒ **至今没有任何一条真实用户流量走完七环**。这是「七环跑通」这条结论的**最大边界**，也是「放量前」必须跨过的一道。
+    2. **gq 终态证据弱**：两轮 pass 用的是**同一个 case 4083**，其输入为**自造元指令文本**，gq 按「元指令」拒答而通过 ⇒ 证明的是**判定链路走得通**，**不证明** gq 修复后行为正确。
+    3. **gq `fix_version=verify-20260917` 是显式验收标注值** ⇒ 平台 **R-7 软提示常亮**（「未观测到 good-question@verify-20260917 评测 run」）；改用真实版本字面量重认领被拒（`ERR_CLUSTER_0003`，claim 态不允许该迁移），**无端点可改** ⇒ 记载为**已知且可解释**，非缺陷。
+    4. **T-5.11 的第三源（nginx `api-gateway` access log）该窗口零命中、未取到** ⇒ ⑥ 的独立复核只有**两个**源（offline 生产者日志 + 平台侧自陈），**不是三个**。
+    5. **T-5.12 未验到的三支**：`needs_review(input_truncated)` / `gap_version` / `reopened`·`needs_review` 另两个终态。
+  - **复核命令（一条取全，不借印象）**：⚠️ **库列名不可凭记忆写，先 `show columns from <表>`** —— 本条写作时我自己就因猜列名（`agent_name` / `root_input_hash`）**连报两次 `1054 Unknown column`**，这正是「凭印象写库命令」的现场代价。
+    ```
+    docker exec obs-backend python -c "import os,pymysql; c=pymysql.connect(host=os.environ.get('DB_HOST') or 'localhost',port=int(os.environ.get('DB_PORT') or 3306),user=os.environ['DB_USER'],password=os.environ['DB_PASSWORD'],database=os.environ.get('DB_NAME') or 'dev.obs',charset='utf8mb4'); cur=c.cursor(); cur.execute('SELECT id,status,fix_version,claim_k FROM error_cluster WHERE id IN (3880,3881)'); print(cur.fetchall()); cur.execute('SELECT id,verify_status FROM error_case_link WHERE id IN (2255,2256)'); print(cur.fetchall()); cur.execute('SELECT id,run_id,case_pass FROM verify_run_record WHERE link_id IN (2255,2256) ORDER BY id'); print(cur.fetchall())"
+    ```
+  - **未做/未变**：cs 仓断路器同缺口**未动**；`fail-soft 兜底`**仍仅登记**（用户 2026-09-17 已拍板不处置 ⇒ **不是待办**）；`.env.c1bak` **未删**；offline 仓 `.tmp-probe/` **未动**；`docs/real-traffic-request.md` 的两处 `<待填>`（提交人 / 收件方）**未填** —— 它正是上面「仍未验」第 1 条的唯一出路，属**用户侧动作**。
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
