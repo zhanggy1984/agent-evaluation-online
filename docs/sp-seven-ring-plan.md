@@ -148,7 +148,12 @@ A 组只覆盖「异常从 `deepseek_client` 上抛」的路径。但 `CircuitOp
 
 实测参数：阈值 = **5 次失败**（`config.py:72 deepseek_circuit_breaker_threshold=5`）；`CIRCUIT_OPEN_SECONDS = 30.0`（`deepseek_client.py:54`）；`record_failure()` 在 `:201/:316/:379`（每次失败尝试各计 1）；状态为**进程内存态**（`:61-70`）。
 
-⇒ **OPEN 只锁 30 秒**，到期自动转 HALF_OPEN 放行（`:81-83`，且 HALF_OPEN 期间不拦截）⇒ **复位手段 = 等 30 秒，或 `docker restart sp-app`**。验收不会因熔断卡死，本条**不再是硬门禁**。
+⇒ ~~**OPEN 只锁 30 秒**，到期自动转 HALF_OPEN 放行 ⇒ **复位手段 = 等 30 秒**~~。验收不会因熔断卡死，本条**不再是硬门禁**。
+
+> **⚠️ 失效标注（2026-09-17，同日实测定翻）**：上面这句**在 reviews 路由上是假的** —— 它是**静态读码**的结论；同日真机黑洞注入实测（`task.md` 批记录）**第 3 次请求起 503，`docker restart` 前 4 分钟内多次重试全部 503**。根因：`reviews.py:229/:279` 在 **`acquire()` 之前**就判 `circuit_state == "OPEN"` 并 503 ⇒ reviews 这条链**永远走不到** `acquire()` 内的那次迁移，**「等 30 秒」等不来复位**。
+> - **本节的正确结论**：**复位手段 = 非 reviews 入口的流量（如 `closeouts.py`→`chat()`）碰巧到达，或 `docker restart sp-app`**。下面 `:156` 那条诊断建议「等到 30 秒重试即可」**同样不成立**，实际会被一直 503；诊断仍可用（看 `root_error_type` 是否 `HTTP_503`），但处置要改成**重启容器**。
+> - **已修（2026-09-17）**：迁移抽成 `_maybe_half_open()`，由 `acquire()` **与 `state` 属性**共同调用 ⇒ 本节原话**从今天起重新成立**。但**镜像未重建**，容器内仍是旧码，**真机行为未复验**。
+> - **本节其余数字一并腐了两处**：`CIRCUIT_OPEN_SECONDS` 仍在 `deepseek_client.py:54`；但迁移点 `:81-83` 与 `record_failure()` 的 `:201/:316/:379` 均因本次抽函数**下移约 11 行**。行号引用一律以容器内实测为准（memory `memory-status-markers-rot`）。
 
 ⚠️ 但**熔断期内请求走的是路由层 503**（`reviews.py:211/:258`，决策 A 不纳入）⇒ 那种请求**不产候选、建不出环②**。故给出诊断判据：
 
