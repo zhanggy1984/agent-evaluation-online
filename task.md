@@ -707,16 +707,25 @@
     - 源 1（产出端）：`docker exec -u root sp-app` 向 `/etc/hosts` 写黑洞 → `/chat` 连发**两次同一问题**，两条 SSE 均落 error 帧；`trace_judge_state` 该 trace 行 `root_input_hash` **非空**、`input_snapshot_clean` = `{"question": "请结合评分标准，重点说明团队资质这条维度的关键扣分点", "bid_id": "BID-027", "dimension_id": "DIM-LOT-008-1"}`。
     - 源 2（判定端）：TTL 到期后该行 `judged=1/processed=1`，**`error_cluster` id=3881 / layer='L1' / error_type='llm_connection' / count=2 / generation=1 / status='open'`** ⇒ 两条同问落进**同一簇**且**计数递增**，正是用户选定的验收档。
     - **③ 之后链路亦已真机前进（本条范围外，如实记）**：`conversion_record` 3292 组装（05:34:58，payload_id `7345301f-5087-420c-b33d-16eb6efc07ce`）→ 3293/3294 回归 run **3713（sp@0.1.0）/ 3714（sp@0.2.1）** 均 completed → `error_case_link` id=**2256** → case_id **4084**，`offline_status='active'`、`verify_status='pending'`。
-    - **结论**：**sp ①~⑥ 首次真机贯通；⑦ 收口未做**。
+      - ⚠️ **`verify_status='pending'` 是 by design 的停驻态，不是「⑥ 没通」**（本条初稿在此处读错过一次，后人勿复犯）：`pending` 是**现行 link 的占位态**（`cur_key` 生成列只在 pending 时取 `cluster_id`，`models/error_flow.py:110`），推进到 `passed` 需 `fix_version`，而 `fix_version` **只由 claim 写入**；推送端点的判定段被 **`cluster.status=='claim'` 守卫**挡下（`worker/rejudge_job.py:12-14` 注释明写「**必须挡**」）⇒ 未认领的簇，link **必然**恒挂 pending。**它的成因是 ⑦ 未做，与 ⑥ 无关。**
+    - **⑥ 独立复核（2026-09-17，用户令「另起一条不经过本推导的路径」；结论 = ⑥ 为真，且证据强于初版）**：
+      - **证据源 = offline 生产者日志**（`ai-eval-backend`，JSON 结构化）—— 独立于 online 库、独立于本条推导：3713~3717 **五条 run 全部由 `app.runner.reconcile_loop` 差集对账补建**（逐分钟一条、一版一条；锚 run 分别 = `2480/2487/2506/3027/3666`），各「收尾完成 `status=completed pass=1 fail=0 na=0`」。
+      - **跨进程对接 5/5 全中**（offline 收尾 ts → online `conversion_record.ts`）：3713 `05:36:06.374→.391`（**+17ms**）/ 3714 `.766→.780`（**+14ms**）/ 3715 `.326→.345`（**+19ms**）/ 3716 `.185→.201`（**+16ms**）/ 3717 `.634→.651`（**+17ms**）。两条独立时钟、两套独立记录 ⇒ **一次排除桩执行与假绿**（同 cs/cc 用过的手法）。
+      - **平台侧自陈「已接受」**：5 条 `conversion_record(action=regression_result)` 的 `detail` 均 `cases=1 dropped=0` ⇒ 关联到 link 2256，**非 orphan、非 dropped**；对应 `verify_run_record` id=**855~859**（`case_pass=1`）。⚠️ **判据不是我定的**：cc 的 ⑥ ✅ 证据（`:543`）同形，其对照坏版本行（`:548`）为 `case_pass=None`/`partial_failed` —— sp 这 5 行落在「好」的那一侧。
+      - **5 个 `bound_version` 不是串号**：载荷 `raw_json` 逐条 `agent=smart-procurement` + `trigger_signal_id=3881`；`prev_terminal_version` 首尾相接成环 ⇒ 一轮**版本扫掠**（cc 的 link 2249 历史同为 5 版，同形，属正常）。
+      - **顺带结掉一笔旧账**：cc 批 `:541` 明写环⑥ 的第二条触发路径 `reconcile_loop`「**本轮的绿不能算数，未取得运行证据**」。**sp 这一轮给了它首个运行证据**（5 次差集对账补建，日志逐字）⇒ **该缺口就此关闭**。
+      - **未取到的第三源（如实记，勿读成「验过没问题」）**：原计划再取 nginx `api-gateway` access log 作第三源，`docker logs` 在该窗口**零命中**，**未取到**。
+      - **复核命令**：`docker logs ai-eval-backend --since 2026-09-17T05:30:00 2>&1 | grep -E "建单|差集对账|收尾完成" | grep 2297`（`2297` = sp 在 offline 的 `agent_id`）。
+    - **结论**：**sp ①~⑥ 首次真机贯通（⑥ 已独立复核）；⑦ 收口未做**。
   - **⑦ 未做的判据（不是「差一点」，是硬前提缺失）**：簇 3881 仍 `status='open'` / `fix_version=None` / **`claimed_by=None`** ⇒ **从未被 claim**，而 **claim 是 ⑦ 的硬前提**。故本条**不得**记成「七环全通」。
   - **⚠️ 自造故障数据 —— 保留并全量标注**（用户拍板；依据 `self-injected-fault-looks-like-real-defect`：人为故障在共享观测面留下的红与真缺陷**逐字同形**，唯一区分手段是标注）：
     - 注入窗口 **2026-09-17 05:27:56Z ~ 05:28:26Z**（hosts 黑洞）；**撤销动作 = `docker restart sp-app`**（`docker restart` 会重生成 `/etc/hosts`，故重启即复原，已回读确认）。
-    - 带标记的生产数据：簇 **3881** / case **4084** / run **3713·3714** / `conversion_record` **3292·3293·3294** / `trace_judge_state` 中两条 `llm_connection` 行 / `error_case_link` **2256**。**读这些行时必须先回来看本条**。
+    - 带标记的生产数据：簇 **3881** / case **4084** / run **3713·3714·3715·3716·3717** / `verify_run_record` **855~859** / `conversion_record` **3292~3297** / `trace_judge_state` 中两条 `llm_connection` 行 / `error_case_link` **2256**。**读这些行时必须先回来看本条**。（3715~3717 由 `reconcile_loop` 自动补建，是注入链的**下游产物**，同样属自造面。）
   - **复核命令**（⚠️ 库列名不可凭记忆写，先 `show columns from <表>`；下同）：
     - 簇：`docker exec obs-worker python -c "…"`，SQL = `select id, layer, error_type, count, generation, status from error_cluster where agent='smart-procurement' order by id desc limit 5`
     - 判定态：`select trace_id, root_status, judged, processed from trace_judge_state where agent='smart-procurement' order by updated_ts desc limit 5`
     - ⑦ 是否开工：`select id, status, claimed_by, fix_version from error_cluster where id=3881`
-  - **未做/未变（勿读成已完成）**：**本条未提交、未推送**；gq 侧**未动**；sp 断路器闩死（路由层先于 `acquire()` 判 OPEN ⇒ 自愈永不发生）**未定性、未处置**；fail-soft 兜底**仅登记**。
+  - **未做/未变（勿读成已完成）**：**本条已提交并推送** = sp `3b2c504`（`382dc82..3b2c504`，5 文件 +94 −40）/ online `439fb8a`（`ea3d008..439fb8a`，只提交 `task.md`），**两笔均快进非 force**、推送后 `git status -sb` 无 ahead/behind（⚠️ 本行初稿写「未提交、未推送」，是**在提交之前**写的，已回改 —— 状态类断言落笔即腐，见 `memory-status-markers-rot`）；gq 侧**未动**；sp 断路器闩死（路由层先于 `acquire()` 判 OPEN ⇒ 自愈永不发生）**未定性、未处置**；fail-soft 兜底**仅登记**。
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
