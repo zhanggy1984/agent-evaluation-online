@@ -727,6 +727,28 @@
     - ⑦ 是否开工：`select id, status, claimed_by, fix_version from error_cluster where id=3881`
   - **未做/未变（勿读成已完成）**：**本条已提交并推送** = sp `3b2c504`（`382dc82..3b2c504`，5 文件 +94 −40）/ online `439fb8a`（`ea3d008..439fb8a`，只提交 `task.md`），**两笔均快进非 force**、推送后 `git status -sb` 无 ahead/behind（⚠️ 本行初稿写「未提交、未推送」，是**在提交之前**写的，已回改 —— 状态类断言落笔即腐，见 `memory-status-markers-rot`）；gq 侧**未动**；sp 断路器闩死（路由层先于 `acquire()` 判 OPEN ⇒ 自愈永不发生）**未定性、未处置**；fail-soft 兜底**仅登记**。
 
+- **T-5.12 sp 环⑦ 收口打通（claim 簇 3881）**（2026-09-17；用户拍板参数「k=2 + fix_version=0.2.1」）：
+  - **⚠️ 本条推翻 T-5.11 末尾的「⑦ 收口未做」** —— 那句在写下时是**真的**（当时 `claimed_by=None` 从未 claim，而 claim 是 ⑦ 的硬前提），本条是**状态迁移**，不是订正旧错。读 T-5.11 那两句时必须接着读本条。
+  - **①~⑦ 首次真机贯通**：`观测→聚类→组装→拉取→判定→回归回推→收口` 环③ 由 T-5.11 打通，⑦ 由本条打通 ⇒ **sp 七环全通**。
+  - **为什么用 `k=2`（本条的增量，不是「镜像 cc」）**：cc 的簇 3870 用的是 `k=1`，`verify.decide_k` 里 `seq` 累积到 2 的那条分支**真机从未验过**（只有单测覆盖）。`k=2` 逼出多步累积 ⇒ 本条补上该分支的**首个真机证据**。
+  - **开工前的静态推演（先算后跑，事后逐字吻合）**：输入全已查实 —— 5 版 payload 全 `pass_fail="pass"` / `error_type=null`（**无环境级 na**）/ `cluster.input_truncated=0` ⇒ `route_verdict` 每版均落 `count_k`。取 `fv=0.2.1` → `_ver_key` `(0,2,1) < latest 1.16.0 的 (1,16,0)` ⇒ 过「fix_version 未发版」水位守卫。eligible = {0.2.1, 1.16.0} → 0.2.1 判 `count_k` 得 `seq=1` → 1.16.0 的 prev `0.2.1` **在** `_agent_versions('smart-procurement')` 内（已独立查库确认 = `[0.1.0, 0.2.0, 0.2.1, 1.16.0, probe-b-sp-1]`）⇒ 无 gap ⇒ `seq=2 ≥ 2` ⇒ 终态 `passed`。
+  - **真机结果（三处指纹，缺一不可）**：
+    - `error_cluster` **3881**：`open` → **`fixed`**，`fix_version=None` → **`0.2.1`**，`claim_due_ts=2026-10-01T05:56:12Z`（TTL 14d）。
+    - `error_case_link` **2256**：`verify_status` `pending` → **`passed`**。
+    - `conversion_record` **3299**：`action='auto_fixed'`，`detail='K 满纯净序列（0.2.1→1.16.0 连续2版纯净 pass）'` —— **`连续2版` 即 k=2 分支走通的字面证据**。
+    - claim 审计行 **3298**：`action='claim'`，`detail` 含 `{"fix_version":"0.2.1","k":2,"ttl_days":14,"note":"…"}`。
+    - 驱动方 = `worker/rejudge_job`（60s 轮询，**claim 后无需再推**；worker 日志 `rejudge 完成` 逐分钟可见）。
+  - **⚠️ 诚实性标注（本条最关键的一条，勿删）**：簇 3881 的 error **是我自己 injected 的**（hosts 黑洞 05:27:56Z~05:28:26Z，已撤销，见 T-5.11），而那 5 个版本号**没有任何一个真修了什么**，它们只是版本扫掠的产物。claim 的语义是「运营指定修复版本」，写 `auto_fixed` = **给一个从不存在的缺陷开具修复证明**。处置沿用 cc 簇 3870 先例：**claim 的 `note` 逐字写明验证用途**，原文 = 「sp 七环 ⑦ 验收：探针代做的认领动作（非真实运营）；本簇 error 系自造故障（hosts 黑洞，已撤销），0.2.1 为验证用版本，非真实修复」。**代做动作 + 自造缺陷双重性质已同时落库**，读 3881 / 3299 前先读本句。
+  - **回滚路径（无一键撤销，事先已知）**：claim → open 有三条既有路径 —— 回归 failed（`verify`）/ TTL 超窗（`claim_ttl_job`，本条 2026-10-01 到期）/ fixed-review `approve:false`。
+  - **本条验到 / 未验到（不许让绿盖住）**：
+    - **验到**：`count_k` 多步累积（`seq 1→2`）、K 满终态 `passed`、`_apply_auto_fixed` 全链、`rejudge_job` 无新推送驱动判定。
+    - **未验到**：`needs_review(input_truncated)` 分支（`input_truncated=0`，本簇天然走不到）；`gap_version` 分支（已独立查库确认不命中）；`fixed_auto` 之外的另两个终态（`reopened` / `needs_review`）。
+  - **复核命令**（⚠️ 库列名不可凭记忆写，先 `show columns from <表>`）：
+    - 三处指纹一次取：`docker exec obs-worker python -c "…"`，SQL = `select id,status,fix_version,claim_due_ts from error_cluster where id=3881` + `select id,verify_status from error_case_link where cluster_id=3881` + `select id,action,detail from conversion_record where cluster_id=3881 and id>=3298 order by id`
+    - 驱动方证据：`docker logs obs-worker --since <claim 时刻> 2>&1 | grep "rejudge 完成"`
+    - 探针脚本（**代做动作的原始载体**）：`.tmp-probe/c1_claim_sp_3881.py`（未跟踪；docstring 内含 fix_version / k / note 三项的逐条理由）
+  - **未做/未变**：gq 侧**未动**（其七环仍未开工）；本条**未提交、未推送**（落笔时真实状态）；sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**。
+
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
 ---
