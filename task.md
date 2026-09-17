@@ -975,3 +975,360 @@ with e.connect() as c:
 - 本环境**无公网入口**，故「无真实用户流量」近乎自明 —— 但**「自明」不是「已验证」**，更不等于**生产环境**的未来流量为 0（那是未知，取决于上线）。
 
 ⇒ **引用这句时须带等级**：它是「**缺该输入 —— trace 面不可验、旁路两源旁证一致**」，仍**不是「实测为 0」**（日志有留存窗口；gq 容器未运行、其前端无从查）。凡以它为开工前提的判断（上表 13 处），结论不受影响（都仍是「无法开工」）。**本环境无公网入口**，故该结论近乎自明 —— 但**「自明」+「旁证」仍不等于证明**，更不代表**生产环境**上线后无流量（那是未知，取决于上线）。
+
+---
+
+## 浏览器端 UI 验收（2026-09-17）
+
+> **本批边界（先读）**：只验「浏览器 UI 打开 / 登录 / 操作 → 数据在 online 页面上的呈现」。
+> **不验**生产流量、不验真实用户路径。批 1 的绿**只覆盖**「页面可达 + 能登录」，不含任何错误路径。
+
+### 一、批 1 侦查（已完成）
+
+6 个前端均可从宿主浏览器打开并登录：
+
+| 系统 | 入口 | 口令 |
+|---|---|---|
+| contract-check | `http://localhost:8088/` | `123456` |
+| smart-procurement | `http://localhost:18082/admin` | `123456` |
+| good-question | `http://localhost:8089/` | `123456` |
+| customer-service | `https://localhost:8443/chat`（8081 → 301 → 8443，自签证书） | `123456` |
+| online | `http://localhost:18080/` | **`12345678`** |
+| offline | `http://localhost:8180/` | 见 offline 仓 |
+
+⚠️ `18082` 是**本机 `.env` 改 `WEB_PORT` 后**的值（该文件未入库）。**换机器会回到无宿主端口状态。**
+
+### 二、批 2a–2d 造错：**结论 = 浏览器造不出可回流的错**（已结案）
+
+原定判据「浏览器操作 → 产出端 `error_cluster` +1」**不可达**。三条路均实测定性：
+
+| 路 | 实测 | 为何不聚簇 |
+|---|---|---|
+| cc 上传非法文件 | `POST /api/files/upload` → **400** `{"detail":"仅支持 PDF / DOCX 文件"}` | `HTTP_400` ∉ 回流值域 |
+| gq 超长输入 | `POST /api/chat/1341` → **422** `String should have at most 4000 characters` | `HTTP_422` ∉ 回流值域 |
+| LLM 层错误 | 需 LLM 真故障；实测 cc 的 LLM **可达**（`/models` 返 401 = 网络通） | 浏览器不可达 |
+
+**根因（合规格，非缺陷）**：回流值域 = `backend/app/analyzer/classify.py` 的
+`LLM_ERR_TYPES`（7 类）∪ `L2_ERR_TYPES`（4 类），**全部是 agent 侧 LLM / 依赖故障**；
+客户端 4xx 属「用户输入错」，按设计**不回流**。
+
+**决定性证据**：`trace_judge_state` id=**19017**（cc 那次）的 `judgement_json` =
+`{"layer": "none", "root": {"status": "error", "error_type": "HTTP_400"}, "candidate_error_sets": []}`，
+且 `judged=1 processed=1` ⇒ **判定确实跑完**，不是等待不足。
+
+### 三、UI 验收（online **8 页全验**；offline 内容页 5 页 + 登录，**已全验**）
+
+#### 3.1 总览页 —— ✅ 无偏差（差异属设计，非缺陷）
+
+UI `cards.total=354`，同刻 `trace_judge_state` 直查 = **349**。
+
+**不是缺陷**：`backend/app/api/metrics.py` 注释明写「计数/error/timeout/序列 = 实时整窗（**准确超集**）」
+—— UI 读**原始事件 index(ES)**，判定表是派生态，两者本就不该相等。
+逐小时差仅落 4 个小时，且可解释：09-13 那 3 条源于「**09-13 全天全平台零判定行**」
+（判定流水线 09-14 02:30 才起步）。
+
+#### 3.2 异常页 —— ✅ 逐列精确匹配，且该行**由浏览器操作产生**
+
+| 来源 | agent | trace_id | 接口 | 状态 | 错误 |
+|---|---|---|---|---|---|
+| 库 `trace_judge_state` 19031 | good-question | `aa3052dc19d1d6b438a0be42cd2bd8da` | `POST /api/chat/{id}` | error | HTTP_422 |
+| UI 异常页首行 | good-question | `aa3052dc19d1d6b438a0be42cd2bd8da` | `POST /api/chat/{id}` | error | HTTP_422 |
+
+（接口被正确归一为动态段 `{id}`。）
+
+#### 3.3 回流看板 —— ✅ 逐项全等
+
+被验项 = 端点 `/api/v1/backflow/overview` 的**全部字段**（口径见 `backend/app/api/backflow.py:447-484`，
+响应形状钉死为 `{clusters, links, to_fix, by_agent[]}`）：
+
+未处置 **11** / 复核中 **10** / 已修复 **14**；link passed **14** / pending **20** / failed 0；
+待修复集 **10**；分 agent：cc 9·0、cs 1·1、gq 1·5、c2-push 0·3、unknown 0·1 —— **与库内逐项相等**。
+
+> 全部数字用**端点自己的谓词**在库内重算后比对，不是拿别的口径凑。产出命令见 §四末条。
+> ⚠️ 复现时手写 SQL 必须抄端点的 `group by` 与过滤条件；分 agent 计数若换了分组维度会得到另一组数
+> （本次该端点走的是 `backflow.py:477` 的 `agent_rows` 分组）。
+
+#### 3.4 跨端对账：4 个 agent × 15 条回流用例，**两端 UI 逐字符相等** —— ✅
+
+> **判据（2026-09-17 用户改写）**：不是「UI 值 == 本端库值」，而是**同一批 agent 产生的数据，
+> 在 online 与 offline 两端要对得上**。本节按后者验。
+
+**关联键 = `payload_id`** —— 三处都有：online `error_case_link` / offline `error_backflow_inbox` /
+offline `test_case`。两库同实例，可跨 schema 直接 join「`dev.obs` ↔ `ai_evaluation`」。
+
+**① 总量链（全平台，不止 4 家）**
+
+```
+error_case_link 34 = active 24 + invalidated 10
+   ├─ 25 已推 offline（15 active/acked + 10 rejected/acked）
+   └─  9 active 尚未推
+error_backflow_inbox 25 = 15 active + 10 rejected ；inbox_only = 0
+```
+
+**② 状态互不串门**（混淆矩阵无例外）：inbox `active` 15 条**全部**来自 active link；
+`rejected` 10 条**全部**来自 invalidated link；`invalidated, 不在 inbox` = 0。
+
+**③ 4 家逐条对穿**（online 簇详情页 ↔ offline 套件页，「回查状态」两值都出现过）
+
+| agent | 簇 | payload 前缀 | 库 verify | online 页 | offline 用例 | offline 套件页 |
+|---|---|---|---|---|---|---|
+| gq | 3840 / 3841 / 3859 / 3860 / 3880 | `7e8a241a` `7cdf6182` `e63bb7eb` `4217d889` `d0e4e3c8` | passed ×5 | 回归通过 | 3618 / 3619 / 4073 / 4074 / 4083 | ✅ |
+| gq | 3856 | `4b1801ce` | pending | 待回归 | 4072 | ✅ |
+| cs | 3865 | `4bf40a77` | passed | 回归通过 | 4076 | ✅ |
+| cs | 3861 | `d309f8a3` | pending | 待回归 | 4075 | ✅ |
+| cc | 3870 | `385e8beb` | passed | 回归通过 | 4077 | ✅ |
+| cc | 3871–3875 | `6b71654c` `8e1c6fa4` `85745bff` `bfcec2eb` `42dc4782` | pending ×5 | 待回归 | 4078–4082 | ✅ |
+| sp | 3881 | `7345301f` | passed | 回归通过 | 4084 | ✅ |
+
+**④ 双向零孤儿**：回填用例里找不到对应 active payload 的 = **0**；active payload 找不到对应用例的 = **0**。
+**⑤ 状态映射双向 1:1**：`passed ↔ 回归通过` 8 条、`pending ↔ 待回归` 7 条，8+7=15，
+与库内 4 家 active link 数（gq 5+1 / cs 1+1 / cc 1+5 / sp 1）逐家相等。
+**⑥ 每条 payload_id 在两端字面出现**：offline 侧嵌在用例名（`backflow:<uuid>`），
+online 侧在 link 行与「组装 D19 信封」时间线里。
+
+##### ⚠️ 本节两个易被后人读错之处（勿复用错误读法）
+
+1. **`links.invalidated = 0` 是对的，不是缺陷。** 回流看板 `links` 五个桶取 `ErrorCaseLink.verify_status`
+   （`backend/app/api/backflow.py:459`），**不是 `offline_status`**。库内 `verify_status` 只有
+   `pending`/`passed` ⇒ 该桶恒 0 正确。把 `offline_status='invalidated'` 的 10 条拿来比它 = 拿错列。
+2. **`version_drift` 在库里有 1 行，但「死分支」结论仍成立。** 该行是
+   `backend/tests/integration/backflow_reject_seed.py:14` **种进去的**（`DRIFT_SCHEMA="9.9"`，
+   直接 `UPDATE payload_json`）。它**恰因绕开 pull 层直写库**才触发得到 —— 与
+   `revision-design-register.md` 「`version_drift` 被 online pull 层上游挡死」是同一件事的两面。
+   收件时刻（09-14 09:48）晚于该结论（09-11），**不构成反例**。
+
+**⑦ 已知缺口（与 `revision-design-register.md` 「区分信息不跨端」一致，非本轮新缺陷）**：
+offline `reject_code` 回传 online 时**部分塌缩** —— `offline_cap_gap` 1:1 保留（4 条），
+但 `version_drift`(1) 与 `content_gap`(1) 在 online 侧均被塌成 `online_content_gap`。
+
+#### 3.5 offline 四页验收（配置中心 / Agent 管理 / 用户管理 / 看板）—— ✅ 3 绿 1 缺陷（缺陷已处置，见 §3.7）
+
+| 页面 | 比对结果 |
+|---|---|
+| 配置中心 | 3 个 tab 键集**全等**（运行期 16 / 进程级 20 / 注册期 2 = 38 项）；`is_hot`（热生效列）、`updated_at` 逐行相符。**但 3 项只读数值显示错**（见下） |
+| Agent 管理 | **59/59 行**；启用开关 59/59 全开 = 库 `enabled` 59/59；契约版本 `2.0` 恰 4 家、凭证「已配置」恰 4 家，与库内同一批；`owner_id` 全 NULL ⇒ 全「未指派」；4 家真实 agent 的 `base_url` 逐字符相符 |
+| 用户管理 | 5 行，`id` / 用户名 / 角色 / 启用状态全等（`542`、`521` 库内 `enabled=0`，UI 开关恰为关） |
+| 看板 | 门禁墙 6 张有分卡逐值相符（含新验 `probe-c3-auto` 60·1/1、`probe-c4a-pool` 60·5/5）；评测记录 200 条 + 「超 200 条仅展示最新」横幅（库内 `eval_run` 实为 **347**）✓；最新 5 行 `3713–3717` 逐字段相符 |
+
+**缺陷（有两侧机制，非猜测）**：配置中心对**无 `CONFIG_META` 契约的 number 型配置项**以 0 位小数渲染：
+
+| key | 库值 | UI 显示 |
+|---|---|---|
+| `judge_review_confidence` | 0.7 | **1** |
+| `alarm.error_ratio` | 0.5 | **1** |
+| `judge_drift_consistency_threshold` | 0.8 | **1** |
+
+根因两侧均已落实：`frontend/src/views/Config.vue:37` 写 `:precision="row._meta?.precision ?? 0"`，
+而 `frontend/src/constants/configMeta.js` 里**这三个 key 确实不存在**。对照组 =
+`judge_na_threshold` 有 `precision: 2`，UI 就正确显示 `0.30`。
+三项均只读（`editable` 为 false）⇒ 影响面 = **展示了与库不符的只读数值**，用户改不了数。
+**状态：已修并真机复验，见 §3.7**（下表为修复前现场，保留原样）。
+
+**两处观察（不判为缺陷，仅登记）**：
+
+1. 用户管理里**已禁用**用户的操作列仍写「禁用」（`Users.vue:46` 标签写死，无「启用」反向操作）。**本次未处置。**
+2. 配置中心**非 `text` 型**项会**多渲染一个空 JSON 文本域** —— `Config.vue:40` 的单位后缀 `<span>` 用
+   `v-if` 另起了一条链，链尾 `v-else` 对所有非 `text` 项为真。**⚠️ 原登记写的是「无契约 number 项」，
+   已订正为「非 text 项」——`bool` 行也中招（见 §3.7）。已修。**
+
+**⚠️ 探针坑（差点写成缺陷）**：`el-switch` 的 `<input>.value` 恒为 `"on"`，**不反映开关状态**。
+首版取 `value` 得出「`alarm.enabled` 库内 `false`、UI 显示 on」的假差异；
+改用 `is-checked` / `checked` 后证实开关是关的，与库一致。
+**凡 switch / checkbox，一律读 `checked` 类属性，绝不读 `value`。**
+
+#### 3.6 online 余下 5 页验收（接口 / LLM 失败 / 链路查询 / 系统管理·配置 / 系统管理·账号）—— ✅ 全绿
+
+> 筛选态：`obs.metricFilter` = `{window:"7d", agent:"good-question"}`（模块级单例 + localStorage 持久化）。
+> **信源分两类**：接口 / LLM 失败 / 链路查询读 **ES**（`dev.obs-event-*`，链路查询另含 `dev.obs-log-*`），
+> **不是 MySQL** —— 拿库去比会得出全错的结论。系统管理两页才读 MySQL（`dev.obs`）。
+
+| 页面 | 信源 | 结果 |
+|---|---|---|
+| 接口 | ES | **16 请求级行逐值全等**（请求数/错误/超时/P50/P95/P99 全中，含排序）；LLM 级 **1 行** 118 调用 / 23 失败 = **19.49%** 全等；下钻 **2 个模型**全等（`deepseek-chat` 97·3·pt=121088·ct=17419，`deepseek-v3` 21·20·pt=210·ct=0） |
+| LLM 失败 | ES | **23/23 逐行全等**（时间 / agent / trace_id / 接口 / 请求状态 / LLM 节点 / 模型 / 错误类型），ES `total` 亦为 23 |
+| 链路查询 | ES（event+log） | **第 1 页 20/20 逐行全等**（时间 / agent / trace_id / 接口 / **最近节点** / 状态 / 错误）。⚠️ 只读了**第 1 页**（共 10 页）；页脚「共 800 条 trace（检索深度上限 200）」**未独立复现** |
+| 系统管理·配置 | MySQL | **13 行逐值全等**（`dev.obs.dict_config` 中 `agent_id IS NULL` 的 12 行 + `claim_ttl_days`）；version / updated_by=`seed` / 毫秒时间戳全等 |
+| 系统管理·账号 | MySQL | **3/3 全等**（`admin`=admin、`clm-probe-admin`=admin、`clm-viewer`=viewer；状态全 `启用` = `status=1`；两个 probe 号 `display_name` 为 NULL ⇒ UI 显示 `—`） |
+
+**两个「看着像不一致、实为正确」的点（先写死，防后人误判）**：
+
+1. 配置页 `claim_ttl_days` 的 version 列显示「**0（seed 默认，库内无行）**」—— 它**确实**没有库行
+   （`dict_config` 该键无 `agent_id IS NULL` 的行），UI 是在显式标注「这是默认值、不是库值」。
+   **不是缺行，是把缺行如实画了出来。**
+2. `dict_config` 另有 **13 行 `agent_id` 非空**（per-agent 的 `fallback_utterance`），本页**不显示** ——
+   页面自己的副标题写的就是「v1 生效键（**全局**）」。**不是漏显示。**
+
+**⚠️ 探针坑（本次两条，都会产生假结论）**：
+
+1. **下拉框的选项文本会混进 `innerText`**：`el-select` / 原生 `<select>` 的 `<option>` 都在 DOM 里，
+   按 `td.innerText` 取值会得到「viewer\nadmin」这种**两值并列**的假值。本次差点据此报「三个账号
+   角色都是 viewer/admin」。**读法：原生 `<select>` 读 `.value`；`el-select` 读其选中态节点。**
+   与 §3.5 的 `el-switch` 坑同族 —— **表单控件的 `innerText` 一律不可信**。
+2. **转录 id 少一个字符会造出「ES 里查不到」的假缺失**：链路查询第 1 页有一条
+   `9f9ab18509df511**9**b359f9d8627a2b7d`，我抄成 `…511b359…`（漏一个 `9`）后 ES 返 0 命中，
+   一度判为「UI 显示了库里没有的 trace」。**报「查不到」之前，先把 id 从页面上重新取一次，别用手抄的。**
+
+#### 3.7 处置 §3.5 缺陷（配置中心数值失真 + 多渲染文本域）—— ✅ 已修并真机复验
+
+**改了什么（offline 仓 `frontend/src/views/Config.vue`，2 处）**：
+
+1. `:precision="row._meta?.precision ?? 0"` → 新增 `numPrecision(row)`：有 `_meta.precision` 用契约值；
+   无契约项**按值推断**小数位（整数 0 位，小数取实际位数）。
+   **已知不覆盖**：`String(1e-7)` 是 `"1e-7"`、不含小数点 ⇒ 推成 0 位、显示成 `0`。
+   *（第一版曾加「科学计数法给 6 位兜底」分支，复核时发现它**达不到目的**——precision=6 下
+   `el-input-number` 渲染成 `0.000000`，同样是错值，只是多一条不起作用的代码，已删除，
+   并在代码注释里如实标为已知限制。）*
+2. 单位后缀 `<span>` 从**链中间**移到整条 `v-if/v-else-if/v-else` 链**之后**。
+
+**第 2 条订正了 §3.5 观察 2 的定级与范围** —— 登记时写的是「无契约 number 项多渲染一个空 JSON 文本域」，
+**实际更宽**：`Config.vue:40` 那个 `<span>` 用 `v-if` 另起了**第二条链**（40 → 41 → 47），
+而 `:27`/`:32` 是第一条链。于是链尾 `v-else` 对所有**非 `text`** 项都为真 ⇒
+**`bool` 行也在开关旁边多挂一个空文本域**（如 `judge_cache_enabled`）。**遍历 3 个 tab 逐行数控件数**才看出来。
+
+**真机复验（重建镜像后，逐值）**：
+
+| 项 | 库值 | 修前 UI | 修后 UI |
+|---|---|---|---|
+| `judge_review_confidence`（run） | 0.7 | 1 | **0.7** ✓ |
+| `alarm.error_ratio`（global） | 0.5 | 1 | **0.5** ✓ |
+| `judge_drift_consistency_threshold`（global） | 0.8 | 1 | **0.8** ✓ |
+| `judge_na_threshold`（有契约，对照组） | 0.30 | 0.30 | **0.30** ✓（未受波及） |
+| `alarm.enabled`（bool） | false | switch + **空文本域** | switch，**文本域 0 个** ✓ |
+
+行数未变（运行期 16 / 进程级 20 / 注册期 2 = 38）。修后**仅存的两个 textarea** 是 `run_timeout`（库值 null）
+与 `llm_allowlist`（空 list），**本就该走 JSON 分支**（placeholder「null（使用默认）」），非残留。
+
+**回归测试**（`frontend/src/views/Config.test.js`，挂载式，对齐仓内 `views/*.test.js` 惯例）：
+6 例全绿，全量 11 文件 / 59 例全绿。
+**判别力已单独验证**：把 `Config.vue` 回退到修前版本后重跑，**2 red** ——
+`expected '1' to be '0.7'`（精度）与 `expected [...] to have a length of +0 but got 1`（多余文本域），
+即红的两条正是缺陷本体。**另 4 条在修前修后都绿，是「防修过头」的守卫，不具判别力**，勿当成验证力。
+
+**⚠️ 验证路径坑（本条会让人误判「改了没生效」）**：offline `frontend` 容器**无任何 volume 挂载**
+（`docker-compose.yml:76 build: ./frontend`），是 Dockerfile **烤入 nginx 的静态包** ⇒
+改源码不重建镜像，容器里就不是这份代码。且 `nginx.conf:50` 只给 `js|css|…` 发 `expires 7d`，
+`location /` 未给 `index.html` 显式 `no-cache` ⇒ **重建后浏览器仍可能加载旧入口 chunk**。
+本次实测：容器内已是 `Config-DfCe6P81.js`，页面加载的却还是 `Config-BJmgMw97.js`，
+`judge_review_confidence` 照旧显示 `1` —— **必须硬刷（reload + ignoreCache）并核对
+`performance.getEntriesByType('resource')` 里的 chunk 名**，才算验到新包。
+
+**未处置 / 新登记**：
+
+- §3.5 观察 1（用户管理对已禁用用户仍显示「禁用」，`Users.vue:46` 标签写死）**本次未动**。
+- **新登记（本次顺带发现，未处置）**：`solution_detail.md:889` 的规格表把 `judge_review_confidence`
+  记为 **scope=run、热生效=是**，而前端 `configMeta.js` **无此键** ⇒ UI 按 `editable()` 把它**置灰**。
+  即「规格说可热改、UI 说不可改」，属规格↔前端契约分歧。**注意**：这也意味着 §3.5 里
+  「补 `CONFIG_META` 条目」那条备选修法未必是错的 —— 但补了会同时解锁可编辑，
+  是否与后端 PUT 白名单一致**未取证**，故本次选了不动权限的精度推断修法。
+
+### 四、复核命令（**结论数字必须连同产出命令一起引用**，勿只搬数字）
+
+```bash
+# 造错前基线 / 任意时刻水位（容器内展开 root 口令，不外泄）
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' <<'SQL'
+select agent, status, count(*) from `dev.obs`.error_cluster group by agent, status order by 1,2;
+select offline_status, verify_status, count(*) from `dev.obs`.error_case_link group by 1,2;
+SQL
+
+# 批 2 的决定性证据（layer=none 合规格）
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' \
+  -e "select judgement_json from \`dev.obs\`.trace_judge_state where id=19017"
+
+# 批 3.2 的两条浏览器 trace
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' \
+  -e "select id,agent,trace_id,interface,root_status,root_error_type from \`dev.obs\`.trace_judge_state where trace_id in ('aa3052dc19d1d6b438a0be42cd2bd8da','47b4ad0671eed4bccc69836df71bf802')"
+
+# 批 2 造错前基线（2026-09-17，逐处取）
+#   conversion_record 125 / error_case_link 34 / error_cluster 35 /
+#   needs_review_batch 0 / trace_judge_state 780 / verify_run_record 47
+
+# §3.4 跨端对账（payload_id 三处关联）
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' <<'SQL'
+# ① 总量链 + inbox 双向孤儿
+select l.offline_status, (i.payload_id is not null) as in_inbox, count(*)
+from `dev.obs`.error_case_link l
+left join ai_evaluation.error_backflow_inbox i on i.payload_id=l.payload_id
+group by 1,2;
+# ③ 4 家 15 条三元组（簇 / payload / verify / 用例 id）
+select c.agent, l.cluster_id, l.payload_id, l.verify_status, tc.id
+from ai_evaluation.error_backflow_inbox i
+join `dev.obs`.error_case_link l on l.payload_id=i.payload_id
+join `dev.obs`.error_cluster c on c.id=l.cluster_id
+join ai_evaluation.test_case tc on tc.payload_id=l.payload_id
+where i.status='active'
+  and c.agent in ('good-question','customer-service','contract-check','smart-procurement')
+order by c.agent, tc.id;
+# ④ 双向零孤儿（两条都应返回 0）
+select count(*) from ai_evaluation.test_case tc
+join ai_evaluation.test_suite s on s.id=tc.suite_id
+where s.is_error_suite=1 and s.agent_id in (2297,2298,2299,2300)
+  and not exists (select 1 from ai_evaluation.error_backflow_inbox i
+                  where i.payload_id=tc.payload_id and i.status='active');
+SQL
+
+# §3.3 回流看板逐值复核（在 obs-frontend:18080 控制台内执行，token 取 localStorage['obs_access']；
+#   返回体即 overview 全字段，照 §3.3 所列逐项比对）
+fetch('/api/v1/backflow/overview',{headers:{Authorization:'Bearer '+localStorage['obs_access']}}).then(r=>r.json()).then(console.log)
+
+# §3.5 批 4 四页的库侧底数（offline 前端 = ai-eval-frontend:8180）
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' <<'SQL'
+# 配置中心：38 项，scope 三分；key 是保留字，必须反引号
+select scope, `key`, is_hot, json_unquote(value), updated_at
+from ai_evaluation.system_config order by scope, `key`;
+# Agent 管理：59 行 / 启用 59 / 有凭证 4 / 契约 2.0 恰 4
+select count(*) as total, sum(enabled=1) as en, sum(auth_config is not null) as cred,
+       sum(contract_version='2.0') as cv2 from ai_evaluation.agent;
+# 用户管理：5 行
+select id, username, role, enabled from ai_evaluation.user order by id desc;
+# 看板：总 run 数（UI 只展示最新 200）；最新 5 行
+select count(*) from ai_evaluation.eval_run;
+select r.id, a.name, r.version, r.status, r.agent_score, r.total_case, r.pass_case, r.started_at
+from ai_evaluation.eval_run r join ai_evaluation.agent a on a.id=r.agent_id
+order by r.id desc limit 5;
+SQL
+
+# 注：`system_config.value` 是 json 列；`json_unquote` 后小数直接可比。
+# 注：探针读 el-switch 必须读 is-checked/checked，读 value 恒得 "on"（见 §3.5 探针坑）。
+
+# §3.6 接口 / LLM 失败 的信源是 ES，不是 MySQL（容器 shared-elasticsearch，宿主 39200）
+# 三页的等价 ES 查询（agent=good-question，window=7d）。注意链路查询要多带 log index。
+NOW=$(date +%s%3N); S=$((NOW - 7*86400*1000))
+# 接口页：请求级 16 行 + LLM 级 1 行（body 同 backend/app/store/es.py:260 build_metrics_interfaces_body）
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H 'Content-Type: application/json' -d \
+  "{\"size\":0,\"query\":{\"bool\":{\"filter\":[{\"range\":{\"ts\":{\"gte\":$S,\"lte\":$NOW}}},{\"term\":{\"agent\":\"good-question\"}}],\"must_not\":[{\"term\":{\"node\":\"heartbeat\"}}]}},\"aggs\":{\"req\":{\"filter\":{\"term\":{\"node\":\"request\"}},\"aggs\":{\"by_iface\":{\"terms\":{\"field\":\"interface\",\"size\":50},\"aggs\":{\"pct\":{\"percentiles\":{\"field\":\"duration_ms\",\"percents\":[50,95,99]}},\"err\":{\"filter\":{\"term\":{\"status\":\"error\"}}},\"to\":{\"filter\":{\"term\":{\"status\":\"timeout\"}}}}}}},\"llm\":{\"filter\":{\"term\":{\"node\":\"llm_call\"}},\"aggs\":{\"by_iface\":{\"terms\":{\"field\":\"interface\",\"size\":50},\"aggs\":{\"fail\":{\"filter\":{\"bool\":{\"should\":[{\"term\":{\"status\":\"error\"}},{\"term\":{\"status\":\"timeout\"}}]}}}}}}}}}"
+# LLM 失败页：命中数必须 = 23，且逐条 (ts,trace_id,model,error_type) 与页面 23 行一一对应
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H 'Content-Type: application/json' -d \
+  "{\"size\":30,\"sort\":[{\"ts\":\"desc\"}],\"query\":{\"bool\":{\"filter\":[{\"range\":{\"ts\":{\"gte\":$S,\"lte\":$NOW}}},{\"term\":{\"agent\":\"good-question\"}},{\"term\":{\"node\":\"llm_call\"}},{\"bool\":{\"should\":[{\"term\":{\"status\":\"error\"}},{\"term\":{\"status\":\"timeout\"}}]}}],\"must_not\":[{\"term\":{\"node\":\"heartbeat\"}}]}}}"
+# 链路查询页：**必须同时带 log index**（只查 event 会漏掉「最近节点=log」的 trace）
+curl -s "http://localhost:39200/dev.obs-event-*,dev.obs-log-*/_search" -H 'Content-Type: application/json' -d \
+  '{"size":5,"sort":[{"ts":"asc"}],"query":{"term":{"trace_id":"<从页面重新取的 trace_id>"}}}'
+
+# §3.6 系统管理两页（MySQL）
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N' <<'SQL'
+select config_key, json_unquote(config_value), version, updated_by, updated_ts
+from `dev.obs`.dict_config where agent_id is null order by config_key;   -- 12 行；缺的 claim_ttl_days 即「库内无行」
+select count(*) from `dev.obs`.dict_config where agent_id is not null;   -- 13：per-agent，本页不显示
+select id, username, role, status from `dev.obs`.user order by id;       -- 3 行
+SQL
+```
+
+### 五、本批**未做**（勿读成已验）
+
+- ~~online 未验页~~ **已全验**（接口 / LLM 失败 / 链路查询 / 系统管理·配置 / 系统管理·账号，见 §3.6）。
+  **但链路查询只读了第 1 页**（共 10 页），页脚「共 800 条」未独立复现 —— **不算整页验完**。
+- ~~offline 未验页~~ **已全部验完**：看板（§3.3 跨端对账 + §3.5 门禁墙/评测记录）、用例管理
+  （suite 内 2 条 / 标注待办 149 条，与库内 `test_case` 逐值相等）、配置中心 / Agent 管理 / 用户管理（§3.5）。
+  **唯一未验页 = 修改密码**（未列入本批范围）。
+- **§3.5 登记的 1 处缺陷 + 观察 2 已处置**（配置中心只读数值失真、非 text 项多渲染文本域，
+  见 §3.7 已修并真机复验）；**观察 1（用户管理禁用按钮标签）仍未处置**。
+- **「浏览器造错 → 新簇」这段链路本次始终没被真跑过**（原因见 §二）
+- 批 2（造错）中 cc / gq 之外的两家（cs / sp）**未单独跑**，结论由分类器同构外推；
+  但 **§3.4 的跨端对账覆盖了 4 家全量**（cs 2 条 / sp 1 条），那一段不是外推。
+
+### 六、本批顺手发现的两处文档滞后（**未改**，留待处置）
+
+1. `backend/app/core/seed.py:42` 与 `backend/app/analyzer/classify.py:8` 仍写「cc `backflow_allow=0`／
+   cc 双保险」，但库内实测 cc `backflow_allow=1`、`backflow_enabled=true`。
+   **这是既定变更**（`backend/tests/integration/backflow_allow_probe.py:10` 自述
+   「cc 七环开通后该值已 0→1」），**是代码注释未跟改，不是闸门失效**。
+2. 同探针自述「探针**结构性恒红**」—— 属已知长期红，处置口径见 chronic-noise（长期固定红 ⇒ 疲劳化）。
