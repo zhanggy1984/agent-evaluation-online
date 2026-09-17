@@ -747,7 +747,8 @@
     - 三处指纹一次取：`docker exec obs-worker python -c "…"`，SQL = `select id,status,fix_version,claim_due_ts from error_cluster where id=3881` + `select id,verify_status from error_case_link where cluster_id=3881` + `select id,action,detail from conversion_record where cluster_id=3881 and id>=3298 order by id`
     - 驱动方证据：`docker logs obs-worker --since <claim 时刻> 2>&1 | grep "rejudge 完成"`
     - 探针脚本（**代做动作的原始载体**）：`.tmp-probe/c1_claim_sp_3881.py`（未跟踪；docstring 内含 fix_version / k / note 三项的逐条理由）
-  - **未做/未变**：gq 侧**未动**（其七环仍未开工）；本条**未提交、未推送**（落笔时真实状态）；sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**。
+  - **未做/未变**：gq 侧**未动**（其七环仍未开工）；sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**。
+  - **提交指纹（回填）**：online **`2a3f3b8`**（`6d0898e..2a3f3b8`，只提交 `task.md`，1 文件 +22），**快进非 force**，推送后 `git status -sb` 无 ahead/behind。⚠️ 本条正文初稿写「**未提交、未推送**」，那是**提交之前**写的、已回填（与 T-5.11 同型，状态类断言落笔即腐，见 `memory-status-markers-rot`）。探针脚本 `.tmp-probe/c1_claim_sp_3881.py` **未跟踪、未提交**（与 `.tmp-probe/` 内其余 20 个探针脚本同处置）。
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
