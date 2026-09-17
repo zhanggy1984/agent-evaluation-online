@@ -426,6 +426,8 @@
   - **⚠️ 探针写的是真表**：`ai_evaluation.error_backflow_inbox` 实机 12 行、**12/12 `acked`**。探针**必须**用 `probe-ackstale-<uuid>` 前缀唯一化（`probe-repeatability-and-unique-input`），**造前记基线水位、造完当场删、撤销后回读**（`self-injected-fault-looks-like-real-defect`：人为故障与真缺陷**逐字同形**）。
   - **不做（边界）**：不建告警服务 / 不建表 / 不建页面 / 不做分级·静默·去重·告警历史 / 不引第三方 SDK。
   - **未验边界**：②「进程死」**无观测点**（见上）；① 是否已有基础**未取证**；通道 URL 属**环境输入**，落地以「未配置降级」形态交付。
+  - **➜ 2026-09-17 施行记录：批 1 已实施并真机验收通过（⚠️ 实施仓 = offline，非本仓）**。落码 = `app/core/alert.py`（通道；未配 `ALERT_WEBHOOK_URL` ⇒ 降级 `logger.warning`）+ `app/runner/ack_stale_probe.py`（判据循环 60s，`GET_LOCK` 单飞）+ `main.py:164-166` 注册 + 单测 160 行 + 真库探针。**验收 = 单测 7 passed；真库探针连跑两遍各 `15 passed / 0 failed`（含负对照「同样回拨 11min、只差 `ack_status` 一行」+「`probe_once` 结果 == 独立直查期望集」两写法互证）；撤销回读 `probe_residue = 0`**。**⚠️ 未验边界（勿被绿盖过）**：真实 webhook HTTP 出站（未配 URL ⇒ 走降级分支，只断言 `notify` **被调用**）、`_INTERVAL` 真每 60s、多 worker `GET_LOCK` 互斥 —— **三者均无真机证据**；**①④ 未动、② 只做得到「卡死」、批 1b 未做** ⇒ **本条未完结**。权威记录 = offline `error-backflow-status.md` **O-D.4**（该条的「失效条件 ②」自此由本告警自动接管，不再靠人记得）；`docs/ops-manual.md` §0 与 §5 第 5 行的「当前仍未实现」已同步订正。
+  - **⚠️ 本条与 T-5.7/T-5.6 的关系（2026-09-17 追加）**：`docs/real-traffic-request.md:40`「上线告警｜**正在收口**」一句**经查为真**（所指即批 1），**该件无需因本条改动**；但 `:42`「技术侧不欠账」在 ①④② 未做 + 批 1b 未开工的前提下**仍不成立**，留待后续处置。
 
 - **T-5.6 上线门：真实链路端到端（G1 六条改判接收项）**（**2026-09-16 立**，用户拍板；来源 = `docs/integration-report.md` §3）：
   - **改判**：§3 六条（T-4.2 offline 半边 / T-4.3 真实驳回 / T-4.6 恢复拉取 / T-4.12 全条 / 阶段出口 E-23~E-29 环 2 / T-4.13 ⑤ 真实对端）**从「本阶段不可开工」改判为「上线门必做项」**——**「本阶段」是时间限定，不是需求取消**。这些验不了就是没验；上线后 offline 必须真跑。
