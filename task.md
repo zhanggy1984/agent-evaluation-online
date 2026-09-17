@@ -438,7 +438,7 @@
 - **T-5.7 真实用户流量归口与请求（**2026-09-16 立**，用户拍板；来源 = 本日「距上线闭环还差哪些」取证）**：
   - **归口裁定（用户拍板 2026-09-16）**：真实用户流量**归业务/产品侧，不归 infra**。⇒ `docs/infra-access-matrix.md` §4（网关四项）**原样不动**（它完整且面向 infra，缺的只是「发出去」这个动作，非文档）；另立对外请求件。
   - **交付物** = `docs/real-traffic-request.md`（**2026-09-16 起草**）：面向业务/产品侧的接入请求，含「我方已就绪（对方无需等待）」+ 请对方明确的三件事（哪个 agent 先上 / 量级 / 起点时间）+ 拿到后的时间线 + 挂闸。
-  - **⚠️ 本件尚未发出、收件人未定**（`docs/real-traffic-request.md` 头部「提交人 / 收件方」两处**待填**）——**「起草了」≠「要了」**。**待办 = 用户填对口人并发出**；发出后此处回填发出日期与对口人，再据此推 T-5.6 的 N。
+  - **⚠️ 本件尚未发出、收件人未定**（`docs/real-traffic-request.md` 头部「提交人 / 收件方」两处**未落实到具体人名**——2026-09-17 改为**角色占位**形态，**不代表已指派**）——**「起草了」≠「要了」**。**待办 = 用户填对口人并发出**；发出后此处回填发出日期与对口人，再据此推 T-5.6 的 N。
   - **为什么单独立条**：本项自 2026-09-14 起被登记为「环境无输入、无法开工」，但**从未有「向谁要」的载体**——不是缺文档，是**没有归口**。台账里长期以「等」的形态存在，等于把外部排期问题伪装成内部待办。
   - **取证订正（同轮查出，只登记不擅改）**：T-5.1 `:392` 把「**放量档定义**（solution §13.0 checklist #1~#3）」列为开工所需输入，但 `solution.md:619` **该 checklist 就在本仓**（放量门禁 `#1/#2/#3/#6/#7/#9` + 维度 3 开放验收 `#4/#8/#10`）⇒ 「放量档定义」**不缺**；真实缺的是 checklist #2 要用的**预估值基线**。**⚠️ 未穷举 `#219` 批次上下文，故只标可疑、不判死**（原句重音可能落在「与预估值基线」上）。
 
@@ -796,7 +796,7 @@
     ```
     docker exec obs-backend python -c "import os,pymysql; c=pymysql.connect(host=os.environ.get('DB_HOST') or 'localhost',port=int(os.environ.get('DB_PORT') or 3306),user=os.environ['DB_USER'],password=os.environ['DB_PASSWORD'],database=os.environ.get('DB_NAME') or 'dev.obs',charset='utf8mb4'); cur=c.cursor(); cur.execute('SELECT id,status,fix_version,claim_k FROM error_cluster WHERE id IN (3880,3881)'); print(cur.fetchall()); cur.execute('SELECT id,verify_status FROM error_case_link WHERE id IN (2255,2256)'); print(cur.fetchall()); cur.execute('SELECT id,run_id,case_pass FROM verify_run_record WHERE link_id IN (2255,2256) ORDER BY id'); print(cur.fetchall())"
     ```
-  - **未做/未变**：cs 仓断路器同缺口**未动**；`fail-soft 兜底`**仍仅登记**（用户 2026-09-17 已拍板不处置 ⇒ **不是待办**）；`.env.c1bak` **未删**；offline 仓 `.tmp-probe/` **未动**；`docs/real-traffic-request.md` 的两处 `<待填>`（提交人 / 收件方）**未填** —— 它正是上面「仍未验」第 1 条的唯一出路，属**用户侧动作**。
+  - **未做/未变**：cs 仓断路器同缺口**未动**；`fail-soft 兜底`**仍仅登记**（用户 2026-09-17 已拍板不处置 ⇒ **不是待办**）；`.env.c1bak` **未删**；offline 仓 `.tmp-probe/` **未动**；`docs/real-traffic-request.md` 的两处（提交人 / 收件方）**未落实到具体人名**（2026-09-17 改为角色占位形态，**不代表已指派**）—— 它正是上面「仍未验」第 1 条的唯一出路，属**用户侧动作**。
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
