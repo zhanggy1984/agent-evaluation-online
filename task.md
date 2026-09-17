@@ -1215,11 +1215,35 @@ offline `reject_code` 回传 online 时**部分塌缩** —— `offline_cap_gap`
 **未处置 / 新登记**：
 
 - §3.5 观察 1（用户管理对已禁用用户仍显示「禁用」，`Users.vue:46` 标签写死）**本次未动**。
-- **新登记（本次顺带发现，未处置）**：`solution_detail.md:889` 的规格表把 `judge_review_confidence`
-  记为 **scope=run、热生效=是**，而前端 `configMeta.js` **无此键** ⇒ UI 按 `editable()` 把它**置灰**。
-  即「规格说可热改、UI 说不可改」，属规格↔前端契约分歧。**注意**：这也意味着 §3.5 里
-  「补 `CONFIG_META` 条目」那条备选修法未必是错的 —— 但补了会同时解锁可编辑，
-  是否与后端 PUT 白名单一致**未取证**，故本次选了不动权限的精度推断修法。
+- **已订正的一处登记（原框架写反了，2026-09-17 当日取证后重述）**：
+  原先我在此登记「`solution_detail.md:889` 说 `judge_review_confidence` 热生效=是，
+  而 `configMeta.js` 无此键 ⇒ UI 置灰 = **规格↔前端契约分歧**」，
+  并暗示 §3.5 里「补 `CONFIG_META` 条目」那条备选修法可能才是对的。
+
+  **取证结论：UI 置灰是对的，分歧在文档侧。** 链条如下（每节都可复核）：
+
+  1. `backend/app/api/config.py:35-50` `put_global_config` 的准入门 = 该 key 在 `system_config`
+     表有行 + `is_hot` 为真 + `validate_sysconfig_value(...)` 通过；**没有独立白名单**。
+  2. `backend/app/core/sysconfig_schema.py:15-16`：**meta 缺失 → 直接拒绝**（「缺少配置契约（meta），拒绝热改」）。
+  3. 传入的 meta 取自 `DEFAULT_SYSTEM_CONFIG.get(key, {}).get("meta")`；而
+     `judge_review_confidence` 在 `backend/` 下 **grep 零命中**（`seed.py` 计数为 0）
+     ⇒ meta 为 None ⇒ **PUT 必 400**。故前端「无契约即置灰」的代理**判断正确**，
+     且**有测试守着**：`backend/tests/test_frontend_meta_sync.py` 断言
+     `configMeta.js` 与 `DEFAULT_SYSTEM_CONFIG` 的 key 集合**双向严格相等**（实跑 1 passed）。
+  4. 那些 DB 行 `is_hot=1` 是**历史残留**（seed 里已无此 key），与 `Config.vue:111-113`
+     注释所称「无契约残留项（`alarm.*`/`smtp.*` 等）」完全吻合。
+
+  **由此暴露的真问题（新登记，未处置）**：`solution_detail.md` §七 配置项清单表与实现**成片不同步**，
+  不是孤例 —— 规格表 **31 项**、`seed.py` **24 项**、**交集仅 20**：
+
+  | 方向 | 数量 | keys |
+  |---|---|---|
+  | 规格有 / 实现无 | **11** | `assertion_penalty`、`breaker_half_open_probe`、`contract_check_timeout`、`error_rate_block`、`human_review_timeout`、`judge_review_confidence`、`overfit_threshold`、`retry_backoff_max`、`review_llm.base_url`、`review_llm.model_name`、`sse_idle_timeout` |
+  | 实现有 / 规格无 | **4** | `judge_cache_enabled`、`judge_cache_ttl_seconds`、`max_active_runs_per_agent`、`scoring_timeout` |
+
+  **⚠️ 不要把「实现里没有」读成「实现漏了 11 个功能」**：这 11 项可能是有意裁剪（设计稿≠订单），
+  也可能是真缺口（`error_rate_block` / `assertion_penalty` 听上去像评分侧硬门禁）。
+  **本次没有取证，故不下结论**；判定它需要逐项回查处置（属另一批）。
 
 ### 四、复核命令（**结论数字必须连同产出命令一起引用**，勿只搬数字）
 
