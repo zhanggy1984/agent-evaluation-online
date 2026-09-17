@@ -2,30 +2,38 @@
 
     docker exec obs-backend python /app/tests/integration/backflow_allow_probe.py
 
-**前置（换环境跑之前先看这条）**：库里须有 cc（`contract-check`，seed D18 置
-`backflow_allow=0`）与 cs（`customer-service`，`backflow_allow=1`）**两条 agent 行**。
-库未 seed 出 agent 时 gate 的 `agent_exists=False` ⇒ 两行**都不会被判**（`judged=0`），
+**前置（换环境跑之前先看这条）**：库里须有 cs（`customer-service`）**一条 agent 行**。
+库未 seed 出 agent 时 gate 的 `agent_exists=False` ⇒ 该行**不会**被判（`judged=0`），
 探针必红 —— 那是**环境缺 seed，不是本模块的缺陷**。
+
+**负对照行由探针自造（2026-09-17 改）**：旧版负对照借 `contract-check` 的
+`backflow_allow=0`（seed D18）。cc 七环开通后该值已 0→1 ⇒ 探针**结构性恒红**，且红的
+样子与真缺陷同形，会被读成噪音。现改为探针自己种一条临时 agent
+（`probe-c2-negative`：`backflow_allow=0` / `enable=1`），跑完即删 —— 绿不再依赖
+生产数据「碰巧长成某样」。
 
 本探针**不在** `.github/workflows/ci.yml` 的真库探针 job 内（那批只有
 cluster/claim/pull/push/assemble 五个）；是否纳入**未拍板**，前置 = 先核 CI 那个 job 的库
-有没有 seed 出这两条 agent 行，没有则加进去只会恒红成噪音。
+有没有 seed 出 cs 这条 agent 行，没有则加进去只会恒红成噪音。
 
 **为什么单测不够**：`test_analyzer_classify.py:86` 已覆盖 `decide()` 纯函数层
 （backflow_allow=False ⇒ layer=none）。但那只证函数，证不了**链路**——本探针走真实
 `run_judge_scan` + `run_cluster_merge`，断言该行在真机上确实不产簇。
 
-判据（成对，唯一差异 = agent）：
-- cc 行（contract-check，seed D18 置 backflow_allow=0）→ judged=1 ∧ layer='none'
-  ∧ gate.backflow_allow=False ∧ 该 input_hash 无 cluster
-- cs 行（customer-service，backflow_allow=1）→ judged=1 ∧ layer='L1' ∧ 已建簇
-**正对照不可省**：没有它，「cc 不建簇」也能被「这条行本来就无效」解释掉。
+判据（成对，唯一差异 = agent 的 `backflow_allow`）：
+- 负对照（`probe-c2-negative`，`backflow_allow=0`）→ judged=1 ∧ layer='none'
+  ∧ gate.backflow_allow=False ∧ **gate.backflow_enabled=True** ∧ 该 input_hash 无 cluster
+- 正对照（`customer-service`，`backflow_allow=1`）→ judged=1 ∧ layer='L1' ∧ 已建簇
+**正对照不可省**：没有它，「负对照不建簇」也能被「这条行本来就无效」解释掉。
 
-⚠️ 归因边界：cc 侧实有**双保险**（`classify.py:8-9`：`agent.backflow_allow=0` + per-agent
-`backflow_enabled=false`），两者在 gate 上同时为假 ⇒ 本探针只证明「这一对关闸生效」，
-**不能归因到其中单条**。见 §5.8 ② 的归因订正。
+**归因已单变量化（本条相对旧版的实质改进）**：临时 agent **不写** per-agent
+`backflow_enabled` 键 ⇒ 走「缺键回退 True」（`analyzer/context.py:29`）⇒ gate 上**只有
+`backflow_allow` 为假**。断言里**显式要求** `backflow_enabled is True`：若将来该默认值被
+翻成 False，探针会**红**，而不是**静默退回双保险**（旧版 cc 就是 allow=0 + enabled=false
+两条同时为假，只能证「这一对关闸生效」，归因不到单条；见 §5.8 ② 的归因订正）。
 
-隔离：interface='POST /api/probe/c2' 且 trace_id 前缀 c2-，开头清残留、结尾再清。
+隔离：interface='POST /api/probe/c2' 且 trace_id 前缀 c2-，开头清残留、结尾再清；
+**临时 agent 行同清**。
 """
 import asyncio
 import sys
@@ -44,7 +52,22 @@ from app.worker.judge_scan_job import run_judge_scan  # noqa: E402
 
 FAILURES: list[str] = []
 IFACE = "POST /api/probe/c2"
+# 负对照 agent 名：探针自造、跑完即删（不借生产 agent 的既有开关值）
+NEG_AGENT = "probe-c2-negative"
 NOW = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _seed_negative_agent(db) -> None:
+    """种临时负对照 agent：仅 backflow_allow=0，其余取库默认（enable 默认 1）。
+
+    不写 per-agent `backflow_enabled` 键 —— 缺键回退 True（context.py:29），
+    使 gate 上只有 backflow_allow 一条为假，归因才单变量。幂等，供清残留后重跑。
+    """
+    await db.execute(text(
+        "INSERT INTO agent (name, display_name, enable, route_source, backflow_allow) "
+        "VALUES (:n, :n, 1, 'manual', 0) "
+        "ON DUPLICATE KEY UPDATE enable = 1, backflow_allow = 0"
+    ), {"n": NEG_AGENT})
 
 
 def check(name: str, ok: bool, detail: str) -> None:
@@ -77,6 +100,8 @@ async def _cleanup(db) -> None:
         await db.execute(text(f"DELETE FROM conversion_record WHERE cluster_id IN ({lst})"))
         await db.execute(text(f"DELETE FROM error_cluster WHERE id IN ({lst})"))
     await db.execute(delete(TraceJudgeState).where(TraceJudgeState.trace_id.like("c2-%")))
+    # 临时的负对照 agent 一并清（顺序在簇/行之后：它们先引用它）
+    await db.execute(text("DELETE FROM agent WHERE name = :n"), {"n": NEG_AGENT})
 
 
 async def main() -> int:
@@ -88,46 +113,60 @@ async def main() -> int:
             await db.commit()
 
         async with AsyncSession(engine) as db:
-            cc, cs = _row("contract-check", "cc"), _row("customer-service", "cs")
-            db.add(cc)
+            await _seed_negative_agent(db)
+            await db.commit()
+            print(f"种入临时负对照 agent：{NEG_AGENT}（backflow_allow=0）", flush=True)
+
+        async with AsyncSession(engine) as db:
+            neg, cs = _row(NEG_AGENT, "neg"), _row("customer-service", "cs")
+            db.add(neg)
             db.add(cs)
             # 先取 id/hash 再 commit：commit 后属性过期，读它会触发同步 lazy refresh
             await db.flush()
-            cc_id, cs_id, cc_hash, cs_hash = cc.id, cs.id, cc.root_input_hash, cs.root_input_hash
+            neg_id, cs_id, neg_hash, cs_hash = (neg.id, cs.id,
+                                                neg.root_input_hash, cs.root_input_hash)
             await db.commit()
-            print(f"种入未判行：cc={cc_id} cs={cs_id}（唯一差异 = agent）", flush=True)
+            print(f"种入未判行：neg={neg_id} cs={cs_id}（唯一差异 = agent）", flush=True)
 
         scanned = await run_judge_scan(engine)
         print(f"judge_scan 判定行数={scanned}", flush=True)
         await run_cluster_merge(engine)
 
         async with AsyncSession(engine) as db:
-            cc_r = await db.get(TraceJudgeState, cc_id)
+            neg_r = await db.get(TraceJudgeState, neg_id)
             cs_r = await db.get(TraceJudgeState, cs_id)
-            cc_j = cc_r.judgement_json or {}
+            neg_j = neg_r.judgement_json or {}
             cs_j = cs_r.judgement_json or {}
-            cc_gate = cc_j.get("gate") or {}
+            neg_gate = neg_j.get("gate") or {}
             print(
-                f"cc 判定产物：judged={cc_r.judged} layer={cc_j.get('layer')} gate={cc_gate}",
+                f"neg 判定产物：judged={neg_r.judged} layer={neg_j.get('layer')} gate={neg_gate}",
                 flush=True,
             )
             print(f"cs 判定产物：judged={cs_r.judged} layer={cs_j.get('layer')}", flush=True)
 
-            check("cc 行已判定", cc_r.judged == 1, f"judged={cc_r.judged}")
-            check("cc 层=none（负对照）", cc_j.get("layer") == "none", f"layer={cc_j.get('layer')}")
+            check("neg 行已判定", neg_r.judged == 1, f"judged={neg_r.judged}")
+            check("neg 层=none（负对照）", neg_j.get("layer") == "none",
+                  f"layer={neg_j.get('layer')}")
             check(
-                "cc gate.backflow_allow=False",
-                cc_gate.get("backflow_allow") is False,
-                str(cc_gate),
+                "neg gate.backflow_allow=False",
+                neg_gate.get("backflow_allow") is False,
+                str(neg_gate),
+            )
+            # 归因守卫：负对照必须只有 allow 一条为假。若此处为假，说明缺键回退默认值
+            # 被改成了 False ⇒ 负对照静默退回「双保险」，断言虽仍绿却已归因不到单条。
+            check(
+                "neg gate.backflow_enabled=True（归因守卫）",
+                neg_gate.get("backflow_enabled") is True,
+                str(neg_gate),
             )
             check("cs 行已判定（正对照）", cs_r.judged == 1, f"judged={cs_r.judged}")
             check("cs 层=L1（正对照）", cs_j.get("layer") == "L1", f"layer={cs_j.get('layer')}")
 
-            cc_c = (await db.execute(select(ErrorCluster).where(
-                ErrorCluster.input_hash == cc_hash))).scalars().first()
+            neg_c = (await db.execute(select(ErrorCluster).where(
+                ErrorCluster.input_hash == neg_hash))).scalars().first()
             cs_c = (await db.execute(select(ErrorCluster).where(
                 ErrorCluster.input_hash == cs_hash))).scalars().first()
-            check("cc 未建簇", cc_c is None, f"cluster={None if cc_c is None else cc_c.id}")
+            check("neg 未建簇", neg_c is None, f"cluster={None if neg_c is None else neg_c.id}")
             check(
                 "cs 已建簇（正对照）",
                 cs_c is not None,
