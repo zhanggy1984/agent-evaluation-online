@@ -690,6 +690,34 @@
     `MSYS_NO_PATHCONV=1 docker exec obs-backend python /app/tests/integration/backflow_allow_probe.py`
   - **未做/未变**：是否纳入 CI 真库探针 job **仍未拍板**（前置不变 = 先核该 job 的库有没有 seed 出 cs 行）；**本条未提交**。
 
+- **T-5.11 sp 环③ 建簇打通（B 方案：sp 侧补埋点透传）**（2026-09-17；用户拍板「我还是要 gq 和 sp 的七环跑通」+ 选 B 方案）：
+  - **症状**：sp 七环跑到 ② 即断 —— `error_cluster` 长期 **0 行**（对照 gq 11 行），后三环全部无输入。
+  - **根因（`cluster_job.py:58` Fork A，非平台缺陷）**：建簇判据是 `if row.root_input_hash and row.interface:`；而 sp 的 `root_input_hash` **恒 NULL** ⇒ 候选行只被标 `processed=1`，**根本不进建簇分支**。⇒「环③ 单独开一批」是**必要条件、非可选项**，不能靠「再跑一遍」达成。
+  - **上游再追一层**：该值唯一写入口是 `consumer/state.py` 的 `if event.input is not None:` ⇒ 依赖 sdk `end_request(input=...)`。sp 侧三个 SSE 出口**从未传过 `input`** ⇒ 平台侧永远是 NULL。
+  - **改法**（4 个文件 + 2 个单测）：
+    - `app/obs.py`：`end_request` 增 `obs_input` 形参并透传给 sdk。
+    - `app/core/middleware.py`：`_obs_finish` 增 `obs_input`，出口读 `request.state.obs_input`（三处调用点全传）。
+    - `app/api/v1/reviews.py`：新增 `_obs_input_for()`（**刻意不含 review_id** —— 每次新建评审 id 都不同，纳入会让同问题复发的 hash 分散、聚类退化成「一错一簇」；`bid_id`/`dimension_id` 由评审记录反查）；`/chat` 与 `/score` **两个 SSE 接口都覆盖**（用户拍板）。**写在 gen 外**——gen 惰性，写在里面则中间件收口时 `request.state` 仍无值。
+    - `tests/unit/test_llm_hard_fail_marker.py` / `test_obs_wiring.py`：锁出参面；**旧的反向断言（要求 sdk 不含 input）已随本条删除**。
+  - **硬闸与镜像**：sp 镜像**必须重建**（sdk 改动烤进镜像，`./app:/app/app:ro` 热挂载只覆盖 `app/`，见 §11.3 同族事实）。重建前打回滚 tag `smart-procurement-app:pre-ring3` → `9a899db7bc0d`。重建后 `obs_sdk` = **0.1.2（含 input）**，硬闸实测通过：
+    `docker exec sp-app python -c "import inspect, obs_sdk; print(inspect.signature(obs_sdk.end_request))"`
+  - **依赖漂移（已量、已界定）**：`filelock 3.32.6→3.32.7` / `platformdirs 4.11.8→4.11.9` / `pyproject_hooks 1.2.0→1.3.3` —— **全是构建工具链，无业务依赖变动**。
+  - **改前单测/静态验证**：sp `tests/unit` **378 passed**；ruff 对**同形目录**比对 HEAD **36 → 工作区 30 条，无新增**（⚠️ 必须 flat-dir 对 flat-dir：目录布局会漂移 isort 的 first-party 判定，跨形比对得出的差值无意义）。
+  - **真机验收证据（2026-09-17，双源交叉）**：
+    - 源 1（产出端）：`docker exec -u root sp-app` 向 `/etc/hosts` 写黑洞 → `/chat` 连发**两次同一问题**，两条 SSE 均落 error 帧；`trace_judge_state` 该 trace 行 `root_input_hash` **非空**、`input_snapshot_clean` = `{"question": "请结合评分标准，重点说明团队资质这条维度的关键扣分点", "bid_id": "BID-027", "dimension_id": "DIM-LOT-008-1"}`。
+    - 源 2（判定端）：TTL 到期后该行 `judged=1/processed=1`，**`error_cluster` id=3881 / layer='L1' / error_type='llm_connection' / count=2 / generation=1 / status='open'`** ⇒ 两条同问落进**同一簇**且**计数递增**，正是用户选定的验收档。
+    - **③ 之后链路亦已真机前进（本条范围外，如实记）**：`conversion_record` 3292 组装（05:34:58，payload_id `7345301f-5087-420c-b33d-16eb6efc07ce`）→ 3293/3294 回归 run **3713（sp@0.1.0）/ 3714（sp@0.2.1）** 均 completed → `error_case_link` id=**2256** → case_id **4084**，`offline_status='active'`、`verify_status='pending'`。
+    - **结论**：**sp ①~⑥ 首次真机贯通；⑦ 收口未做**。
+  - **⑦ 未做的判据（不是「差一点」，是硬前提缺失）**：簇 3881 仍 `status='open'` / `fix_version=None` / **`claimed_by=None`** ⇒ **从未被 claim**，而 **claim 是 ⑦ 的硬前提**。故本条**不得**记成「七环全通」。
+  - **⚠️ 自造故障数据 —— 保留并全量标注**（用户拍板；依据 `self-injected-fault-looks-like-real-defect`：人为故障在共享观测面留下的红与真缺陷**逐字同形**，唯一区分手段是标注）：
+    - 注入窗口 **2026-09-17 05:27:56Z ~ 05:28:26Z**（hosts 黑洞）；**撤销动作 = `docker restart sp-app`**（`docker restart` 会重生成 `/etc/hosts`，故重启即复原，已回读确认）。
+    - 带标记的生产数据：簇 **3881** / case **4084** / run **3713·3714** / `conversion_record` **3292·3293·3294** / `trace_judge_state` 中两条 `llm_connection` 行 / `error_case_link` **2256**。**读这些行时必须先回来看本条**。
+  - **复核命令**（⚠️ 库列名不可凭记忆写，先 `show columns from <表>`；下同）：
+    - 簇：`docker exec obs-worker python -c "…"`，SQL = `select id, layer, error_type, count, generation, status from error_cluster where agent='smart-procurement' order by id desc limit 5`
+    - 判定态：`select trace_id, root_status, judged, processed from trace_judge_state where agent='smart-procurement' order by updated_ts desc limit 5`
+    - ⑦ 是否开工：`select id, status, claimed_by, fix_version from error_cluster where id=3881`
+  - **未做/未变（勿读成已完成）**：**本条未提交、未推送**；gq 侧**未动**；sp 断路器闩死（路由层先于 `acquire()` 判 OPEN ⇒ 自愈永不发生）**未定性、未处置**；fail-soft 兜底**仅登记**。
+
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
 ---
