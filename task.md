@@ -450,14 +450,14 @@
     - **⚠️ 由本条引出、只登记不擅改的一处**：`analyzer/classify.py:8` 注释称「cc 双保险 = `agent.backflow_allow=0`（seed D18）+ `backflow_enabled`」——实测**该双保险只剩一重**（`backflow_allow` 实为 1，仅 `backflow_enabled=false` 仍在），**方向 = fail-open（少一重）**。**不影响 cc 现状**（两层不可达，候选本就产不出），故**本轮不改注释**，登记备查。
   - **阶段 B 起点快照（2026-09-16 取证，4 agent 就绪度）**：
     - `good-question`：`backflow_allow=1`，词表 **5 条**（v6）——**待复核是否覆盖真实兜底话术**（⚠️ 首轮本表误记为「6 条」，实为把**版本号 v6 当成了条数**；2026-09-16 执行阶段 B 回读时订正）
-    - `customer-service`：`backflow_allow=1`，词表 1 条（v2）——**同上**（注：`.tmp-probe/c1_write_wordlist.py`（今早 10:20）曾按其源码 `rule_engine.py:21 DEFAULT_REPLY` 写过一轮）
+    - `customer-service`：`backflow_allow=1`，词表 1 条（v2）——**同上**（注：`.tmp-probe/c1_write_wordlist.py`（今早 10:20）曾按其源码 `rule_engine.py:21 DEFAULT_REPLY` 写过一轮）**【该临时探针及其余 19 个已于 2026-09-17 清理，见 T-5.13。原文保留是为记「当时用什么做的」，不是可复跑的入口】**
     - `contract-check`：`backflow_allow=0` + 词表 `[]`（v1）——**缺口 = 开闸 + 词表**
     - `smart-procurement`：`backflow_allow=1` + 词表 `[]`（v1）——**缺口 = 词表**
     - 另：`agent` 表第 5 行 `probe-unknown-agent`（id 853，词表 2 条）**是探针残留**，不在 4 家之内，**勿计入就绪度**。
   - **✅ 阶段 B 施行记录（2026-09-16 完成，用户批准「照草案全量写入」）**：
-    - **执行脚本** = `.tmp-probe/b_write_wordlists.py`（临时探针，未提交；经 `docker exec -i obs-backend python -` 以 stdin 灌入容器执行）。
+    - **执行脚本** = `.tmp-probe/b_write_wordlists.py`（临时探针，未提交；经 `docker exec -i obs-backend python -` 以 stdin 灌入容器执行）。**【该探针已于 2026-09-17 清理，见 T-5.13】**
     - **结果（以回读库内实值核对，未采信接口回执）**：`smart-procurement` 词表 `[]`→**11 条**（`v1→v2`，11/11 逐字命中）；`contract-check` 词表 `[]`→**3 条**（`v1→v2`，3/3 逐字命中）+ `backflow_allow` **0→1**（`affected=1`）。**4 家最终态：cc allow=1/v2/3 条、cs allow=1/v2/1 条、gq allow=1/v6/5 条、sp allow=1/v2/11 条**。
-    - **⚠️ 顺带查出、须记（防后人照抄那份探针）**：`.tmp-probe/c1_write_wordlist.py`（今早 10:20）用的 `BASE` 拼出的是 **`/api/admin/configs`**，而真实路径是 **`/api/v1/admin/configs`**（`api/admin.py:56` `prefix="/admin"` + `main.py:70` `include_router(api_router, prefix="/api/v1")`）⇒ **该探针若真跑过必然 404**，其「自报成功」不可信；**cs 现存那 1 条词表的实际来源本轮未查明**（`dict_config.updated_by` / `updated_ts` 未查）。**不影响 cs 现状正确性**（值是 cs 源码 `rule_engine.py:21 DEFAULT_REPLY` 逐字），但**「谁写的」在台账上仍是空白**。
+    - **⚠️ 顺带查出、须记（防后人照抄那份探针）**：`.tmp-probe/c1_write_wordlist.py`**【已于 2026-09-17 清理，见 T-5.13 —— 清理正因本句：一个已知必 404 却「自报成功」的脚本留着就是雷】**（今早 10:20）用的 `BASE` 拼出的是 **`/api/admin/configs`**，而真实路径是 **`/api/v1/admin/configs`**（`api/admin.py:56` `prefix="/admin"` + `main.py:70` `include_router(api_router, prefix="/api/v1")`）⇒ **该探针若真跑过必然 404**，其「自报成功」不可信；**cs 现存那 1 条词表的实际来源本轮未查明**（`dict_config.updated_by` / `updated_ts` 未查）。**不影响 cs 现状正确性**（值是 cs 源码 `rule_engine.py:21 DEFAULT_REPLY` 逐字），但**「谁写的」在台账上仍是空白**。
     - **开闸走的不是 API**：`agent.backflow_allow` **无运行期写入面**（`app/api/admin.py:8` 自陈「只能改库/seed、无审计」），故本轮为**直接 UPDATE**（**无审计留痕**）；seed 为 `ON DUPLICATE KEY UPDATE updated_at = updated_at`（`seed.py:122`）⇒ **存在则保持原样，改库不会被启动 seed 覆盖**（已核）。
   - **🔄 阶段 C 施行记录（进行中，2026-09-16）**：
     - **C2 / C3 / C3b（判定面）—— ✅ 已验**。探针 = offline `.tmp-probe/c2c3_wordlist_judge.py` + `.tmp-probe/c3_real_answers.py`（临时，未提交）。**均用 offline 真实算子 `KeywordNotContainsOp` 跑，非复写匹配逻辑**：
@@ -467,7 +467,7 @@
       - **C3b 空答**：4 家 ×（空串 / 纯空白）= **8/8 判 fail**（R-12 空话术证据）。
       - **结论一句话**：词表在 **697 条真实回答**上表现为「**零误伤 + 命中真实兜底 4 次**」。
     - **C1（主链路七环，4 家）—— 🔶 只做了「数据/契约层」的两侧对账，七环本体 ❌ 未跑**（详见下条）；**C4 / C5（复用既有探针抽样）—— ❌ 未做**。
-    - **C1 · 数据/契约层 两侧对账（2026-09-16 完成；探针 = online `.tmp-probe/c1_dual_side_online.py` + offline `.tmp-probe/c1_dual_side_offline.py`，均临时未提交）**：
+    - **C1 · 数据/契约层 两侧对账（2026-09-16 完成；探针 = online `.tmp-probe/c1_dual_side_online.py`**【已于 2026-09-17 清理，见 T-5.13】** + offline `.tmp-probe/c1_dual_side_offline.py`（**offline 仓那份未动**），均临时未提交）**：
       - **取数面先穷尽确认（不按表名猜）**：online **全库 13 表 / 142 列**内搜 `payload|envelope|wordlist` ⇒ 只命中 `error_case_link.payload_id` / `payload_json` 两列（**online 无独立信封表**，早前按表名猜 `backflow*` 得零命中）；offline 侧 = `test_case.backflow_envelope`（信封**原文副本**，`models/case.py:59`）。
       - **A 存在性**：6 个真实 `payload_id` 在 online 侧 **6/6 命中**。
       - **B 逐字一致**：`no_fallback_config`（words **原序原大小写** + `wordlist_version`）**两侧 6/6 逐字相同**，`cluster_id` 亦一一对应（3861/3860/3859/3856/3841/3840）；且 `config_ref.wordlist_version` 与 `no_fallback_config.wordlist_version` 两处同源自洽 ⇒ **信封在传输与落库环节未被改写**。
@@ -528,7 +528,7 @@
           ① **`cc` 的 `llm_call` 子节点走的是白名单值域** —— `contract-check/backend/app/obs.py:140 llm_error_type()` 把 LLM 异常映射为 `llm_connection` / `llm_timeout` / `llm_rate_limit` / `llm_other`（docstring 自陈「平台错误分类白名单值域，**口径对齐 cs**」）。故**本条的判据取的是子节点 `error_type`，不是根侧那个值域**——把根侧 `TIMEOUT/CANCELLED/INTERNAL_ERROR` 当「第二道闸」，**属判据取错了面**。
           ② **「结构解耦 ⇒ 即便开门也不成簇」被实测推翻**：cc 已实测产出 **10 个 L1 簇**（`error_cluster` 3866~3875，`layer=L1` / `error_type=llm_connection`，interface 含 `POST /internal/check-tasks/{id}/run` 与 `GET /api/tasks/{id}/result`）⇒ 后台 `asyncio.create_task` 并不阻止成簇。
           ③ 顺带订正 `:525` 的处置前提：cc 的 `dict_config backflow_enabled` 实测**本就是 `true`（v1，`updated_by='seed'`，非本批次改动）**，不存在「门不开」——「保持 false 不动」一句与库内实值不符。⇒ **cc 的七环在本轮已真实走通（①~⑦），见下「第三批」。**
-      - **新增探针（`online/.tmp-probe/`、`offline/.tmp-probe/`，均未提交）**：`c1_signal_run.py`（造信号 run + 等终态）、`c1_claim_cluster.py`（代做 claim）。两处踩坑已写进脚注：① offline 响应有 `{code,data}` 信封，token 不在顶层；② `_ver_key` 对非数字段记 0 ⇒ `c1-signal-20260916` 与 `c1-signal-20260916-2` 同归一为 `(0,)`，故都能 ≥ claim 的 fix_version。
+      - **新增探针（`online/.tmp-probe/`、`offline/.tmp-probe/`，均未提交）**：`c1_signal_run.py`（造信号 run + 等终态）、`c1_claim_cluster.py`（代做 claim）。**【2026-09-17 清理时发现：`c1_signal_run.py` 在被清理的 20 个文件里**根本不存在** ⇒ 本条引用**在清理之前就已是空证据**（正是第三十一笔为 C2 探针转正所要防的那种形态 —— 「引用的资产可能早不存在」，见 memory `no-evidence-still-explained`）；`c1_claim_cluster.py` 本轮已清理，见 T-5.13】**两处踩坑已写进脚注：① offline 响应有 `{code,data}` 信封，token 不在顶层；② `_ver_key` 对非数字段记 0 ⇒ `c1-signal-20260916` 与 `c1-signal-20260916-2` 同归一为 `(0,)`，故都能 ≥ claim 的 fix_version。
       - **本轮人工造物的清单（供后人区分自造 vs 真实，勿混）**：manual run **3699 / 3701**（探针造，version 带 `c1-signal-` 前缀）、error run **3700 / 3702**、cluster 3865 的 **claim**、`online` 侧 `vrr 829/830/832`、`conv 3245~3250`。**真实流量侧的唯一样本 = cs trace `d1994368`（黑洞注入那次）。**
     - **C1 七环本体 · 施行记录（第三批：cc 环①~⑦ **全通**；2026-09-16）**：
       - **本批的核心是一处「参数口径」修复，不是代码缺陷修复**（本批只改了 cc 一个文件 + 一个探针，见下）：
@@ -552,7 +552,7 @@
         - **施行（用户拍板「认领，`claim_k=1`」）**：`POST /api/v1/backflow/clusters/3870/claim`（`fix_version=0.2.1`、`k=1`、TTL 14 天）。
         - **结果**：`conv/3271` claim（14:29:06.033，actor=1）→ **`conv/3272` `action='auto_fixed'`（14:29:09.059）**，detail 逐字「K 满纯净序列（0.2.1→0.2.1 连续1版纯净 pass）」；簇 3870 `status='fixed'`、link 2249 `verify_status='pending'→'passed'`。**worker 自打日志为独立佐证**：`14:29:09 INFO [obs.worker.rejudge] rejudge 补判收敛: cluster=3870 link=2249 outcome=fixed_auto`（`_apply_auto_fixed` 全仓**唯一**调用方 = `verify.py:412` 的 `passed` 分支 ⇒ 收口非人工写入）。
       - **⚠️ 本批自造物清单（供后人区分自造 vs 真实，勿混）**：**注入窗口 #1** ≈ 09-15 17:11 本地 ~ 09-16 14:17:58 UTC、**#2** 14:17:21→14:17:58 UTC（`.env` 的 `DEEPSEEK_BASE_URL` → `http://127.0.0.1:1`，已还原并回读进程内值 = `https://api.deepseek.com`）；**cc 簇 3866~3875**；**inbox 行 17/19/20/21/22~25**；**error run 3706/3707/3708**；**manual run 3707**；**簇 3870 的 claim**（`note` 已逐字写明「⑤⑥⑦ 闭环真机验证（0.2.1 为验证用版本）」）；`conv 3265/3271/3272`。**真实流量侧样本 = cs 的 inbox id=16。**
-        - **⚠️ 一处自造缺陷（探针）**：`online/.tmp-probe/c1_cc_trigger.py` 原**写死** multipart 文件名 `good.pdf` ⇒ 会让 cc 记下 offline 侧不存在的名字（回流 case 的 `file_path` 指向空文件）。已修 = `os.path.basename(PDF)`，与离线出站口径（`base.py:73`）一致。
+        - **⚠️ 一处自造缺陷（探针）**：`online/.tmp-probe/c1_cc_trigger.py`**【已于 2026-09-17 清理，见 T-5.13】** 原**写死** multipart 文件名 `good.pdf` ⇒ 会让 cc 记下 offline 侧不存在的名字（回流 case 的 `file_path` 指向空文件）。已修 = `os.path.basename(PDF)`，与离线出站口径（`base.py:73`）一致。
         - **⚠️ 一处作废的实验（不许读成「验过了」）**：**窗口 #2 的再注入**基于**错误前提** —— 当时我误以为环⑥ 按「信号」触发，实为按 `(agent, version)` 判且 `0.2.0` 已被 run 3706 占位 ⇒ **task 651 的 case 注定拿不到 run**。该实验**作废**；**但它仍产出真实后果**：case **4082** 已建（簇 3875），此后被 run 3708 一并跑到（`pass`）。**cc 已于 14:17:58 还原，无残留注入。**
       - **⚠️ 一处已知边界（未证伪）**：`ContractFile.file_name` 以「**该 sha 首次上传的名字**」为准（`save_uploaded_file` 命中去重即复用、**不更新 `file_name`**）⇒ 若首次上传名在 offline `/app/uploads` 下不存在，**case 仍会建出**，直到重放时才读不到文件。本轮两个同内容文件恰好都在 offline uploads 才未暴露。
       - **本条能证明什么 / 不能证明什么**：证明 **cc 的七环 ①~⑦ 端到端真实走通**（含 ⑥ 的两条触发路径、⑦ 的 claim→rejudge→auto_fixed）；**不证明**「cc 在全量真实流量下稳定」——本批的 error 样本**全部来自我注入的故障**，无一条真实流量。
@@ -746,9 +746,23 @@
   - **复核命令**（⚠️ 库列名不可凭记忆写，先 `show columns from <表>`）：
     - 三处指纹一次取：`docker exec obs-worker python -c "…"`，SQL = `select id,status,fix_version,claim_due_ts from error_cluster where id=3881` + `select id,verify_status from error_case_link where cluster_id=3881` + `select id,action,detail from conversion_record where cluster_id=3881 and id>=3298 order by id`
     - 驱动方证据：`docker logs obs-worker --since <claim 时刻> 2>&1 | grep "rejudge 完成"`
-    - 探针脚本（**代做动作的原始载体**）：`.tmp-probe/c1_claim_sp_3881.py`（未跟踪；docstring 内含 fix_version / k / note 三项的逐条理由）
+    - 探针脚本（**代做动作的原始载体**）：`.tmp-probe/c1_claim_sp_3881.py`（**已于 2026-09-17 清理，见 T-5.13**；清理前未跟踪，docstring 内含 fix_version / k / note 三项的逐条理由）。**该动作本身仍可复核、不依赖脚本存活**：`conversion_record` 3298 的 `detail` 逐字保留了 `{"fix_version":"0.2.1","k":2,"ttl_days":14,"note":"…"}` 四项 —— 台账的复核命令**不该指向临时文件**，本条下面的 SQL 才是权威入口。
   - **未做/未变**：gq 侧**未动**（其七环仍未开工）；sp 断路器闩死、fail-soft 兜底 —— 同 T-5.11，仍**仅登记未处置**。
-  - **提交指纹（回填）**：online **`2a3f3b8`**（`6d0898e..2a3f3b8`，只提交 `task.md`，1 文件 +22），**快进非 force**，推送后 `git status -sb` 无 ahead/behind。⚠️ 本条正文初稿写「**未提交、未推送**」，那是**提交之前**写的、已回填（与 T-5.11 同型，状态类断言落笔即腐，见 `memory-status-markers-rot`）。探针脚本 `.tmp-probe/c1_claim_sp_3881.py` **未跟踪、未提交**（与 `.tmp-probe/` 内其余 20 个探针脚本同处置）。
+  - **提交指纹（回填）**：online **`2a3f3b8`**（`6d0898e..2a3f3b8`，只提交 `task.md`，1 文件 +22），**快进非 force**，推送后 `git status -sb` 无 ahead/behind。⚠️ 本条正文初稿写「**未提交、未推送**」，那是**提交之前**写的、已回填（与 T-5.11 同型，状态类断言落笔即腐，见 `memory-status-markers-rot`）。探针脚本 `.tmp-probe/c1_claim_sp_3881.py` 清理前**未跟踪、未提交**；**2026-09-17 已连同其余 19 个一并清理**（本句落笔时写的「与其余 20 个同处置」当时尚未定，同日由 T-5.13 落实为「转正 2 删 18」）。
+
+- **T-5.13 `.tmp-probe/` 清理：转正 2 / 删 18 + 台账引用订正**（2026-09-17；用户拍板选项「转正 2 删 18 + 订正台账」）：
+  - **由来**：`.tmp-probe/` 20 个文件**未跟踪且不在 `.gitignore`** ⇒ 每次 `git status` 都冒 `?? .tmp-probe/`（噪音源久留会长成 `chronic-noise-defeats-gate` 那种「报惯了没人读」）；且其中 `c1_write_wordlist.py` 是**已知必 404 却会「自报成功」**的脚本（见 :460），留着就是给后人埋雷。
+  - **转正 2 个**（`backend/tests/integration/`，与既有 `*_probe.py` 同目录同跑法）：
+    - `ring_baseline_probe.py` —— 造故障**前**的水位快照（四张主表 + `trace_judge_state` + agent 名→id 映射），stdout 出 JSON。
+    - `ring_state_probe.py` —— 按 agent 报环①②③落点行，`--baseline <json>` 做差。
+    - **转正时必须改的一处**：原 `c1_rings.py` 把 **2026-09-16 那次验收的基线写死成常量**（`BASE={3861,2243,828,3243}`）⇒ 换个 agent（下一件 gq）或隔几天再跑，「新增≤」一栏就算错、而输出仍像正常结果。转正版**取消默认基线**：不给 `--baseline` 就只打绝对值、不打差（差必须由调用方当次的快照提供）。
+    - **实跑验证（转正不跑等于没转正）**：容器内 `docker exec obs-backend python /app/tests/integration/ring_baseline_probe.py > /tmp/bl.json` + `…ring_state_probe.py smart-procurement --baseline /tmp/bl.json` ⇒ 跑通，并顺带在输出里看到 sp 全链现状（簇 3881 `fixed`、link 2256 `passed`）。`ruff check` 两文件 **All checks passed**。
+    - **⚠️ 实跑当场抓出一个真缺陷（已修）**：`COALESCE(MAX(id),0)` 在 pymysql 下返回 **`Decimal`**，JSON 往返（`default=str`）后又变 **str** ⇒ 相减 `TypeError`。**败在 fail-loud 上，没有静默成错值**；两处已显式 `int()` 并在代码里留注释（同族见 memory `shape-mismatch-yields-silent-zero`：驱动返回形状不符时别指望它替你归一）。
+  - **删除 20 个（逐名列举，非「删了那一堆」）**：`b_write_wordlists.py` `c1_baseline.py` `c1_cc_trigger.py` `c1_claim_cluster.py` `c1_claim_sp_3881.py` `c1_dual_side_online.py` `c1_gate_check.py` `c1_online_tables.py` `c1_rings.py` `c1_trigger_cs.py` `c1_trigger_sp.py` `c1_wait_cluster.py` `c1_watch.py` `c1_write_wordlist.py` `good-question.json` `pending_links.py` `r28_requeue.py` `smart-procurement.json` `sp-deps-after.txt` `sp-deps-before.txt` ⇒ 目录已 `rmdir`。**⚠️ 未跟踪文件无 git 历史，删除不可逆**（用户已知悉）。
+  - **台账引用订正（站点全集先 grep 定死，非凭印象）**：`grep -n "tmp-probe" task.md docs/*.md` = **9 处命中，全在 `task.md`，`docs/` 零命中**；逐处加内联标记指向本条，行号 = `453` / `458` / `460` / `463` / `470` / `531` / `555` / `749` / `751`。其中 **`463` / `470` / `531` 混合引用 offline 仓的 `.tmp-probe/` 路径 —— 那些文件不在本仓、本轮未动**，只对 online 侧路径加标记。
+  - **🆕 清理过程顺带查出的一笔旧账**：`:531` 引用的 **`c1_signal_run.py` 在被清理的 20 个文件里根本不存在** ⇒ 那条引用**在本轮清理之前就已是空证据**（第三十一笔为 C2 探针转正，防的正是这种形态；memory `no-evidence-still-explained` 的子面）。已在该处就地标注。
+  - **口径（本条的产出，供后续引用）**：**台账的复核命令不该指向临时文件路径**。证据要么入库（转正）、要么别引；一次性载体的价值在结论入账那一刻就兑现了，留下路径只会随清理变成空引用。后续新写复核命令请直接给 **SQL / `docker logs` / 已转正探针路径**。
+  - **未做/未变**：offline 仓的 `.tmp-probe/`（`c2c3_wordlist_judge.py` / `c3_real_answers.py` / `cs_cases.py` / `why_stopped.py` 等）**未动** —— 那是另一仓的事，且本轮未扫其全集（**不许把「online 侧清完了」读成「两仓都清了」**）；`.gitignore` **未改**（不把噪音源盖起来，删掉它）。
 
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
