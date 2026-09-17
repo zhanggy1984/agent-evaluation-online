@@ -298,11 +298,25 @@ export interface BackflowBatch {
   ref_count: number
 }
 
+// 「结果未达」标记（F-18；后端 MySQL 现算，零 DDL、不落列、不设 online 时钟）。
+// hit=true = 本簇在等一个结果却迟迟不来：kind='claim'（claim TTL 超窗回退、仍无任何
+// verify_run_record）或 kind='assembled'（现行 pending link 仍 assembled，offline 没来拉）。
+// §8.7 保活语义：online 改「等 offline 推」后无力感知 offline 存活，此标记是唯一兜底。
+// ⚠️ since_ts 两分支含义不同（claim = 回退现场时刻；assembled = 锚点组装时刻），故只作
+// 「从何时起」展示，**不据它计算停摆时长**。
+export interface OverdueMark {
+  hit: boolean
+  kind: 'claim' | 'assembled' | null
+  since_ts: string | null
+  caption: string | null
+}
+
 export interface BackflowClusterDetail extends BackflowCluster {
   links: BackflowLink[]
   verify_runs: BackflowVerifyRun[]
   conversions: BackflowConversion[]
   waiting_days: number
+  result_overdue: OverdueMark
   // 疑似丢失一笔结果推送（后端派生字段，零 DDL：本簇现行 pending link 的 prev_terminal_version
   // 在 online 已收版本集里查无 → 回归 K 序列中断，待 offline 补推或人工核查）
   result_gap_suspected: boolean

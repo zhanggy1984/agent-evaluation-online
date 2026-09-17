@@ -28,6 +28,7 @@ import {
   OFFLINE_STATUS_TEXT,
   reentryCaption,
   RESULT_GAP_WARN,
+  RESULT_OVERDUE_WARN,
   REVIEW_REASON_TEXT,
   VERIFY_STATUS_TEXT,
 } from '../backflowLabels'
@@ -329,6 +330,13 @@ const rows = computed(() => detail.value?.conversions ?? [])
         <!-- 结果推送缺失（后端派生，只标示「疑似少一笔」，不展开对账）：不限状态展示——
              卡在 claim/open 等结果时它是主因，判成 fixed 后仍需可见（可能是假修复） -->
         <p v-if="detail.result_gap_suspected" class="warn-line">{{ RESULT_GAP_WARN }}</p>
+        <!-- 「回查结果未达」（F-18，§8.7 保活语义）：不限状态展示——后端判据已自带
+             pending/claim 期抑制/本轮性三道闸，能命中即「真在等结果」，前端**不再叠状态
+             白名单**（叠了会在将来新增非终态时静默漏报，正是本标记要修的失效模式）。
+             文案逐字照契约；since_ts 只作「从何时起」展示，不据此算停摆时长（两分支含义不同） -->
+        <p v-if="detail.result_overdue.hit" class="warn-line">
+          {{ RESULT_OVERDUE_WARN }}<template v-if="detail.result_overdue.since_ts">（自 {{ fmtTs(detail.result_overdue.since_ts) }} 起）</template>
+        </p>
         <p v-if="needsReview && reasonText()" class="note-line">待人工复核原因：{{ reasonText() }}</p>
       </section>
 

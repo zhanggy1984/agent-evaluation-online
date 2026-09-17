@@ -47,7 +47,8 @@ function mk(over: Partial<BackflowClusterDetail> = {}): BackflowClusterDetail {
     fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
     claim_k: 2, needs_review_reason: null, link: null,
     links: [], verify_runs: [], conversions: [], waiting_days: 9,
-    reentry_observe: null, open_batches: [], result_gap_suspected: false, ...over,
+    reentry_observe: null, open_batches: [], result_gap_suspected: false,
+    result_overdue: { hit: false, kind: null, since_ts: null, caption: null }, ...over,
   }
 }
 
@@ -511,6 +512,35 @@ describe('时间线与角色显示', () => {
     // 已判定 fixed 也要可见（缺口可能是假修复的成因，不能只在等结果态提示）
     const fixed = await mountWith(mk({ status: 'fixed', result_gap_suspected: true }))
     expect(fixed.text()).toContain('疑似丢失一笔结果推送')
+  })
+
+  it('result_overdue.hit → 出「回查结果未达」警示，文案逐字照契约', async () => {
+    const mark = { hit: true, kind: 'claim' as const, since_ts: '2026-09-01T00:00:00', caption: 'x' }
+    const on = await mountWith(mk({ result_overdue: mark }))
+    // 逐字比对契约串（不是 contains 子串）：改写文案 = 违反「后端不做二次措辞」的同一约定
+    expect(on.text()).toContain('回查结果未达（疑似 offline 停摆），人工核查')
+    const off = await mountWith(mk())
+    expect(off.text()).not.toContain('回查结果未达')
+  })
+
+  it('result_overdue 不限状态展示（fixed 态仍需可见：可能是假修复）', async () => {
+    const mark = { hit: true, kind: 'assembled' as const, since_ts: '2026-08-20T00:00:00', caption: 'x' }
+    const fixed = await mountWith(mk({ status: 'fixed', result_overdue: mark }))
+    expect(fixed.text()).toContain('回查结果未达')
+  })
+
+  it('result_overdue 带 since_ts → 附「自 … 起」；缺 since_ts → 只出文案不崩', async () => {
+    const withTs = { hit: true, kind: 'claim' as const, since_ts: '2026-09-01T00:00:00', caption: 'x' }
+    const a = await mountWith(mk({ result_overdue: withTs }))
+    // 不断言格式化后的具体时刻：fmtTs 受运行时区影响，写死会让测试换个时区就红。
+    // 只钉「括号包裹的『自…起』确实出现」+ 后端原值确实被消费（不因时区改写而丢）
+    expect(a.text()).toContain('），人工核查（自 ')
+    expect(a.text()).toContain('起）')
+
+    const noTs = { hit: true, kind: 'claim' as const, since_ts: null, caption: 'x' }
+    const b = await mountWith(mk({ result_overdue: noTs }))
+    expect(b.text()).toContain('回查结果未达（疑似 offline 停摆），人工核查')
+    expect(b.text()).not.toContain('（自 ')
   })
 
   it('reentry_observe caption 仅在 fixed/claim 且 count>0 时出现', async () => {

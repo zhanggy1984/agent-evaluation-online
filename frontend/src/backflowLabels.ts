@@ -100,6 +100,12 @@ export const LAYER_OPTIONS = [
 export const RESULT_GAP_WARN =
   '疑似丢失一笔结果推送（回归 K 序列已中断，待 offline 补推或人工核查）'
 
+// 「回查结果未达」提示（详情页 result_overdue.hit=true 时展示，F-18）。
+// **逐字照契约**（`solution_detail.md` v1.23 #7 与后端 `OVERDUE_CAPTION` 同串）：
+// 「前端命中即原样渲染，后端不做二次措辞」——此处**不得改写**（与上面 GAP 那条的
+// 「同义即可」不同规，别照抄 GAP 的处置）。
+export const RESULT_OVERDUE_WARN = '回查结果未达（疑似 offline 停摆），人工核查'
+
 // input_truncated 警示（claim/fixed 态展示；R-10，detail §9.3）
 export const INPUT_TRUNCATED_WARN =
   '复现输入原始 input>8K 已截断，证据不完整：相关 run pass 不计 K；建议小输入重测或人工复核（R-10）'
