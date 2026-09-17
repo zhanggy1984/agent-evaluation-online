@@ -592,6 +592,104 @@
     `docker exec obs-backend python -c 'import os,pymysql; c=pymysql.connect(host=os.environ["DB_HOST"],port=int(os.environ.get("DB_PORT") or 3306),user=os.environ["DB_USER"],password=os.environ["DB_PASSWORD"],database="dev.obs",charset="utf8mb4"); cur=c.cursor(); cur.execute("SELECT a.name,d.config_value,d.version FROM dict_config d JOIN agent a ON a.id=d.agent_id WHERE d.config_key=%s ORDER BY a.name",("fallback_utterance",)); [print(r) for r in cur.fetchall()]'`
     （`shared-mysql` 容器**无** `DB_USER`，只有各业务库的 `MYSQL_*` ⇒ 查询须借 `obs-backend` 容器自身的连接串；**此法不回显凭据**。）
 
+- **T-5.9 gq/sp 七环「B 方案」：根事件透传 + 观测入参透传**（**2026-09-17 立**，用户拍板；来源 = 用户令「**我还是要 gq 和 sp 的七环跑通**」）：
+  - **⚠️ 本条与前条的拍板冲突，以本条为准**：`:521-526` 的定案是「gq/sp 按规格不可达、**不动任何代码**」（有实测判定书 `layer=none` 撑着）。用户 2026-09-17 明确改口要求跑通 ⇒ **由「判死」转为「改造」**。旧条**不改写**（它如实记录了当时的裁定与证据），此处显式声明口径变更。
+  - **断口（读码取证，非推断）**：`analyzer/classify.py:156` 子节点候选**仅在 `root_status != "ok"` 时收集**（T-3.10 兜底吸收门控）；gq/sp 的 LLM 异常被业务吞成 SSE error 帧后**生成器正常结束** ⇒ HTTP 200 ⇒ 出口 `end_request("ok")` ⇒ 根终态 ok ⇒ 撞门。**子节点那条 `llm_connection` 因此永远进不了候选**（值域卫生批已让两家 `llm_call.error_type` 折叠到白名单，值域不构成障碍）。
+  - **方案 = B（扩面，两处缺一不可）**：① **根事件透传**（LLM 硬失败 → root 记 error）；② **观测入参透传**（`obs_input`）。**② 不可省**——`converter/envelope.py:92-97`「快照缺 input 实文（`input_snapshot` 空）→ **只计数不组装返回 False**」⇒ 只改 ① 会在**环③**断（`evidence.input` ← `cluster.input_snapshot` ← trace request 事件的 `input` 字段）。**参照实现 = cs**（`main.py:44-73` 出口读 health + `utils/trace.py:19-33` 可变 dict + `deepseek_gateway.py:229/244/261` 置位），cs 注释自陈「记 ok 会让平台把真实故障当作『已被业务吸收』切掉」。
+  - **⚠️ 「标记放 LLM 记录出口」已证伪（2026-09-17 二订正 —— 我前两版框法均错）**：gq `llm_service.py:220` 是**每次尝试都记 error**（该函数 docstring `:200-202` 自陈「每次重试都是完整付费调用 → 各记 1 条」），而 `stream_round1_with_retry:422-423` 对 **429/5xx 且未流出任何事件**的情况**会退避重试** ⇒ 重试成功后用户拿到完整回答，却已被标 error = **假红**（把降级当故障的上游化，与我们要修的错正好相反）。⇒ **标记点必须选在「用户可见降级真正产生处」**，即 gq 的 **6 个吞点**（`chat_service.py` 667/830/863/899/966/992 各加一行）。
+**gq 记忆压缩那处（`chat_service.py:420`）不标** —— 压缩用 LLM 失败不影响用户拿到回答，标了会把健康请求记成 error。**sp 侧不可照搬此结论**：其 `deepseek_client.py` 9 处同时含「配置错误不重试」与「重试耗尽：最终失败」两类，须在复制那一批**另行核实最终失败点**。
+**吞点实测（穷尽模式，仅供范围核对）**：gq = 6 处 LLM 异常吞点（`chat_service.py` 667/830/863/899/966/992）+ 2 处业务 error 帧（594/600「会话不存在」，**非 LLM、不在 B 范围**）；sp = 4 处（`agent_loop.py` 201/205/264/267）+ 2 处路由级 catch-all（`reviews.py:241`/`:311`，第二层吞，咽喉标记后同样覆盖）+ 1 处明写「**吞异常返 None**」（`conversation_service.py:203`）。
+**③ 查出的盲区（关键词法永远命中不到）**：**「LLM 正常结束但返回空」走兜底话术、不抛异常 ⇒ 咽喉标记不触发**。gq = `chat_service.py:1027` 落 `_EMPTY_ANSWER_FALLBACK`；sp = `agent_loop.py:114`「AI 未生成有效回复」。**已拍板（2026-09-17）= 不纳入** —— 只覆盖抛异常路径。理由：① 与 cs 完全对齐（cs 也只标异常路径），两家可比；② **纳入也拿不到真机证据**：注故障用的 LLM 黑洞产生的是**超时异常**、不产生空返回，写了就是「无消费方的实现」。⇒ **空返回另立待办，不在本批**（判断条件/是否有重试/是否仅限主对话，均**未查**）。
+  - **两家的结构差异（决定实现形状）**：sp 的两条 SSE 路由（`api/v1/reviews.py:201` / `:251`）**没有 `request` 参数**，而写入点在 `agent_loop` **深处**（离路由还有几层）⇒ `request.state` 路线走不通 ⇒ **两家统一用 contextvar 持可变 dict**（cs 同形；cs 注释已写明「标量赋值传不回中间件，故用 dict」）。**勿一家用 contextvar、另一家用 request**——口径必须一致，否则复制 sp 时必踩。
+  - **开工前三件只读检查（用户 2026-09-17 拍板落本条）**：
+    - **① 环④ 装载闸：已实跑，两家均通过（2026-09-17 起栈后）** —— cfg 由 `ai_evaluation.agent.adapter_config` 原样落盘（**未转写**，避免抄错模板），再用 `offline backend/.venv/Scripts/python.exe` 直调 `check_input_wiring`：gq `{case.input.content}` → `[]`；sp `{case.input.question/bid_id/dimension_id}` → `[]`。
+      **正对照（判别力证明，不可省）**：改喂空 dict，gq 报 1 条、sp 报 3 条「…在 evidence.input 中不可达」⇒ 判据不是恒绿，上面的 `[]` 有意义。
+      ⇒ **两家环④ 不构成阻塞**（与 cc 当初卡在环④ 的情形不同）。
+    - **① 的判据（保留，供复跑）** —— 函数 = `offline backend/app/adapters/engine.py:65`；调用样例 = `offline backend/tests/test_pull_loop_reject.py:333`。**判据 = 真跑函数，不许肉眼看模板**（肉眼看模板正是 cc 那轮踩过的坑）。
+    - **② 查 `backflow_enabled`** —— ⚠️ **`backflow_allow` 已有实测记录、勿重复查**（`:452-455` 阶段 B 起点快照：gq=1 / sp=1）。**未查的是 `backflow_enabled`**（`classify` gate 的另一重）。复核命令（⚠️ 列名取自 `classify.py` gate 的四个键，起栈后**先 `SHOW COLUMNS FROM agent` 确认再跑**）：
+      ⚠️ **订正：`backflow_enabled` 根本不是 `agent` 表的列** —— `agent` 实有列 = `id / name / display_name / base_url / enable / route_source / backflow_allow / created_at / updated_at`。`backflow_enabled` 是 **`dict_config` 的 per-agent 键**（`analyzer/context.py:15`、`consumer/state.py:39`，缺键回退 True）。复核命令（⚠️ **借容器的 `Settings()` 取连接串，不回显凭据**）：
+      ```
+      docker exec -i obs-backend python - <<'PY'
+      from app.core.config import Settings
+      import pymysql
+      s = Settings()
+      c = pymysql.connect(host=s.db_host, port=s.db_port, user=s.db_user,
+                          password=s.db_password, database=s.database, charset="utf8mb4")
+      cur = c.cursor()
+      cur.execute("SELECT a.name, d.config_key, d.config_value FROM dict_config d "
+                  "JOIN agent a ON a.id = d.agent_id WHERE d.config_key='backflow_enabled'")
+      print(cur.fetchall())
+      cur.execute("SELECT id, name, backflow_allow FROM agent")
+      print(cur.fetchall())
+      PY
+      ```
+      **实测结果（2026-09-17）**：`backflow_enabled` 四家（cc/cs/gq/sp）**全 `true`**；`agent.backflow_allow` 四家**全 1** ⇒ **两家回流开关无阻塞**（与 cc 当初 `allow=0` 的情形不同）。
+      ⚠️ **现成探针 `online backend/tests/integration/backflow_allow_probe.py` 只覆盖 cc / cs 两行**，不含 gq/sp，**用它证不了本条**。
+    - **③ 吞点全量 grep** —— 今天是**关键词命中法**（命中「LLM 调用失败」），**不是穷尽法**：换措辞写的吞点（熔断专用文案、降级引导语、兜底话术分支）不会被命中。**结论须连 grep 范围一起报**（范围 = 两仓 `backend/` 全包根，非单文件）。
+  - **已发现、登记备查的两处不一致（不在本批擅改）**：① **sp 断路器「同因不同果」**——流**开始前**熔断 OPEN ⇒ 路由直接 503（`reviews.py:211`）⇒ root 记 `HTTP_503`（**值域外，不产候选**）；流**中途** `CircuitOpenError` ⇒ error 帧 + 200 ⇒ 改后标 `llm_other` **能**产候选。**同一个「AI 不可用」两种形态、一种能回流一种不能。** ② **漏标记即静默退化**——逐点标记意味着将来新增兜底点若忘标记，会**静默回到今天的状态且无任何告警**；本批**不建机制兜底**（不造无人用的抽象），只在台账写明。
+  - **批次已拍板（2026-09-17）= gq 先行**：gq 单独一批（2 处标记 + `obs_input` 透传）→ 真机跑通七环 → 验收；绿了再复制 sp。理由：两家**结构不同**（gq 路由带 `request`、sp 路由不带且出口分散 10 处）⇒ 本来就不是同一批；先把「标记 + 透传 + 七环验收」链在一家跑通，第二家是**复制**而非探索。符合「可单独出方案、可单独验收」。
+  - **未做（如实声明）**：**代码改动面 = 0，尚未动手**。三件只读检查 ① ② ③ **均已实跑**（结论见上，各带复核命令与正对照）；仍空白的只有「空返回兜底」的判断条件/是否有重试/是否仅限主对话（已另立待办）。⚠️ 本条立条时环境曾停（容器全 Exited），上述结论**是后来起栈才取得的**，非立条当时所有。
+
+  - **施行记录（2026-09-17，gq 一家已跑通七环）** —— ⚠️ **本段与 `:599-601`、`:630` 的「6 个吞点各加一行」「2 处标记」口径不一致，以本段为准**（旧条不改写，同 `:596` 惯例）。偏离原因见下「为何不是 6 个吞点」。
+    - **实际落码形状 = 1 处置位 + 1 处撤销 + 1 处入参透传**（`git status` 实测：**4 改 1 新增**，`chat_service.py` **未改**）：
+      - `backend/utils/trace.py`（+39）：新增 `llm_health_var`（contextvar 持**可变 dict**，非标量——标量赋值传不回中间件）+ `mark_llm_hard_fail(error_type)`（只取首次；上下文缺失时 **fail-loud 打 ERROR 日志**，不静默）+ `unmark_llm_hard_fail()`。
+      - `backend/services/llm_service.py:221`：`stream_chat` 的 `except` 内、**在 `record_llm` 之前**置位 —— `record_llm` 本身抛异常也不影响标记。（`llm_error_type(exc)` 复用既有值域折叠，落平台白名单词。）
+      - `backend/services/llm_service.py:432`：`stream_round1_with_retry` 重试分支、**在 `time.sleep` 之前**撤销。
+      - `backend/main.py`（+31/-9）：中间件在 `obs = _obs()` **之前**置入 `health: dict = {"hard_fail": False, "error_type": None}` 并 `llm_health_var.set(health)`；`_obs_end` 增 `health` 形参，优先级 = **断连 > LLM 硬失败 > HTTP 状态码 > ok**；三处调用点回填。`main.py:275` 的 `UNHANDLED_EXCEPTION` 分支**有意不动**。
+      - `backend/api/chat.py:54`（+3）：`request.state.obs_input = body.model_dump()`，**放在归属校验之前**（403/404 也是要归因的 trace，缺现场建不出簇）。
+      - `backend/tests/test_llm_hard_fail_marker.py`（新增，6 例）：mock 边界必须是 **`_stream_chat_http`** —— 只 monkeypatch 更外层的 `llm_stream_chat` 则置位点根本不执行，用例只验了撤销、形同虚设。
+    - **为何不是 6 个吞点（口径变更的决定性理由 = 撤销）**：`stream_chat` 的 `except` 是 **6 个吞点共同经过的唯一咽喉**，放一处即全覆盖；假红风险（首轮 429 → 重试成功）由 `stream_round1_with_retry` 的**撤销**消掉，`test_retry_then_success_must_stay_ok` 把这条锁死。反过来若按原设计摊到 6 个吞点，每处都要自行回答「这是不是最终失败」，**每处都是一次可能答错的机会**，而咽喉处答案唯一。⇒ 原 `:599` 的结论「标记点必须选在 6 个吞点」**本身没错**（它当时要解决的是「标在记账出口会假红」），只是**撤销**这个手段出现后，咽喉点重新变成更优解。
+    - **真机七环验收（2026-09-17，全部为实测，非推断）**：
+      - **反例（无注入）**：trace `gqaccept1-220ab86ee8e1` → `root_status=ok` ⇒ **不是「一律记 error」**；同轮确认 `interface` 归一为 `POST /api/chat/{id}`、`input_snapshot` 已落（证明 `obs_input` 生效）。
+      - **正例（注 LLM 黑洞）**：`/etc/hosts` 将 `api.deepseek.com` 指向 `127.0.0.1` ⇒ SSE 返 `event: error` 且 **HTTP 200**（正是本批要治的病理）⇒ trace `gqaccept2-ec9de3b906aa` 落 `root_status=error` / `root_error_type=llm_connection`（白名单词）。
+      - **①②**：判定四闸全真 → 簇 **3880**（`first_trace_id` = 上述 trace，`error_msg=[Errno 111] Connection refused`）。
+      - **③**：link **2255**（`source_trace_id` = 上述 trace；此前历史 link 的 source 全是 `task-NNN` 桩）。
+      - **④**：离线 inbox **27** / case **4083**，2s 内 ack（`ack_status=acked`、`reject_code=None`）。
+      - **⑤**：建真实信号 run **3709**（手动，suite 2161，version `2026.09.17-verify`，22 case）→ 平台自动派生 error run **3710**（`error_regression`，6 case）。
+      - **⑥**：`conversion_record` **3279** `action=regression_result`（名 run 3710 / cluster 3880 / link 2255 / case 4083）。
+      - **⑦**：认领（`POST /api/v1/backflow/clusters/3880/claim`，`fix_version=verify-20260917`，`claim_k=2`，TTL 至 2026-10-01）⇒ conv **3280 claim**；再以新 version `2026.09.17-verify2` 建 run **3711** → 派生 error run **3712** → conv **3290 regression_result** → **conv 3291 `auto_fixed` / `closed_by=auto_regression`**（detail 自陈「K 满纯净序列…连续2版纯净 pass」）⇒ 簇 **3880 `fixed`**、link 2255 `verify_status=passed`；`verify_run_record` **848**(run 3710) + **854**(run 3712)，两条相邻纯通过、`seq=2 >= claim_k=2`。
+      - **环境事实（省下次的排查时间）**：**gq 无 bind mount ⇒ 改后端码必须重建镜像**（cs/sp 有 `./app:/app/app:ro`，重启即可）。本轮的改动是靠重建镜像生效的——**若未重建，① 环不会出 error**，即七环第一步就断。
+      - **⚠️ 自造故障标注（必须可区分于真缺陷）**：gq 于 **2026-09-17 00:43:53 起**被人为切断 LLM 约 3 分钟，手法 = 容器内 `/etc/hosts` 注入（`sed -i` 在该文件上**不可用**——bind mount 不允许 rename，报 `Device or resource busy`；须改为 `grep -v … > /tmp/h.new && cat /tmp/h.new > /etc/hosts`）。**撤销动作 = 同法回写 + 回读 `grep -c` 得 0**，并验 DNS/TCP 恢复。本轮产出物（簇 3880 / link 2255 / 2 条 trace / conv 3273·3279·3280·3290·3291 / inbox 27 / case 4083 / run 3709·3710·3711·3712）**全是我造的红，不是真缺陷**；注入前基线水位 = trace store 155 行、`llm_*` 计数 0。
+    - **⚠️ 本轮验收的三条限制（勿读大）**：① **终态证据强度弱**——两轮 pass 用的是**同一个 case 4083**，其输入为自造元指令文本（`注入验收 278b4ae0：…请回答一个全新问题以避开缓存？`），gq 按「元指令」拒答而通过 ⇒ 它证明的是**判定链路走得通**，**不证明** gq 修复后行为正确；② **`fix_version=verify-20260917` 是显式验收标注值**，平台 **R-7 软提示常亮**（`未观测到 good-question@verify-20260917 评测 run`），改用真实版本字面量重认领被拒（`ERR_CLUSTER_0003`，claim 态不允许该迁移），**无端点可改** ⇒ 记载为**已知且可解释**，非缺陷；③ 平台自动 detail 把 `fix_version` 与 `bound_version` 并列表述为「连续2版」，两者不是同一类东西 —— 属平台文案取数口径，**未动**。
+    - **复核命令（本条「现状」断言均可由它重取，不借印象）**：
+      ```
+      MSYS_NO_PATHCONV=1 docker exec obs-backend python -c "import os,pymysql; c=pymysql.connect(host=os.environ.get('DB_HOST') or 'localhost',port=int(os.environ.get('DB_PORT') or 3306),user=os.environ['DB_USER'],password=os.environ['DB_PASSWORD'],database='dev.obs',charset='utf8mb4'); cur=c.cursor(); cur.execute('SELECT id,status,fix_version,claim_k FROM error_cluster WHERE id=3880'); print(cur.fetchone()); cur.execute('SELECT id,verify_status FROM error_case_link WHERE id=2255'); print(cur.fetchone()); cur.execute('SELECT id,run_id,case_pass,bound_version FROM verify_run_record WHERE link_id=2255 ORDER BY id'); print(cur.fetchall()); cur.execute('SELECT id,action,closed_by,detail FROM conversion_record WHERE cluster_id=3880 ORDER BY id'); [print(r) for r in cur.fetchall()]"
+      ```
+      ⚠️ `DB_NAME` 在该容器内可能是**空串**（`os.environ.get('DB_NAME','dev.obs')` 取到 `''` ⇒ `No database selected`），须写 `or 'dev.obs'`；`verify_run_record` **无 `verify_status` 列**（查询须先 `SELECT *`，勿凭列名猜）。
+    - **未做/未提交（如实声明）**：① **未提交任何东西**（gq 仓 4 改 1 新增、online 仓本条均在**工作区**）；② **单测与回归**：gq 侧新增 6 例已跑（见 `test_llm_hard_fail_marker.py`），**服务进程端到端未验**（沿用既有裁定：不补）；③ **「空返回兜底」仍不纳入**（`:602` 口径不变）；④ **sp 尚未开工** —— 复制那一批须**另行核实**其 `deepseek_client.py` 9 处的最终失败点（`:600` 已记「sp 侧不可照搬此结论」），以及 sp 路由**无 `request` 参数**这一结构差异（`:603` 已定：两家统一用 contextvar）。
+
+- **T-5.9b sp 真机注入验收（2026-09-17，**已收口**：环①② 真机打通、「环③ 未通」已定因并**转出为独立批次**）**：
+  - **⚠️ 自造故障标注**：sp **于宿主 10:56:09 起**被人为切断 LLM（容器内 `/etc/hosts` 注入 `127.0.0.1 api.deepseek.com`；手法同 gq：`grep -v … > /tmp/h.new && cat /tmp/h.new > /etc/hosts`，且**须 `-u root`**——容器以非 root 跑，默认 `exec` 报 `Permission denied`）。**撤销动作 = `docker restart sp-app`**（运行时重生成 `/etc/hosts`），回读 `grep -c 'api.deepseek.com' /etc/hosts` = **0 行 / 总 7 行 = 基线**。本轮产出物（trace `97d26c9a…` / `a397b18e…` / `4f9aa511…`）**全是我造的红，不是真缺陷**。注入前基线水位 = sp trace **33 行**（`agent='smart-procurement'`）、最新 `updated_ts` 2026-09-17 02:26:59。
+  - **已验证（新代码在容器内生效）**：`docker exec sp-app python -c "from app import obs; hasattr(obs,'mark_llm_hard_fail')"` → `True`。sp-app 日志三处 `llm.retry`（`attempt=2/3`，`error=Connection error.`）+ 三处 `review.stream_error` ⇒ 确实走到「重试耗尽」分支。**关键否定证据 = 该窗口内 sp-app 日志无任何 `llm_health 上下文缺失` ERROR** ⇒ `llm_health_var.get()` 在业务层拿到的是 dict，**contextvar 跨层可见**（此前只有单测级证据）。
+    ⚠️ **本段两处已作废（2026-09-17 同日订正）**：① 原写「`end_request` 形参含 `input`」并据此判「新代码生效」—— 该形参**正是本轮故障源**（镜像内 sdk 无此形参），读到它是**红**不是绿；② 原写「**A 组置位点被真实触发**」—— 该窗口日志里的 `llm_connection` 事件来自**既有的 `record_llm_error`**，与本批置位点无关，**当时没有任何证据能区分二者**。**真正的置位点证据在第二段窗口**（见下条两源互证）；上列日志证据仍然成立，但只证明「走到了重试耗尽分支」，**不证明置位**。
+  - **✅ 已定性（2026-09-17 同日订正；原文两种猜测 ①event 未发出 ②平台未消费 —— 两条都不对，故整段改写，勿引旧版）**：真因 = **本轮我引入的 `input=` 回归**。sp **镜像内烤入的 obs_sdk 是旧版**，`end_request` 形参为 `['status','error_type','error_msg','output','duration_ms','extra']` —— **无 `input`**；宿主 `sdk/obs_sdk/__init__.py` 才有 `input`。我按**宿主源码**给 `app/obs.py` 的 `end_request` 加了 `input=` 并在中间件传值 ⇒ 每次请求出口抛 `TypeError`，被 `app/obs.py` 的 `except Exception: logger.debug(...)` **吞成 debug 日志** ⇒ **一条 request 事件都不产出** ⇒ root 恒不到 ⇒ `root_ok=0 / root_status=None`。**取证**：改前（02:20Z）与改后（03:27Z）的 ES 原始事件对照 —— 注入窗口内 `node=request` **零条**，窗口外两条俱在；加容器内 `inspect.signature` 形参实读。**用户拍板止血 = 「直接去掉 `input=` 传参，环③ 单独开一批」** ⇒ `input` 链已连根去掉（`app/obs.py` 的 `set_obs_input` 与 `end_request` 的 `input` 形参、`app/core/middleware.py` 四处 `input=payload`、`app/api/v1/reviews.py` 两处调用全部删除，`reviews.py` 回到 HEAD 同形）。**新增回归锁** = `tests/unit/test_llm_hard_fail_marker.py::test_end_request_passes_only_supported_kwargs`（按**旧版 sdk 签名**起桩，多传任何 kwarg 即 TypeError 转红）。
+    ⚠️ **教训（比本缺陷本身更值钱）**：`app/obs.py` 全篇的 `except Exception: logger.debug(...)`（观测边带不炸业务的既有设计）**把「契约不匹配」与「边带偶发故障」折叠成同一个静默分支** ⇒ 整个 agent 的观测哑掉而**无人察觉**、台账上表现为「判定即 ok」。**该兜底模式在四 agent 仓普遍存在**，未改动、列为登记项。
+    ⚠️ **本次验收一度误报**：原文曾写「`end_request` 形参含 `input`」并据此判「新代码生效」—— **该句本身是故障源被当成了功绩**，已随本订正作废。
+  - **第二段自造故障窗口（2026-09-17，止血后重做）**：宿主 **11:28:24 ~ 11:28:59**（UTC 03:28:24→03:28:59，**共 35 秒**）；注入前已记基线 = ES `node=request` **34 条 / 最新 ts 1789615661461**。**只发一次请求**（断路器 threshold=5，单请求重试累 4 次 ⇒ 第一发能走完，第二发起被闩死，见上条）。撤销 = `docker restart sp-app`，回读 `grep -c deepseek /etc/hosts` = **0**。
+  - **✅ 验收证据（决定性，两源互证）**：
+    - **ES 原始事件**（trace `…1fbdd98ee7f1`）：`node=request status='error' error_type='llm_connection' error_msg='LLM 调用失败，用户本轮未拿到正常回答'`。**该文案只存在于 `_obs_finish` 的 health 分支** ⇒ 证明 `mark_llm_hard_fail` 置位 → contextvar 可变 dict → 出口读取，**整条链真机跑通**（此前只有单测级证据）。
+    - **平台侧入库**：`trace_judge_state` 该行 `root_ok=**1**` / `root_status=**'error'**` / `root_error_type='llm_connection'`。对照止血前同表 4 行全为 `root_ok=0 / root_status=None`。⇒ **七环 ①观测→②判定在 sp 上首次真机打通**，判定侧门控 `root_status != "ok"` 已开闸。
+    - **请求侧**：HTTP **200** + SSE 帧序 `meta → thinking → error → usage → done`（账面「正常结束」）——正是环② 断的原型；出口靠 health 而非状态码记 error。
+  - **🔴 环③ 仍未通，且已定因（非缺陷、是已知边界）**：`error_cluster` 中 sp **零行**。查得 `worker/cluster_job.py:58`（**Fork A**）—— `root_input_hash` 为 NULL 的行**候选不建簇不计数**，只置 `processed=1`。而 sp 的 `root_input_hash` **恒为 NULL**，因为**入参透传正是被止血去掉的那条链**。⇒ **用户「环③ 单独开一批」那一批是 sp 七环的必要条件**，不是可选项。复核：`select judged,processed,root_input_hash from trace_judge_state where agent='smart-procurement'` 全部 `None`。（另注：该行 `judged=0` 属**预期**，非缺陷 —— 判定窗口 `ttl_until` 未到，`judge_scan_job.py:84` 判据 = `judged=0 ∧ ttl_until<=now`。）
+  - **🔴 本轮新发现（非本批引入，待回读规格后再定性）**：**sp 断路器闩死**。路由层前置 `if get_client().circuit_state == "OPEN": raise 503`（`app/api/v1/reviews.py:211`/`:258`）在 `acquire()` **之前**判 `circuit_state`，而状态机只在 `_CircuitBreaker.acquire()` 内做 OPEN→HALF_OPEN 迁移 ⇒ 一旦 OPEN，**没有任何请求会再调用 `acquire()`**，`_state` 恒为 OPEN ⇒ **30 秒自愈永不发生，直到重启容器**。实测：第 3 次请求起 503（`0.007s` 返回），且 `docker restart` 前 4 分钟内多次重试**全部 503**。
+  - **覆盖缺口（如实记）**：`agent_loop.py` 的 **B 组 2 处本轮未被真机覆盖** —— 熔断请求在**路由层**即被 503 拒绝，根本没进 agent；本轮覆盖到的是 `reviews.py` 的 **HTTP_503 出口**，不是 `agent_loop` 的 error 帧出口。
+  - **复核命令**：
+    ```
+    docker exec obs-worker python -c "import os,pymysql; c=pymysql.connect(host=os.environ.get('DB_HOST') or 'shared-mysql',port=int(os.environ.get('DB_PORT') or 3306),user=os.environ['DB_USER'],password=os.environ['DB_PASSWORD'],database=os.environ.get('DB_NAME') or 'dev.obs'); cur=c.cursor(); cur.execute(\"SELECT trace_id,root_status,root_error_type,root_ok,updated_ts FROM trace_judge_state WHERE agent='smart-procurement' ORDER BY updated_ts DESC LIMIT 5\"); [print(r) for r in cur.fetchall()]"
+    docker logs sp-app --since 20m 2>&1 | grep -iE "llm_health|llm\.retry|stream_error"
+    ```
+    ⚠️ 该容器 `DB_NAME` 为**空串**（须 `or 'dev.obs'`）；`ai-eval-backend` 容器**无 `dev.obs` 读权限**（`Access denied for user 'evaluation'`），须走 `obs-worker`/`obs-backend`。
+
+- **T-5.10 C2 负对照探针前提腐 → 改为自造负对照行**（2026-09-17；用户拍板选项「探针自造负对照行」）：
+  - **症状**：`backend/tests/integration/backflow_allow_probe.py` 2026-09-17 实测 **红 3/7**（`cc 层=none` / `cc gate.backflow_allow=False` / `cc 未建簇`）。
+  - **根因（非缺陷）**：探针硬断言 `cc gate.backflow_allow is False`（seed D18 的 `allow=0`）**且不自设该状态**；cc 七环开通时该值已 **0→1** ⇒ 负对照的参照物没了，探针**结构性恒红**，且红的样子与真缺陷同形 —— 属「长期固定红 ⇒ 被读成噪音 ⇒ 真信号淹没」。**memory 里「转正后 7/7」是开通前的事，勿据此认为它还绿。**
+  - **改法**：负对照改为探针**自造临时 agent**（`probe-c2-negative`：`backflow_allow=0` / `enable=1` / `route_source='manual'`，其余取库默认），跑完即删；绿不再依赖生产数据「碰巧长成某样」。
+  - **顺带消掉一条旧归因边界（实质改进，不只是修红）**：临时 agent **不写** per-agent `backflow_enabled` 键 ⇒ 走「缺键回退 True」（`analyzer/context.py:29`）⇒ gate 上**只有 `backflow_allow` 一条为假**。新增**归因守卫断言** `gate.backflow_enabled is True`：将来该默认值若被翻成 False，探针会**红**，而不是静默退回旧版的「双保险」（旧版 allow=0+enabled=false 两条同时为假，只能证「这一对关闸生效」，**归因不到单条**，见 §5.8 ② 订正）。
+  - **验收证据（2026-09-17 真机，非推断）**：**连跑 2 遍**，均 **8/8 全绿**；gate 实打印 `{'agent_exists': True, 'agent_enabled': True, 'backflow_allow': False, 'backflow_enabled': True}`（归因守卫实测成立）；两遍簇 id **3878 → 3879**（递增 ⇒ 真跑新一轮，非复用上轮行）；残留复核 = 临时 agent 行 0 / `c2-` 未判行 0 / 探针簇 0，`agent` 总行数回到 **5**；`ruff` 对改动文件 **All checks passed**。
+  - **复核命令**（⚠️ Git Bash 下**必须**加 `MSYS_NO_PATHCONV=1`，否则 `/app/...` 被转成 Windows 路径，报 `No such file` —— 看着像探针不存在，实为路径转换）：
+    `MSYS_NO_PATHCONV=1 docker exec obs-backend python /app/tests/integration/backflow_allow_probe.py`
+  - **未做/未变**：是否纳入 CI 真库探针 job **仍未拍板**（前置不变 = 先核该 job 的库有没有 seed 出 cs 行）；**本条未提交**。
+
 **阶段出口**：维度 3 开放验收全绿 → 开放回流白名单；上线复盘记录容量/告警/假绿残余基线，作为二期（L3 quality、C2 会话型回归）排期输入。
 
 ---
