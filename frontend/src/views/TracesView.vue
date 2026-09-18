@@ -3,7 +3,7 @@
 // （都空 = 近 7d 全部命中），agent 过滤。检索走后端默认时间窗（keyword_search_days=7）
 // 与 ≤200 上限；红显 = status∈{error,timeout}。
 // Q6 决策：agent 过滤由自由文本框改为共享动态下拉（全站 + /metrics/agents 实测列表）。
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
@@ -20,7 +20,11 @@ const items = ref<TraceListItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
-const maxPages = Math.ceil(200 / pageSize) // §14.4 深翻页上限 200 → 前端最多 10 页
+const DEEP_PAGE_LIMIT = Math.ceil(200 / pageSize) // §14.4 深翻页上限 200 → 前端最多 10 页
+// P1-10：分母此前恒等于上式（写死 10），total 小于 200 时也显示「x / 10」
+// ⇒ 用户会以为还有 9 页可翻。真实可翻页数 = min(上限, ceil(total/pageSize))，且至少 1 页。
+const maxPages = computed(() =>
+  Math.max(1, Math.min(DEEP_PAGE_LIMIT, Math.ceil(total.value / pageSize))))
 
 const { agents, loading: agentsLoading, errorMsg: agentsError, load: loadAgents } = useAgents()
 

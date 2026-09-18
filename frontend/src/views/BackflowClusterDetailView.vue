@@ -287,6 +287,13 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <strong class="title">
         cluster <span class="mono">#{{ clusterId }}</span>
         <span class="muted" v-if="detail">· {{ detail.agent }}{{ detail.interface ? `.${detail.interface}` : '' }}</span>
+        <!-- P1-12：本页原为「死胡同」—— 列表页（BackflowView.vue:262）能跳 trace 详情，
+             进了详情页反而没有出口。判据与列表页逐字一致（缺 trace_id 或缺 agent 不渲染，
+             不给死链），目标路由 /traces/:agent/:traceId 早已存在。 -->
+        <router-link
+          v-if="detail?.first_trace_id && detail.agent" class="link-like"
+          :to="{ name: 'trace-detail', params: { agent: detail.agent, traceId: detail.first_trace_id } }"
+        >代表 trace ↗</router-link>
       </strong>
       <button class="btn-ghost" type="button" :disabled="loading" @click="loadDetail(true)">刷新</button>
     </header>

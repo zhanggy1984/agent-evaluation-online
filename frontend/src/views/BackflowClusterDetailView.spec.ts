@@ -559,3 +559,36 @@ describe('路由', () => {
     expect(push).toHaveBeenCalledWith({ name: 'backflow' })
   })
 })
+
+// 批 6 · P1-12：本页此前是「死胡同」—— 列表页（BackflowView.vue:262）能跳 trace 详情，
+// 进了详情页反而没有出口。判据与列表页**逐字一致**：缺 first_trace_id 或缺 agent 都不渲染，
+// 避免给出必然 404 的死链（列表页同款断言见 BackflowView.spec.ts:225）。
+describe('P1-12 代表 trace 出口（防死胡同 / 防死链）', () => {
+  // 本组单独挂载：给未注册的 router-link 一个可断言的落点（不共用 mountWith —— 它被其余用例共享，
+  // 加 stubs 会波及它们）；href 的正确性由真机取证（/backflow/clusters/3865 实读 + 点击到达）。
+  async function mountStub(d: BackflowClusterDetail) {
+    apiMock.backflowClusterDetail.mockResolvedValue(d)
+    const w = mount(BackflowClusterDetailView, {
+      global: { stubs: { RouterLink: { template: '<a class="trace-out"><slot /></a>' } } },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    return w
+  }
+
+  it('first_trace_id 与 agent 齐备 → 渲染出口链接', async () => {
+    const w = await mountStub(mk({ agent: 'customer-service', first_trace_id: 't-9' }))
+    expect(w.find('a.trace-out').exists()).toBe(true)
+    expect(w.text()).toContain('代表 trace')
+  })
+
+  it('first_trace_id 为空 → 不渲染（不给死链）', async () => {
+    const w = await mountStub(mk({ first_trace_id: null }))
+    expect(w.find('a.trace-out').exists()).toBe(false)
+  })
+
+  it('agent 为空 → 不渲染（缺任一个都不给）', async () => {
+    const w = await mountStub(mk({ agent: '', first_trace_id: 't-9' }))
+    expect(w.find('a.trace-out').exists()).toBe(false)
+  })
+})
