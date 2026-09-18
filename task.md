@@ -1652,7 +1652,10 @@ online `error_cluster` max **仍 3881**，两处零新增（规则 CRUD 属管�
 **错**。`_gen_rule_iri` 仅在 `create_rule` 调用，update 从不重算 iri，**这是有意设计**
 （iri 是创建后稳定的技术标识）。修前之所以看不出不一致，只是因为**改名根本没生效**。
 
-#### F7（只读观察，**未真机实证**，勿当已验缺陷）
+#### F7（~~只读观察，未真机实证~~ → **已实证为真缺陷并已修复**）
+
+> **2026-09-18 订正**：本条已由 **［批 4］** 真机取证，**结论由「观察」升级为「缺陷」**并已修复（cc `7de3e5e`）。
+> 下面这段是最初的静态观察记录，保留为过程留痕，**勿再当现行状态引用**。
 
 `Rules.vue` 对 `ONTOLOGY_GENERATED` 规则也开放「编辑」入口，且抽屉内 名称 / 表达式 / 描述
 输入框**均未禁用**，而 `update_rule` 的本体分支**只认 `enabled` / `severity`，其余静默忽略**。
@@ -2604,3 +2607,90 @@ docker exec customer-service-nginx nginx -t
 curl -sk -o /dev/null -w '%{http_code}\n' -X POST https://localhost:8443/api/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"__probe__","password":"__probe__"}'
 ```
+
+---
+
+## 批 4｜cc（contract-check）F7 取证与修复（2026-09-18）
+
+**由来**：F7 是本台账里**唯一一条「观察」而非「结论」**的登记（§3.12，见上面那节）。按存盘纪律，
+它当时既不是缺陷也不是非缺陷 —— 本轮把它做实。**结论：真缺陷，已修。**
+
+#### ① 静态链（五环，逐环取证，不是「看起来像」）
+
+| # | 环节 | 证据 | 结论 |
+|---|---|---|---|
+| 1 | UI 入口 | `Rules.vue:33` 编辑按钮**无** `row.source` 守卫；而同排 `:36/:37/:41` 的 启用/失效/删除**都有** `v-if="row.source === 'MANUAL'"` | 是**疏漏**不是设计（作者会写这个守卫，且列表实测本体规则确实无「删除」按钮） |
+| 2 | 抽屉控件 | 名称/严重级别/表达式/聚合/描述 五处**均无 `:disabled`** | 本体规则可改 |
+| 3 | 前端载荷 | `save()` 组装的 body = `{name, expression, severity, description, aggregation}` | **确实发这些字段**（不是「UI 没发」） |
+| 4 | API 层 | `api/rules.py:50-55` PUT **无任何 source 检查**，且**恒返回 `status:"updated"`** | 前端 `.then(done)` **必走 ⇒ 必弹「保存成功」** |
+| 5 | service 层 | `rule_service.py:199-203` 本体分支只应用 `enabled`/`severity`，其余**静默丢弃**（docstring 逐字「本体自动生成规则只读（仅启停/severity）」，**是有意设计**） | 库里**不变** |
+
+**上游闸排查（结论均为「无闸」，负结果同样是取证）**：`api/rules.py` 无 source 校验；
+`openEdit(row)` 无 source 判断；路由级只有 `Depends(require_auth)`（**是认证闸，不是 source 闸**）。
+⇒ `existence-is-not-reachability` 要求的「入口到它之间有没有更上游的闸」这一问，答案是**没有**。
+
+#### ② 真机取证（id=55，ONTOLOGY_GENERATED）
+
+`GET /rules` 取列表里第一条本体规则（列表已按当前本体版本过滤 ⇒ 必然是 UI 可见可编辑的那类），
+body **逐字照抄 `save()`** 的组装方式（不是只发 `name`），`name` 改为 `原名__F7PROBE`：
+
+| 观测 | 结果 |
+|---|---|
+| PUT `/api/rules/55` | **200** `{"id":55,"enabled":true,"status":"updated"}` |
+| 回读 | `name`/`severity`/`description`/`expression` **四项全未变** |
+| 全表指纹 | `count` + `sum(crc32(整行))` + `max(update_time)` **前后逐位相同**（56 / 115004537067 / 2026-08-20 09:53:45） |
+
+⇒ 「点编辑 → 改名称 → 保存 → 弹『保存成功』→ 库里什么都没变」**在真机上成立**。
+比原登记还宽一点：`aggregation` 同样在 body 里、同样被丢。
+
+#### ③ 修复与 A/B 判别
+
+`Rules.vue` **+13/−3**：抽屉打开时按 source 判定 `isOntology`，禁用 名称/表达式/描述/聚合，**保留 severity**。
+
+**为什么不采用「给编辑按钮加 MANUAL 守卫」**（那个改法看起来最整齐）：`enabled` 在列表里另有独立按钮，
+但 **`severity` 只在编辑抽屉里才有入口** —— 把编辑按钮对本体规则藏掉，等于让本体规则的 severity
+**永远改不了**，而它恰恰是后端设计里本体规则**该能改**的两样之一。⇒ 那个「整齐」的改法会引入新缺陷。
+
+**A/B 真机判别（浏览器，非「看截图」）**：
+
+| 控件 | A：本体 id=55 | B：人工 id=62 |
+|---|---|---|
+| 规则名称 / 表达式 / 描述 | **disabled** | 可编辑 |
+| 严重级别 | **可编辑** | 可编辑 |
+| 说明文字 | **显示** | 不显示 |
+
+B 侧同时证明**人工规则原有的编辑能力没被改坏**（禁用是按 source 条件生效，不是一刀切）。
+元素取用一律过滤 `getBoundingClientRect().width > 0`，按**内容**（首列 id）定位行，不按 index。
+
+#### ④ 边界（不夸大）
+
+- **未验**：`聚合方式` 的 `:disabled` **当前不可达** —— 库里 47 条本体规则**全为 DETERMINISTIC**、
+  零 SEMANTIC，该控件按 `v-if="form.rule_type === 'SEMANTIC'"` **永不渲染**。保留该绑定是为让守卫齐次
+  （日后本体若生成 SEMANTIC 规则即生效），**但它不构成「已验项」**。
+- **未做**：后端「静默丢弃」本身**未改**（用户拍板只改 UI 层）。⇒ 任何**非 UI 调用方**（脚本/直接调 API）
+  仍会拿到假的 `status:"updated"`。这是**已知残留**，不是遗漏。
+- **生效前提**：cc 前端为镜像内烘入（`build: ./frontend`，容器 nginx `root /usr/share/nginx/html`，**无挂载**），
+  改完**必须 `docker compose build frontend` 并重建容器**才生效 —— 本轮已做。
+
+#### ⑤ 顺带撞出、但**判为不是缺陷**的一条
+
+`GET /rules` 返回 `total=34`，而 `check_rule` 表有 **56** 行。读实现后确认是**有意设计**：
+`list_rules` docstring 逐字「本体自动规则只展示当前版本，人工规则全量展示」，按**当前本体文件 md5 指纹**过滤。
+34 = 9 MANUAL + 25 当前版本本体规则；库里另有 22 条历史版本累积（47−25=22，与 56−34=22 完全吻合）。
+⇒ **不是缺陷**（`implementation-odd-is-not-defect` 的老坑，差点顺着 `34≠56` 写下去）。
+
+#### ⑥ 提交指纹与复核命令
+
+cc：**`7de3e5e`**（`9ca7da1..7de3e5e`，1 文件 +13/−3，已推）。
+
+```bash
+# ① 全表指纹前后必须一致（改前改后各跑一次，找一条本体规则 PUT 一个改过的 name）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e \
+ "select count(*) rows_, sum(crc32(concat_ws(\"|\", id, rule_name, expression, coalesce(description,\"\"), severity, enabled, aggregation))) fp, max(update_time) max_upd from contract_check.check_rule;"'
+
+# ② 列表 total 应为 34（当前版本过滤），而全表 56 —— 两者不等是设计，不是缺陷
+# ③ 浏览器 A/B：本体规则抽屉四控件 disabled / severity 可点；人工规则全部可编辑
+```
+
+**取证方式说明**：登录凭据全程未进对话记录 —— 起了一个只监听 `127.0.0.1` 的临时取 token 服务，
+由**页面自己去取**并写入 `localStorage['cc_token']`，脚本只回传布尔值；取完即 kill（复核时它已不存在）。
