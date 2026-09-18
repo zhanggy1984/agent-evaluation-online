@@ -235,10 +235,10 @@ function agentCounts(): BackflowByAgent[] {
             <th>状态</th>
             <th>agent / 接口</th>
             <th>错误</th>
-            <th>input_hash</th>
+            <th title="入参指纹：指纹相同的失败会被聚成同一个回流簇">input_hash</th>
             <th>代表 trace</th>
             <th>次数</th>
-            <th>fix_version</th>
+            <th title="修复版本号：认领前为空，修复完成后由 offline 回写">fix_version</th>
             <th>首现 / 最新</th>
           </tr>
         </thead>

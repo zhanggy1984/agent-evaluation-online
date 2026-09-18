@@ -38,11 +38,11 @@ function reqStatus(r: LlmFailureItem): string {
       <thead>
         <tr>
           <th>时间</th>
-          <th>agent</th>
-          <th>trace_id</th>
+          <th title="产生该事件的智能体名（good-question / contract-check / smart-procurement / customer-service）">agent</th>
+          <th title="一次请求链路的唯一标识：同一 trace_id 的所有事件属同一次调用">trace_id</th>
           <th>接口</th>
           <th>请求状态</th>
-          <th>LLM 节点</th>
+          <th title="LLM 调用在链路中的节点名；同一次请求可能调用多次 LLM，各为一条事件">LLM 节点</th>
           <th>模型</th>
           <th>LLM 错误</th>
         </tr>

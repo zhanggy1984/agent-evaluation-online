@@ -92,46 +92,52 @@ onMounted(() => void load())
     <p v-if="notice" class="ok">{{ notice }}</p>
 
     <p v-if="loading">加载中…</p>
-    <table v-else class="tbl">
-      <thead>
-        <tr>
-          <th>用户名</th>
-          <th>显示名</th>
-          <th>角色</th>
-          <th>状态</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="u in rows" :key="u.id">
-          <td>
-            <code>{{ u.username }}</code>
-            <span v-if="me?.username === u.username" class="hint">（我）</span>
-          </td>
-          <td>{{ u.display_name || '—' }}</td>
-          <td>
-            <select
-              :value="u.role"
-              :disabled="busyId === u.id"
-              @change="patch(u, { role: ($event.target as HTMLSelectElement).value })"
-            >
-              <option value="viewer">viewer</option>
-              <option value="admin">admin</option>
-            </select>
-          </td>
-          <td>{{ u.status === 1 ? '启用' : '停用' }}</td>
-          <td>
-            <button :disabled="busyId === u.id" @click="patch(u, { status: u.status === 1 ? 0 : 1 })">
-              {{ u.status === 1 ? '停用' : '启用' }}
-            </button>
-            <button :disabled="busyId === u.id" @click="resetPassword(u)">重置口令</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <!-- P2-22（2026-09-18）：同 AdminConfigsView —— 原先裸 <table class="tbl">，
+         而 .tbl 零规则，表格无任何样式。按全仓惯例改 .panel 包裹。 -->
+    <div v-else class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>用户名</th>
+            <th>显示名</th>
+            <th>角色</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in rows" :key="u.id">
+            <td>
+              <code>{{ u.username }}</code>
+              <span v-if="me?.username === u.username" class="hint">（我）</span>
+            </td>
+            <td>{{ u.display_name || '—' }}</td>
+            <td>
+              <select
+                :value="u.role"
+                :disabled="busyId === u.id"
+                @change="patch(u, { role: ($event.target as HTMLSelectElement).value })"
+              >
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+              </select>
+            </td>
+            <td>{{ u.status === 1 ? '启用' : '停用' }}</td>
+            <td>
+              <button :disabled="busyId === u.id" @click="patch(u, { status: u.status === 1 ? 0 : 1 })">
+                {{ u.status === 1 ? '停用' : '启用' }}
+              </button>
+              <button :disabled="busyId === u.id" @click="resetPassword(u)">重置口令</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <h3>新建账号</h3>
-    <form class="tbl" @submit.prevent="submit">
+    <!-- P2-22（2026-09-18）：此处原为 class="tbl" —— 表单跨语义复用了表格的类名，
+         且 .tbl 本身零规则。一并去掉，避免留下「有类名、查不到规则」的悬空类。 -->
+    <form @submit.prevent="submit">
       <label>用户名 <input v-model="form.username" required maxlength="64" /></label>
       <label>口令 <input v-model="form.password" type="password" required minlength="8" maxlength="64" /></label>
       <label>显示名 <input v-model="form.display_name" maxlength="64" /></label>

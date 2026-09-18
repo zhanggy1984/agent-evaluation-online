@@ -393,8 +393,8 @@ const rows = computed(() => detail.value?.conversions ?? [])
         <table v-else>
           <thead>
             <tr>
-              <th>case_id</th>
-              <th>payload_id</th>
+              <th title="该回流簇在 offline 侧对应的评测用例编号">case_id</th>
+              <th title="回流载荷的幂等键：组装 case 时生成，重填时复用同一个值">payload_id</th>
               <th>类型</th>
               <th>offline 状态</th>
               <th>回查状态</th>

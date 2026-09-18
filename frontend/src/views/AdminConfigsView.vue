@@ -81,36 +81,41 @@ onMounted(() => void load())
     <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
     <p v-if="notice" class="ok">{{ notice }}</p>
     <p v-if="loading">加载中…</p>
-    <table v-else class="tbl">
-      <thead>
-        <tr>
-          <th>键</th>
-          <th>值</th>
-          <th>version</th>
-          <th>更新人 / 时间</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="i in items" :key="i.key">
-          <td>
-            <code>{{ i.key }}</code>
-            <div v-if="configKeyDesc(i.key)" class="key-desc" :class="{ dead: configKeyIsDead(i.key) }">
-              {{ configKeyDesc(i.key) }}
-            </div>
-          </td>
-          <td><input v-model="drafts[i.key]" :aria-label="i.key" /></td>
-          <td>
-            {{ i.version }}
-            <span v-if="i.is_default" class="hint">（seed 默认，库内无行）</span>
-          </td>
-          <td class="hint">{{ i.updated_by || '—' }} / {{ i.updated_ts || '—' }}</td>
-          <td>
-            <button :disabled="saving === i.key" @click="save(i)">保存</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <!-- P2-22（2026-09-18）：此前是裸 <table class="tbl">，而 .tbl 在 style.css 里零规则
+         ⇒ 本页表格完全没有背景/边框/圆角/内边距，与其余 10 处表格外观不一致。
+         按全仓惯例改为 .panel 包裹（表格本身不带类名）。 -->
+    <div v-else class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>键</th>
+            <th>值</th>
+            <th>version</th>
+            <th>更新人 / 时间</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="i in items" :key="i.key">
+            <td>
+              <code>{{ i.key }}</code>
+              <div v-if="configKeyDesc(i.key)" class="key-desc" :class="{ dead: configKeyIsDead(i.key) }">
+                {{ configKeyDesc(i.key) }}
+              </div>
+            </td>
+            <td><input v-model="drafts[i.key]" :aria-label="i.key" /></td>
+            <td>
+              {{ i.version }}
+              <span v-if="i.is_default" class="hint">（seed 默认，库内无行）</span>
+            </td>
+            <td class="hint">{{ i.updated_by || '—' }} / {{ i.updated_ts || '—' }}</td>
+            <td>
+              <button :disabled="saving === i.key" @click="save(i)">保存</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <p class="hint">
       注：审计记录当前没有独立的查询入口，本页不展示变更历史。
     </p>

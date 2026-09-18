@@ -70,6 +70,11 @@ input {
   background: #fff;
   color: var(--brand);
   border: 1px solid var(--border);
+  /* P2-21（2026-09-18）：本类在模板里**从不与 .btn 同用**（21 处调用全是单独用），
+     故 .btn 上的 border-radius/font-size 一点都继承不到，此前落到浏览器 UA 默认值
+     （圆角 2px、字号 13.33px），与 .btn 并排时明显不齐。此处补齐两者的共同外观。 */
+  border-radius: 4px;
+  font-size: 14px;
 }
 
 .panel {

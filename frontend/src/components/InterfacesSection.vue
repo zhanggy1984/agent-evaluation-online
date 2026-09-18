@@ -56,9 +56,9 @@ function fmtTok(v: number): string {
             <th class="num">请求数</th>
             <th class="num">错误</th>
             <th class="num">超时</th>
-            <th class="num">P50</th>
-            <th class="num">P95</th>
-            <th class="num">P99</th>
+            <th class="num" title="延迟分位数：P50 = 50% 的请求快于该值（中位数），P95/P99 同理">P50</th>
+            <th class="num" title="延迟分位数：95% 的请求快于该值">P95</th>
+            <th class="num" title="延迟分位数：99% 的请求快于该值">P99</th>
           </tr>
         </thead>
         <tbody>
@@ -98,7 +98,12 @@ function fmtTok(v: number): string {
               <td class="num">{{ fmtInt(r.total) }}</td>
               <td class="num" :class="{ red: r.error > 0 }">{{ r.error }}</td>
               <td class="num">{{ llmRate(r) }}</td>
-              <td class="muted">▸ {{ expanded === r.interface ? '收起' : `展开 ${r.models.length} 个模型` }}</td>
+              <td class="muted">
+                <!-- P2-29（2026-09-18）：箭头此前恒为 ▸，展开/收起两态无视觉区分。
+                     旋转靠 .caret.on，不改文字（改了会破坏「点击展开」这句话的可读性）。 -->
+                <span class="caret" :class="{ on: expanded === r.interface }">▸</span>
+                {{ expanded === r.interface ? '收起' : `展开 ${r.models.length} 个模型` }}
+              </td>
             </tr>
             <tr v-if="expanded === r.interface" class="sub">
               <td colspan="5">
@@ -226,5 +231,14 @@ table.inner td {
 tr.sub td {
   background: #fafbfc;
   padding: 4px 8px 10px;
+}
+
+.caret {
+  display: inline-block;
+  transition: transform 0.15s;
+}
+
+.caret.on {
+  transform: rotate(90deg);
 }
 </style>

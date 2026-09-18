@@ -123,8 +123,8 @@ onMounted(() => {
         <thead>
           <tr>
             <th>时间</th>
-            <th>agent</th>
-            <th>trace_id</th>
+            <th title="产生该事件的智能体名（good-question / contract-check / smart-procurement / customer-service）">agent</th>
+            <th title="一次请求链路的唯一标识：同一 trace_id 的所有事件属同一次调用">trace_id</th>
             <th>接口</th>
             <th>最近节点</th>
             <th>状态</th>
