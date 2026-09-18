@@ -4,6 +4,7 @@ FakeAsyncSession 替换 DB 读（等值 select/get 语义对齐 auth.py 用法�
 覆盖：登录正/误/锁定/停用、防枚举统一口径、refresh 轮换吊销即时生效、logout 幂等、
 me 回显 + 401 分支（deps.get_current_user 独立测试在 test_api_trace.py 内补）。
 """
+import time
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -90,7 +91,26 @@ def test_login_lockout_after_5_fails_15min():
                           json={"username": "admin", "password": "wrong"}).status_code == 401
         locked = c.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
     assert locked.status_code == 423
-    assert locked.json() == {"code": "ERR_AUTH_0003", "message": "登录失败次数过多，已锁定 15 分钟"}
+    body = locked.json()
+    assert body["code"] == "ERR_AUTH_0003"
+    assert body["message"] == "登录失败次数过多，已锁定 15 分钟"
+    # P0-5：随 423 下发剩余秒数。刚锁上 ⇒ 应贴近整窗（不写 ==900 防取整抖动）
+    assert 899 <= body["retry_after_s"] <= 900
+
+
+def test_lockout_retry_after_counts_down_from_oldest_fail():
+    """P0-5 的判别性用例：解锁时刻 = **最早**那次失败滑出窗口，不是「从此刻起 15 分钟」。
+
+    直接铺 5 条 800 秒前的失败（模拟用户已错了 13 分钟）⇒ 剩余应约 100 秒。
+    若实现写成「固定返回 900」，本用例必红——这正是服务端算而非客户端本地起算的理由。
+    """
+    now = time.time()
+    auth_api._login_fails["admin"] = [now - 800] * 5
+    fake = FakeAsyncSession(users=[_user_row()])
+    with _client(fake) as c:
+        locked = c.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+    assert locked.status_code == 423
+    assert 98 <= locked.json()["retry_after_s"] <= 100
 
 
 def test_refresh_rotates_and_revokes_old():

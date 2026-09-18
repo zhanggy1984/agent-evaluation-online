@@ -46,14 +46,24 @@ export function accessToken(): string | null {
   return read(ACCESS_KEY)
 }
 
-// 语言无关的错误载荷：后端统一 {code, message}（detail §8.9）
+// 语言无关的错误载荷：后端统一 {code, message}（detail §8.9），并**可能**带附加字段
+// （AppError.extra 并入顶层，见 backend/app/core/errors.py；先例 ERR_CLUSTER_0003、
+// P0-5 的 423 retry_after_s）。附加字段此前被丢弃 ⇒ 消费方读不到。
 export class ApiError extends Error {
   code: string
   status: number
-  constructor(status: number, code: string, message: string) {
+  /** 响应体顶层除 code/message 之外的字段；无附加字段时为空对象。 */
+  extra: Record<string, unknown>
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    extra: Record<string, unknown> = {},
+  ) {
     super(message)
     this.status = status
     this.code = code
+    this.extra = extra
   }
 }
 
@@ -105,10 +115,15 @@ export async function api<T>(path: string, init: RequestInit = {}, withAuth = tr
   if (!resp.ok) {
     let code = 'UNKNOWN'
     let message = `HTTP ${resp.status}`
+    let extra: Record<string, unknown> = {}
     try {
-      const body = (await resp.json()) as { code?: string; message?: string }
-      if (body.code) code = body.code
-      if (body.message) message = body.message
+      const body = (await resp.json()) as unknown
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const { code: c, message: m, ...rest } = body as Record<string, unknown>
+        if (typeof c === 'string' && c) code = c
+        if (typeof m === 'string' && m) message = m
+        extra = rest
+      }
     } catch {
       /* 非 JSON 错误体：保底用状态码 */
     }
@@ -116,7 +131,7 @@ export async function api<T>(path: string, init: RequestInit = {}, withAuth = tr
       clearAuth()
       emitAuthExpired() // 广播 → main 回 /login
     }
-    throw new ApiError(resp.status, code, message)
+    throw new ApiError(resp.status, code, message, extra)
   }
   return (await parse(resp)) as T
 }

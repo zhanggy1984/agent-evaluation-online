@@ -55,7 +55,16 @@ def _check_locked(username: str) -> None:
     recent = [t for t in _login_fails.get(username, []) if now - t < _LOCK_WINDOW_S]
     _login_fails[username] = recent
     if len(recent) >= _LOCK_MAX_FAILS:
-        raise AppError("ERR_AUTH_0003", "登录失败次数过多，已锁定 15 分钟", http=423)
+        # 解锁时刻 = **最早**那次失败滑出 900s 窗口（recent 保持 append 序，[0] 即最早）
+        # ⇒ 剩余秒数只有服务端算得出来（客户端给不出「第一次失败是什么时候」），
+        # 故随 423 下发供登录页显示倒计时（P0-5）。max(1,..) 防边界取整到 0。
+        retry_after = max(1, int(_LOCK_WINDOW_S - (now - recent[0])))
+        raise AppError(
+            "ERR_AUTH_0003",
+            "登录失败次数过多，已锁定 15 分钟",
+            http=423,
+            extra={"retry_after_s": retry_after},
+        )
 
 
 def _record_fail(username: str) -> None:
