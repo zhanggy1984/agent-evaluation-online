@@ -76,6 +76,21 @@
 > 但 `const q = {…}` 绕过了新鲜对象字面量的多余属性检查；③ 读数本身不假，**假在我给的归因**。
 > ⇒ 与批 6 的 P1-10 **成因不同**：那次是「读数与改前同形」（判据无判别力），这次**判据有判别力、归因链断了**。
 > 本条决定不修的部分（跨页窗口 24h / 7d）与三成因实测对照表**全在 §十二**，本段不重复。
+>
+> **批 8 处置与验收**（2026-09-18，**P1-7① 改名 + P1-6 部分落地**；用户拍板「只做接口页那一列」）：
+> 动手前重估了 P1-6 —— 原条目写成「加个表头」，实际要动**五套互不相同的后端查询面**，且
+> **没有任何一张表能只靠前端排序得到正确答案**（`/anomalies`·`/llm-failures` 是 `size≤100` 截断、
+> `/interfaces` 是 `terms size=50`、`/traces`·`/backflow` 各自分页）⇒ **在截断样本上排序会让「被截掉」
+> 看起来像「全窗口没有更多错误」**，故收窄为只做接口页**已存在子聚合**的 `order`，不引入通用排序机制。
+> 后端 3 文件 + 前端 4 文件 + 测试 3 文件；`pytest` **497 passed**、`vitest` **190 passed / 13 files**、
+> `npm run build`（含 `vue-tsc`）**exit 0** → `docker cp` → 真机取证。
+> 🔴 **本批撞出并修掉一条自己引入的回归**：在 LLM 级 tab 点「失败」排序会**被踢回请求级 tab**
+> （`payload=null` 卸载了 section，tab 是它的内部 ref）—— **数据是对的所以不报错**，人只是莫名换了 tab。
+> 修法 = `sort` 拆独立 watch 且不清空 payload；新增 2 条判别性 spec（回退 ⇒ **2 failed / 2**）。
+> ⚠️ **改错了一次改名对象**：我以为 `MENUS` 是菜单名的唯一来源，改了 spec 期望文字却没改
+> `BackflowClusterDetailView.vue` 的**返回按钮**，被那条「按文字找」的护栏当场拦下 —— 护栏有效恰恰
+> 因为它是按文字找的。**站点识别错** 与 **漏改站点** 是两个方向，别只防后者。
+> **逐条证据、取样集实测、未验清单全在 §十三，本段不重复。**
 
 ## 一、走查口径（可复核性说明）
 
@@ -325,8 +340,8 @@
 
 | # | 现象 | 建议 | 取证 |
 |---|---|---|---|
-| P1-6 | **全站表格不可排序**：`/interfaces`、`/anomalies`、`/traces` 表头实测 `cursor:auto`、无按钮无箭头，点「错误」列头顺序不变。**✅ 复验成立且比原文更强**：全前端 `sort` 仅 3 类命中 —— 两个 `.spec.ts` 的断言、`BackflowView.vue:84` 的接口下拉去重排序 ⇒ **不只那三张表，是全仓零表格排序** | 至少支持 时间 / 请求数 / 错误 / P95 四列排序 | DOM 实测 + 复验轮静态 |
-| P1-7 | ⚑ **入口命名是黑话且边界不清**：`回流看板` 完全猜不到（实为「错误聚类 + 回归回流状态」）；`异常` 与 `LLM 失败` 重叠 —— `/anomalies` 列表里**就有** `错误=llm_connection` 的行；`接口` 实为「按 API 路径聚合的指标」。**②（重叠）✅ 复验成立（ES 实测，已不是推测）**：静态先看到两页 `node` 互斥（`es.py:316` request / `es.py:333` llm_call），故一度标「待真机」；**真机 agg 查完 = 重叠确实存在** —— `node=request` + `status=error` 的 `error_type` 分桶里**真有 `llm_connection` 5 条 + `llm_timeout` 6 条**，与 `llm-failures`（`llm_connection` 29 / `llm_timeout` 28）**同值名两头出现**。<br>⚠️ **但性质要说准：这是「命名重叠」不是「数据重复」** —— request 级的 `llm_*` 指「本次请求最终失败、归因到 LLM」，llm_call 级指「LLM 调用本身失败」，**两页口径并不重复**；重叠的是**给人看的名字**。⇒ 建议随之收窄：**不必合并页面，只需让两页的名称与页首说明把区别讲清** | `异常→接口异常`、`回流看板→错误聚类与回流`；每页顶部加一句「本页看什么 / 要看别的去哪个页」 | 页面原文 + 复验轮静态 |
+| P1-6 | ⚠️ **部分完成（批 8，2026-09-18）—— 只落了 `/interfaces` 双 tab 的错误/失败列**，其余面（时间 / 请求数 / P95、`/anomalies`、`/traces`）**未做，仍算未修**，理由见 §十三。原论断：**全站表格不可排序**：`/interfaces`、`/anomalies`、`/traces` 表头实测 `cursor:auto`、无按钮无箭头，点「错误」列头顺序不变。**✅ 复验成立且比原文更强**：全前端 `sort` 仅 3 类命中 —— 两个 `.spec.ts` 的断言、`BackflowView.vue:84` 的接口下拉去重排序 ⇒ **不只那三张表，是全仓零表格排序** | 至少支持 时间 / 请求数 / 错误 / P95 四列排序 | DOM 实测 + 复验轮静态 |
+| P1-7 | ✅ **已修（批 8，2026-09-18）**：`异常` → `接口异常`、`回流看板` → `错误闭环`，返回按钮同步改名（见 §十三）。剩下的是**条目②的「边界」部分未判**。原文：⚑ **入口命名是黑话且边界不清**：`回流看板` 完全猜不到（实为「错误聚类 + 回归回流状态」）；`异常` 与 `LLM 失败` 重叠 —— `/anomalies` 列表里**就有** `错误=llm_connection` 的行；`接口` 实为「按 API 路径聚合的指标」。**②（重叠）✅ 复验成立（ES 实测，已不是推测）**：静态先看到两页 `node` 互斥（`es.py:316` request / `es.py:333` llm_call），故一度标「待真机」；**真机 agg 查完 = 重叠确实存在** —— `node=request` + `status=error` 的 `error_type` 分桶里**真有 `llm_connection` 5 条 + `llm_timeout` 6 条**，与 `llm-failures`（`llm_connection` 29 / `llm_timeout` 28）**同值名两头出现**。<br>⚠️ **但性质要说准：这是「命名重叠」不是「数据重复」** —— request 级的 `llm_*` 指「本次请求最终失败、归因到 LLM」，llm_call 级指「LLM 调用本身失败」，**两页口径并不重复**；重叠的是**给人看的名字**。⇒ 建议随之收窄：**不必合并页面，只需让两页的名称与页首说明把区别讲清** | `异常→接口异常`、`回流看板→错误聚类与回流`；每页顶部加一句「本页看什么 / 要看别的去哪个页」 | 页面原文 + 复验轮静态 |
 | P1-8 | **关键枚举零字典、零 tooltip**：`status ok/error`、`error_type HTTP_422/…/NETWORK/llm_timeout`、回查分布 `pending/passed/failed/invalidated/superseded`、节点名 `request/log/llm_call`。**✅ 复验成立**：全前端 `:title` 绑定**仅 2 处**（均 `BackflowView.vue`，`:257` `row.error_msg` / `:259` `row.input_hash`），确为截断值补全，**零解释名词**。（原文「40 个 title」是**该模板在 DOM 里的实例数**，非代码处数 —— 两说法不矛盾，但引用时勿当成「40 个代码点」） | 表头 / 枚举加 tooltip 或字典页 | DOM 实测 + 复验轮静态 |
 | P1-9 | ✅**已修（批 1；批 2a 补漏一处）** ⚑ **内部设计语言与工单号直接上屏**：`兜底/降级现场不计入接口失败率（v1 不回流、L3 二期接入）`、`其 version 即 D19 wordlist_version`、`导出归 T-3.13`、`部分时段回退实时口径（56 个整点小时无 rollup 覆盖）` | 面向用户的说明只讲现象（「口径可能滞后 1 小时」），把 `v1 / L3 / D19 / T-3.13` 移进 title 或删除 | 页面原文 |
 | P1-10 | ✅**已修（批 6）** **`/traces` 页码与总数自相矛盾**：同屏显示 `共 1952 条 trace（检索深度上限 200）` 与 `1 / 10`，不说剩下 1752 条怎么办；7 天检索窗**只在空态里**才出现 | 分页旁写清「仅检索最近 7 天、最多 200 条」；补时间窗筛选控件（其余各页都有，只此页没有） | 页面原文 |
@@ -711,3 +726,149 @@ P1-6 / P1-7① / P1-13 / P1-18 / P1-19 / P1-20 / P2-23 / P2-25 / P2-27。
   而本仓 tsconfig 的 lib 不含 es2022 ⇒ `vue-tsc` 报错、**`npm run build` 根本不会产出 dist**。
   这是我上一轮少跑一次 build 的直接原因（`.at()` 那条测试是 build 之后补的）。
   已改用 `mock.lastCall`。**教训：改完 spec 也要跑一次 `npm run build`**，别只跑 `npm test`（vitest 不做类型检查）。
+
+## 十三、批 8（2026-09-18）：P1-7① 改名 + P1-6 **部分**落地
+
+### 范围（用户拍板）
+
+原诉求是「P1-6 / P1-7①」两条一起。动手前我先把 P1-6 的成本重估了一遍，**结论与用户最初的判断不同**：
+
+> **没有任何一张表能只靠前端排序得到正确答案。** 清单原文把这件事写成「加个表头」，
+> 但实际要动的是**五套互不相同的后端查询面**：`/anomalies`、`/llm-failures` 是 ES `size≤100` 截断，
+> `/interfaces` 是 ES `terms size=50`，`/traces` 走 ES 分页、`/backflow` 走 MySQL 分页。
+> **在截断样本上做前端排序是最坏的一种**：结果看起来像「全窗口排序」，实际只是「已被截掉的
+> 那一批里重排」——用户会据此得出「错误只有这么多」的错误结论。
+> ⇒ 于是收窄为：**只做接口页那一列（+ P1-7①）**，接口页只需给**已存在的**子聚合加一个 `order`，
+> 不引入通用排序机制。用户选「只做接口页那一列 + P1-7①（推荐）」。
+
+### P1-7① 改名（5 处代码 + 1 处护栏）
+
+`异常` → `接口异常`（它与「LLM 失败」的边界确实不清：`/anomalies` 里就有 `错误=llm_connection` 的行，
+所以「接口异常」这个限定词是**信息**，不是换个说法）、`回流看板` → `错误闭环`（用户拍板）。
+
+改动点：`App.vue`（`MENUS` 数组 + 注）、`router/index.ts`（指引注释）、
+`BackflowClusterDetailView.vue`（返回按钮文案）、`BackflowView.vue`（文件头注释）、
+`BackflowClusterDetailView.spec.ts`（按文字找按钮的护栏）。
+
+> ⚠️ **改错了一次对象，被护栏当场拦下**：我按「菜单名唯一来源 = `App.vue` 的 `MENUS`」的理解，
+> 把 `spec:558` 期望文字改成 `错误闭环`，但**没改** `BackflowClusterDetailView.vue:286` 的
+> `← 回流看板` 返回按钮 ⇒ 该用例红。回查才发现：**这条 spec 找的根本不是菜单名，是返回按钮**，
+> 我给它写的注释（「菜单名 `回流看板` → `错误闭环`，是这次改名唯一的自动化护栏」）**是错的**，已订正。
+> **教训与 `multi-site-doc-edit-enumerate-first` 同源但方向相反**：那次是「漏改站点」，
+> 这次是**站点识别错**——以为拿到的是「唯一来源」，其实还有一个**同名的独立文案**。
+> 护栏起作用恰恰因为它**按文字找**（若当初图省事改成按 `name` 找，这条就永远不会红）。
+
+### P1-6 接口页排序（**双 tab 同构**，用户拍板）
+
+后端 `sort` 白名单目前只放一个值 `error`（不做通用排序机制）：
+
+| 层 | 改动 |
+|---|---|
+| `es.py::build_metrics_interfaces_body` | 加 `sort` 形参；`sort="error"` ⇒ req 的 `terms` 加 `order: {err: desc}`、llm 加 `order: {fail: desc}`（**各自指向本 tab 失败列既有的子聚合名**） |
+| `api/metrics.py` | 加 `_validate_sort`（非 `error` ⇒ 400 `ERR_METRICS_0001`）+ `sort` Query + `_load_interfaces` 透传 |
+| `api/metrics.ts` | `metricsInterfaces(agent, window, sort?)`，`qs` 补 `sort` |
+| `InterfacesView.vue` | 本页局部 `sort` ref（**不进 `useMetricFilter`**，避免顺带改别的页的默认值）+ `toggleSort` |
+| `InterfacesSection.vue` | 「错误」/「失败」两个表头可点、选中态显示 ` ▾`、顶部提示条 |
+
+> 📌 **本批最关键的一条语义**：ES `terms` 的 `order` **同时决定取哪 top N 桶**，不是「同一批里重排」。
+> ⇒ 按 `err` 降序得到的是「**错误最多的 50 个接口**」，**未必包含请求量最大的接口**。
+> UI 上必须写明，否则用户会以为「还是那 50 个、只是换了顺序」，把「没上榜」误读成「没出错」。
+> 提示条文案（`InterfacesSection.vue`）：**「按错误数排序：每个 tab 只列出错误最多的 50 个接口
+> （不是请求量最大的 50 个）—— 未上榜 ≠ 没出错。」**
+> ⚠️ 该条**有真机实测支撑**，不是照 ES 文档抄的：见下面「取样集实测」。文案里的「50」是写死的常量，
+> 与 `es.py` 的 `size: 50` 是**两处独立的值**，改一处不会带动另一处。
+
+### 取样集实测（7d 窗，同参对照）
+
+| 请求 | 返回条数 | 榜上接口 |
+|---|---|---|
+| `/metrics/interfaces?window=7d` | 50 | `GET /api/tasks/{id}` / `POST /api/auth/login` / `POST /api/chat/{id}` … |
+| `/metrics/interfaces?window=7d&sort=error` | 50 | `POST /api/v1/auth/login` / `GET /api/tasks/{id}/result` / `POST /api/chat/{id}` … |
+
+**两者都顶满 50，但集合不同**（`sameSet: false`）——默认榜上的 `PUT /api/rules/{id}`、
+`POST /api/v1/reviews/{id}/score`、`PUT /api/v1/suppliers/SUP-011/status` 等**在排序榜上消失**，
+换进来 `GET /health`、`POST /auth/login`、`GET /api/v1/openapi.json` 等低频接口。
+⇒ 这才是「`order` 改变取样集」的直接证据；**同一批重排的话集合必然相等**。
+> ⚠️ 顺带一条如实说明：该窗排序榜**榜尾是 0 错误**的接口 —— 出错接口不足 50 个时，剩余名额由
+> 高流量接口按 `doc_count` 补进来。所以「错误最多的 50 个」严格说只在出错接口 ≥50 时字面成立；
+> 文案本身不算错（排序榜就是全量按错误降序取前 50），但别把它读成「榜上每行都出错」。
+> ⚠️ 而**默认视图（24h）只有 47 个接口 < 50 ⇒ 截断根本没触发**，那一面的取证是**零判别力**的
+> （新旧同形、只换顺序）。这正是 `criterion-structural-vs-capacity` 的又一实例：
+> **结构面（order 进了 body）在 24h 就能证，容量面（取哪 50 个）必须另找 ≥50 的窗口**。
+
+### 🔴 本批撞出并修掉的回归：点自己 tab 的表头会被踢到另一个 tab
+
+真机取证时撞到：在 **LLM 级** tab 点「失败」排序 → 页面**跳回请求级 tab**。
+
+成因：`toggleSort` → `sort` 变 → **合体 watch** 里 `payload.value = null` → `v-else-if="payload"`
+卸载 `<InterfacesSection>` → 「请求级/LLM 级」`tab` 是**该组件的内部 ref** ⇒ 重挂时重置为 `'request'`。
+**数据是对的，所以不报错**，只是人莫名其妙换了个 tab。
+
+> 这**不是既有缺陷被暴露**：改动前 LLM 级 tab 上没有任何可点元素，触发不到；**是本批排序功能引入的**。
+> 修法（最小）：把 `sort` 拆成**独立 watch 且刻意不清空 payload** —— 保留旧数据到新结果到达，
+> 组件不卸载 ⇒ tab 保持，顺带没有闪烁。窗口/agent 的 watch **保持清空**（换数据面时不能拿旧数字冒充）。
+
+- 新增 `src/views/InterfacesView.spec.ts`（2 条）专门钉这件事。
+- **判别性回退**：把 watch 合回去 ⇒ **2 failed / 2**（两条全红）；复原后绿。
+- 真机复验：LLM tab 点「失败」→ 仍 `ON:LLM 级接口（3）`、表头 `失败 ▾`、URL 带 `sort=error`。
+
+### 缓存 key（改动时主动识别出的坑，未等它发作）
+
+`/metrics/interfaces` 走 `_cached(...)`，而 key = `endpoint|agent|window`。**`sort` 不进 key 的话，
+「按错误排序」会命中默认排序的缓存条目** —— 症状是「点了排序没反应」，且**只在 TTL（默认 60s）内复现**，
+TTL 一过又好了，属于最难查的一类。故 key 改为 `f"interfaces|{sort or 'default'}"`，并补了一条**反向保护**测试：
+
+> `test_interfaces_sort_must_be_in_cache_key` 的判别点是 **`len(es.calls) == 2`**。
+> 只断言「第二次也拿到了 200」是验不出来的 —— **缓存返回的也是 200**。
+
+### 测试与判别性回退（后端）
+
+`pytest`（全量）**497 passed**。三处改动逐个撤销，各产生对应的红，**逐层累加、不重复**：
+
+| 回退 | 红 |
+|---|---|
+| 只把 `sort` 从缓存 key 拿掉 | **1 failed / 7 passed**（只有那条反向保护红，其余 sort 用例不依赖 key —— 正是预期的分离） |
+| 再把 `sort` 从 `_load_interfaces` 里去掉 | **2 failed** |
+| 再把 `es.py` 的 `order` 关掉 | **3 failed / 48 passed** |
+
+复原后全绿。前端 `vitest` **190 passed / 13 files**（新增 `api/metrics.spec.ts` 4 条 + `InterfacesView.spec.ts` 2 条），
+`npm run build`（含 `vue-tsc --noEmit`）**exit 0**。
+
+> `metrics.spec.ts` 沿用批 7 的教训：**mock 到哪一层就验不到那一层之后** ——
+> 组件 spec mock 掉 `../api/metrics`，只能证明「组件把 sort 传下去了」；
+> 所以另起一个 mock `./client`、**真取 URL 字符串**的文件，把「sort 真的进了 URL」钉死在最外层。
+
+### 真机证据
+
+- 导航实测：`["总览","接口","接口异常","LLM 失败","链路查询","错误闭环", ...]` ⇒ 两处改名生效。
+- 请求级 tab：默认 47 行按请求数降序（982/25/18/9…）；点「错误」→ 表头 `错误 ▾`、class `num sortable on`、
+  顺序变 **2/2/2/1/1/1/1/1**、尾部为 0；**请求 URL 带 `sort=error`**。
+- LLM 级 tab：点「失败」→ 仍停本 tab、表头 `失败 ▾`、`sort=error`。
+- 取样集对照见上表。
+- ⚠️ **部署前必须先重启 `obs-backend`**：`obs-backend` 有 bind mount 但 **没有 `--reload`**，
+  已挂载 ≠ 进程在用（同 `hot-mount-is-not-process-reload`）。本次是重启后才取到新行为。
+
+### 未验（不许当成已验）
+
+- **返回按钮 `← 错误闭环` 未真机看过**：它只在 `/backflow/clusters/:id` 上，本次没走这条路径。
+  证据面**仅** `BackflowClusterDetailView.spec.ts` 那 1 条单测（它按文字找按钮，**恰好是判别性的**）。
+- **提示条文案的可读性**未经真实用户验证（只有我读了一遍）。
+- **排序态的持久化**：`sort` 是页面局部 ref，切换菜单走一圈回来会重置为默认 —— 未判这是否算问题。
+- 接口页 24h 窗**只有 47 个接口 < 50** ⇒ 该窗下「取哪 50 个」的行为未取证（只在 7d 取到）。
+
+### 批 8 处置后的待修数
+
+9 − 1 = **8 条**：P1-6（**部分完成，仍算未修**）/ P1-13 / P1-18 / P1-19 / P1-20 / P2-23 / P2-25 / P2-27。
+（**继承文首同一个 ±1 的不确定性**，勿当精确数引用。）
+
+### 批 8 附带动作
+
+- 新 dist 经 `docker cp` 推进 `obs-frontend`（`Mounts: []`），本批共 cp **2 次**（第二次是修上面那条回归）。
+  最新 = `index-DbgOkH1f.js` / `index-CPYAbfpf.css`。
+- **残留实测**（`docker exec obs-frontend ls /usr/share/nginx/html/assets`，**当场跑的、不是推的**）：
+  **17 个文件 = 9 个 `.js` + 8 个 `.css`**（js/css 代数不等 —— 第二次 build 只改 JS，css hash 没变）。
+  ⇒ 容器里躺着 **9 代 JS**，只有最新那代被 `index.html` 引用。⚠️ 此残留**与批 5/6/7 记的「合并处置」同案**，
+  本批**未清理**（清理要先列文件给用户定，不许自己删）。
+- 两处**注释**里的「回流看板」**未改也未判**：`format.ts:45`、`backflowLabels.ts:1`。它们指的是
+  **功能域**（backflow 模块本名就是「回流」），不是菜单文案 ⇒ 倾向保留，但**本批没做穷尽判定**，
+  留作下次改名的站点全集复核项。

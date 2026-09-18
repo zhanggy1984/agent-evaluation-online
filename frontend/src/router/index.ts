@@ -1,5 +1,6 @@
 // 路由（IA 重构 v1.13）：五个一级菜单各一页——总览(/dashboard 落点) / 接口 / 异常 / LLM 失败 /
 // 链路查询；trace 详情 /traces/:agent/:traceId 下钻。登录态看 localStorage access token。
+// ⚠️ 菜单名（含第六个「错误闭环」）**不在本文件**，在 `App.vue` 的 `MENUS` 数组 —— 改名字去那里。
 // 守卫：受保护路由无 token → /login；已登录访问 /login → 总览。
 // 落点：'/' 与登录后首落 /dashboard（总览），未命中兜底 /dashboard。
 import { createRouter, createWebHistory } from 'vue-router'

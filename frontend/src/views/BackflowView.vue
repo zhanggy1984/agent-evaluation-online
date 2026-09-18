@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// 回流看板列表页（P2-6 T-3.7 / detail §9.2，一级菜单"回流看板"）：总览卡 + 筛选 + cluster 表。
+// 回流看板列表页（P2-6 T-3.7 / detail §9.2，一级菜单"错误闭环"——P1-7① 改名）：
+// 总览卡 + 筛选 + cluster 表。模块本名仍是 backflow/回流，只有菜单与按钮文案改了。
 // viewer/admin 均可见；二期（弃留墙/quality）在本页零入口（纯未渲染，detail §9.1 注记）。
 // 时间戳 = 后端 _iso naive-UTC 字符串 → fmtISO；写面动作放详情页，本页静态 + 手动刷新。
 import { computed, onMounted, ref } from 'vue'

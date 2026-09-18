@@ -190,6 +190,25 @@ class TestStoreBodies:
         model_aggs = aggs["llm"]["aggs"]["by_iface"]["aggs"]["by_model"]["aggs"]
         assert {"pt", "ct", "fail"} <= set(model_aggs)
 
+    def test_interfaces_body_sort_error_orders_both_terms_by_their_own_subagg(self):
+        """P1-6：sort="error" ⇒ 两个 tab 的 terms 各按自己的错误子聚合降序。
+
+        ⚠️ terms 的 order 同时决定**取哪 top50 桶**（不是同一批重排），所以这里盯的是
+        「order 指向的子聚合名 == 该 tab 失败列的既有口径」（req=err 单 status=error；
+        llm=fail 含 error+timeout）；指向一个不存在的子聚合会让 ES 直接报错。
+        """
+        d = es_store.build_metrics_interfaces_body(agent=None, start_ts=1, end_ts=2)
+        assert "order" not in d["aggs"]["req"]["aggs"]["by_iface"]["terms"]
+        assert "order" not in d["aggs"]["llm"]["aggs"]["by_iface"]["terms"]
+
+        s = es_store.build_metrics_interfaces_body(
+            agent=None, start_ts=1, end_ts=2, sort="error")
+        assert s["aggs"]["req"]["aggs"]["by_iface"]["terms"]["order"] == {"err": "desc"}
+        assert s["aggs"]["llm"]["aggs"]["by_iface"]["terms"]["order"] == {"fail": "desc"}
+        # 排序改的是「取哪 50 个」，不扩采样面；body 其余部分与默认逐字相同
+        assert s["aggs"]["req"]["aggs"]["by_iface"]["terms"]["size"] == 50
+        assert s["aggs"]["llm"]["aggs"]["by_iface"]["terms"]["size"] == 50
+
     def test_anomalies_and_llm_bodies_red_status(self):
         a = es_store.build_anomalies_body(agent=None, start_ts=1, end_ts=2, size=50)
         assert {"term": {"node": "request"}} in a["query"]["bool"]["filter"]
@@ -476,6 +495,42 @@ class TestInterfacesEndpoint:
         m = llm["models"][0]
         assert m["model"] == "claude-sonnet" and m["prompt_tokens"] == 1000
         assert es.calls[0][1]["aggs"]["llm"]["filter"] == {"term": {"node": "llm_call"}}
+
+    def test_interfaces_sort_error_reaches_es(self):
+        """P1-6：sort=error 一路透传到 ES body（endpoint → _load_interfaces → es body）。"""
+        app, es = _app(FakeES(response=_interfaces_resp()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                      params={"window": "24h", "sort": "error"})
+        assert r.status_code == 200
+        terms = es.calls[0][1]["aggs"]["req"]["aggs"]["by_iface"]["terms"]
+        assert terms["order"] == {"err": "desc"}
+        assert es.calls[0][1]["aggs"]["llm"]["aggs"]["by_iface"]["terms"]["order"] \
+            == {"fail": "desc"}
+
+    def test_interfaces_sort_must_be_in_cache_key(self):
+        """⚠️ 反向保护：sort 若没进缓存 key，「按错误排序」会命中默认排序的缓存条目，
+        症状 = **点了排序没反应**（且只在 TTL 内复现，TTL 一过又好了，最难查的一类）。
+
+        判别点 = `len(es.calls) == 2`：key 撞车时第二次直接回缓存 → 只 1 次 ES 调用。
+        只断言「第二次拿到了数据」是验不出来的（缓存返回的也是 200）。
+        """
+        app, es = _app(FakeES(response=_interfaces_resp()))
+        with _enter(app, es) as c:
+            c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(), params={"window": "24h"})
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                      params={"window": "24h", "sort": "error"})
+        assert r.status_code == 200
+        assert len(es.calls) == 2, "sort 未进缓存 key：同窗不同 sort 命中了同一条缓存"
+        assert es.calls[1][1]["aggs"]["req"]["aggs"]["by_iface"]["terms"]["order"] \
+            == {"err": "desc"}
+
+    def test_interfaces_sort_illegal_400(self):
+        app, es = _app(FakeES(response=_interfaces_resp()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                      params={"window": "24h", "sort": "total"})
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
 
     def test_interfaces_es_error_400(self):
         app, es = _app(FakeES(exc=TransportError("ES down")))

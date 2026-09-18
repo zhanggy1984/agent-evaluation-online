@@ -6,7 +6,15 @@ import { computed, ref } from 'vue'
 import { fmtInt, fmtMs, fmtPct } from '../format'
 import type { LlmIfaceRow, MetricsInterfaces, ReqIfaceRow } from '../api/types'
 
-const props = defineProps<{ payload: MetricsInterfaces | null; loading: boolean }>()
+const props = defineProps<{
+  payload: MetricsInterfaces | null
+  loading: boolean
+  // P1-6：'' = 默认（按请求量降序）；'error' = 按错误数降序。
+  // 排序在**后端**做（ES terms order 同时决定取哪 top50 桶），前端不重排。
+  sort: string
+}>()
+
+const emit = defineEmits<{ (e: 'toggle-sort'): void }>()
 
 type Tab = 'request' | 'llm'
 const tab = ref<Tab>('request')
@@ -45,6 +53,12 @@ function fmtTok(v: number): string {
       >LLM 级接口（{{ llmRows.length }}）</button>
     </div>
 
+    <!-- P1-6：排序改的是「取哪 50 个接口」而不只是顺序 —— 不写清楚会被读成「还是那批、
+         只是重排」，进而把「没上榜」误当作「没出错」。 -->
+    <p v-if="props.sort === 'error' && (reqRows.length > 0 || llmRows.length > 0)" class="muted slim hint">
+      按错误数排序：每个 tab 只列出<strong>错误最多的 50 个接口</strong>（不是请求量最大的 50 个）—— 未上榜 ≠ 没出错。
+    </p>
+
     <p v-if="props.loading && !props.payload" class="muted slim">加载中…</p>
 
     <template v-else-if="tab === 'request'">
@@ -54,7 +68,11 @@ function fmtTok(v: number): string {
           <tr>
             <th>接口</th>
             <th class="num">请求数</th>
-            <th class="num">错误</th>
+            <th
+              class="num sortable" :class="{ on: props.sort === 'error' }"
+              title="点击切换：按错误数降序 / 按请求数降序"
+              @click="emit('toggle-sort')"
+            >错误{{ props.sort === 'error' ? ' ▾' : '' }}</th>
             <th class="num">超时</th>
             <th class="num" title="延迟分位数：P50 = 50% 的请求快于该值（中位数），P95/P99 同理">P50</th>
             <th class="num" title="延迟分位数：95% 的请求快于该值">P95</th>
@@ -96,7 +114,11 @@ function fmtTok(v: number): string {
           <tr>
             <th>接口</th>
             <th class="num">请求数</th>
-            <th class="num">失败</th>
+            <th
+              class="num sortable" :class="{ on: props.sort === 'error' }"
+              title="点击切换：按失败数降序 / 按请求数降序"
+              @click="emit('toggle-sort')"
+            >失败{{ props.sort === 'error' ? ' ▾' : '' }}</th>
             <th class="num">LLM 失败率</th>
             <th>模型（点击展开）</th>
           </tr>
@@ -178,6 +200,25 @@ function fmtTok(v: number): string {
 
 .slim {
   margin: 8px 0;
+}
+
+/* P1-6：排序表头（仅「错误」/「失败」两列，与后端 sort 白名单一一对应） */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable:hover {
+  color: var(--text);
+}
+
+th.sortable.on {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 12px;
 }
 
 .unit {

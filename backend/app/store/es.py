@@ -267,13 +267,24 @@ def build_metrics_overview_body(
 
 
 def build_metrics_interfaces_body(
-    *, agent: str | None, start_ts: int, end_ts: int
+    *, agent: str | None, start_ts: int, end_ts: int, sort: str | None = None
 ) -> dict:
     """GET /metrics/interfaces 实时 body：单查询双 filter agg（请求级 + LLM 级双 tab）。
 
     外层 query 只做时间窗 + 排心跳（node 各自在 req/llm filter agg 内锚），一次 ES 往返
     出双 tab——req filter agg 的 doc_count 即请求总数，llm 同。agent 过滤走外层（两 tab 共用）。
+
+    sort="error"（P1-6）：两个 tab 的 terms 各自按错误子聚合降序——req 用 err（status=error），
+    llm 用 fail（error+timeout，与该 tab 「失败」列口径一致）。默认 None = doc_count 降序。
+
+    ⚠️ terms 的 order **同时决定取哪 top N 个桶**，不是「同一批里重排」：按 err 降序得到的是
+    **错误最多的 50 个接口**，未必包含请求量最大的接口。调用方必须把这点写给用户看。
     """
+    req_terms: dict = {"field": "interface", "size": 50}
+    llm_terms: dict = {"field": "interface", "size": 50}
+    if sort == "error":
+        req_terms["order"] = {"err": "desc"}
+        llm_terms["order"] = {"fail": "desc"}
     return {
         "query": _base_metrics_query(agent, start_ts, end_ts),
         "size": 0,
@@ -282,7 +293,7 @@ def build_metrics_interfaces_body(
                 "filter": {"term": {"node": "request"}},
                 "aggs": {
                     "by_iface": {
-                        "terms": {"field": "interface", "size": 50},
+                        "terms": req_terms,
                         "aggs": {
                             "pct": {"percentiles": {
                                 "field": "duration_ms", "percents": [50, 95, 99]}},
@@ -296,7 +307,7 @@ def build_metrics_interfaces_body(
                 "filter": {"term": {"node": "llm_call"}},
                 "aggs": {
                     "by_iface": {
-                        "terms": {"field": "interface", "size": 50},
+                        "terms": llm_terms,
                         "aggs": {
                             "fail": {"filter": {"bool": {"should": [
                                 {"term": {"status": "error"}},

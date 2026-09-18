@@ -18,17 +18,19 @@ watch(() => route.fullPath, () => { user.value = readStoredUser() })
 const MENUS = [
   { name: 'overview', label: '总览' },
   { name: 'interfaces', label: '接口' },
-  { name: 'anomalies', label: '异常' },
+  // P1-7①（2026-09-18）：原「异常」「回流看板」都是黑话——前者与「LLM 失败」边界不清
+  // （实为 node=request 的接口级错误），后者完全猜不到内容（实为错误聚类 + 回归回流处置）。
+  { name: 'anomalies', label: '接口异常' },
   { name: 'llm-failures', label: 'LLM 失败' },
   { name: 'traces', label: '链路查询' },
-  { name: 'backflow', label: '回流看板' },  // P2-6：第六个一级菜单（detail §9.1 登记）
+  { name: 'backflow', label: '错误闭环' },  // P2-6：第六个一级菜单（detail §9.1 登记）
   { name: 'admin-configs', label: '系统管理 · 配置', adminOnly: true },
   { name: 'admin-users', label: '系统管理 · 账号', adminOnly: true },
 ]
 
 const visibleMenus = computed(() => MENUS.filter((m) => !m.adminOnly || user.value?.role === 'admin'))
 
-// 详情页下钻共用父菜单高亮（trace-detail → 链路查询；backflow-cluster → 回流看板）
+// 详情页下钻共用父菜单高亮（trace-detail → 链路查询；backflow-cluster → 错误闭环）
 const activeName = computed(() => {
   if (route.name === 'trace-detail') return 'traces'
   if (route.name === 'backflow-cluster') return 'backflow'

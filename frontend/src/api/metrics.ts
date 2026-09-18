@@ -9,10 +9,11 @@ import type {
   MetricsOverview,
 } from './types'
 
-function qs(params: { agent?: string | null; window: string }): string {
+function qs(params: { agent?: string | null; window: string; sort?: string | null }): string {
   const p = new URLSearchParams()
   if (params.agent) p.set('agent', params.agent)
   p.set('window', params.window)
+  if (params.sort) p.set('sort', params.sort)
   const s = p.toString()
   return s ? `?${s}` : ''
 }
@@ -21,8 +22,11 @@ export function metricsOverview(agent: string | null, window: string): Promise<M
   return api<MetricsOverview>(`/metrics/overview${qs({ agent, window })}`)
 }
 
-export function metricsInterfaces(agent: string | null, window: string): Promise<MetricsInterfaces> {
-  return api<MetricsInterfaces>(`/metrics/interfaces${qs({ agent, window })}`)
+// P1-6：sort 省略 = 默认（按请求量降序）；'error' = 按错误数降序（后端 terms order，同时决定取哪 top50）。
+export function metricsInterfaces(
+  agent: string | null, window: string, sort?: string | null,
+): Promise<MetricsInterfaces> {
+  return api<MetricsInterfaces>(`/metrics/interfaces${qs({ agent, window, sort })}`)
 }
 
 export function metricsAnomalies(agent: string | null, window: string): Promise<MetricsAnomalies> {

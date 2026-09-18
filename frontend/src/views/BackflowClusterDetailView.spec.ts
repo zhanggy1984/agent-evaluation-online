@@ -555,7 +555,10 @@ describe('时间线与角色显示', () => {
 describe('路由', () => {
   it('返回按钮回看板', async () => {
     const w = await mountWith(mk())
-    await btn(w, '回流看板')!.trigger('click')
+    // P1-7①：这里找的是**返回按钮**的文字（BackflowClusterDetailView.vue 头部），
+    // 它跟随一级菜单名（App.vue MENUS）—— 改菜单名漏同步按钮 ⇒ 本条必红。
+    // 保留「按文字找」而非改成按 name 找，护栏才有效。
+    await btn(w, '错误闭环')!.trigger('click')
     expect(push).toHaveBeenCalledWith({ name: 'backflow' })
   })
 })

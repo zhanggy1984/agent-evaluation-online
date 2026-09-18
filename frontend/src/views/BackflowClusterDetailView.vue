@@ -283,7 +283,8 @@ const rows = computed(() => detail.value?.conversions ?? [])
 <template>
   <div>
     <header class="bar">
-      <button class="btn-ghost" type="button" @click="back">← 回流看板</button>
+      <!-- P1-7①：按钮文字跟随一级菜单名（App.vue MENUS）——菜单改了这里必须同步 -->
+      <button class="btn-ghost" type="button" @click="back">← 错误闭环</button>
       <strong class="title">
         cluster <span class="mono">#{{ clusterId }}</span>
         <span class="muted" v-if="detail">· {{ detail.agent }}{{ detail.interface ? `.${detail.interface}` : '' }}</span>
