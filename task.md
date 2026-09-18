@@ -2304,6 +2304,8 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
 
 - **未验：无**。admin 页面上的写操作按钮**已全量走完**（知识库 4 + 订单 4）。
 - **登记未处置**：知识库「同步」的结果在 UI 上**无独立呈现**（无「上次同步时间」栏），只体现为列表刷新。
+  - **⚠️ 2026-09-18 定级后撤销本条**（见 §13）：一致性状态已由列表的「同步状态」列（= DB `sync_status`）精确表达，
+    而 `pending` **比时间戳更可操作**（直接指向待补偿行）；设计语义（`routes.py:238`）里本就没有时间戳 ⇒ **非缺陷、有意设计**。
 - **cs 仍未做：无**。`/chat` 当日真流量已做（见 §11）。
 
 ### 10. 收口环（第七环）缺口 —— **已定性：不是缺陷，是「没人认领」**（用户拍板「不认领，就此结项」）
@@ -2442,6 +2444,79 @@ ignore 是**按名枚举的列举法**，而派生目录会不断造新路径；
 ! du -sh /d/study/aiprojcet/contract-check/.tmp-revert
 # 2) 再删
 ! rm -rf /d/study/aiprojcet/contract-check/.tmp-revert
-# 3) 删后复核：应只剩 ?? backend/.env.c1bak
+# 3) 删后复核：应为**空**（工作区全干净）
 ! git -C /d/study/aiprojcet/contract-check status --short
 ```
+
+> **⚠️ 上一条复核口径已于 2026-09-18 订正**：原文写「应只剩 `?? backend/.env.c1bak`」——**该文件当天已被删除**
+> （与 `backend/.env` md5 全等的冗余副本），照旧口径复核会得「不符」，看起来像删漏了。
+
+---
+
+### 13. 未决项定级（取证轮，2026-09-18）—— **结论：无一条真缺陷；代码零改动**
+
+**触发**：§12 收口时我报「台账里还挂着 5 条『仅登记未处置』」，用户拍板**先只做取证、逐条定级**。
+
+#### ① 结构性发现：「5 条」这个数字本身是错的
+
+回查台账原件后，那 5 条是**三类不同来源被我混成了一个数**：
+
+| 来源 | 条数 | 条目 |
+|---|---|---|
+| 真在台账登记的未决项 | **1** | cs 知识库「同步」无独立呈现（§9） |
+| 台账「顺带发现」里提及、且**当场已定级** | **2** | cs 两处陈旧文档（§6·2249，原文逐字写「按『不碰无关代码』**只登记**」） |
+| **从未落过台账**（只活在对话里） | **2** | `contract-check/backend;D`、sp `display_name` 反查 |
+| **伪条目** —— 从来不是未决项 | **1** | `complaint_tickets` 等三表清空（§7·2280 已写明「按设计 + 已备份」） |
+
+⇒ **这就是不落盘的代价**：汇报列表里的口头条，会被下一轮的我当成台账条引用。
+（同族：`task-list-is-a-view-not-a-ledger` —— 清单是视图，权威源永远是仓内台账。）
+
+#### ② 定级表
+
+| # | 条目 | 实测证据 | 定性 |
+|---|---|---|---|
+| 1 | cs 知识库「同步」无独立呈现 | 有「同步状态」列（= DB `sync_status`）+ 按钮 toast「重建 N 篇 / 清理孤儿 M 个」；确无「上次同步时间」栏 | **非缺陷 / 有意设计** —— `pending` 比时间戳更可操作（直接指向待补偿行）；设计语义（`routes.py:238`）里本就没有时间戳。**本条约已撤销**（§9 已改） |
+| 2 | cs `backend/app/api/auth.py:4` docstring | 写 `POST /api/v1/auth/login`；实际 `prefix="/auth"`（`auth.py:17`）+ `include_router(prefix="/api")`（`main.py:188`）⇒ **`/api/auth/login`**；`main.py:188` 行内注释逐字「T15：登录路由统一 /api/auth/login（与 gq/cc 一致）」 | **真陈旧（文档笔误型）**，零运行影响；**已有意不修** |
+| 3 | cs `docs/API.md:17` | 同一 base 写法；但**同文件业务接口是对的** —— `routes.py:27` 无 prefix + `main.py:189` 挂 `/api/v1` ⇒ `/api/v1/sessions` 成立 | **真陈旧，范围 = 仅「认证」一节**。（`contracts.py` 走 `/api`，本次未核） |
+| 4 | `contract-check/backend;D` | 空目录、**0 文件**、创建 09-18 08:12、`git` 未跟踪 | **shell 事故尸体**，无害但污染 `ls`。**从未登记** |
+| 5 | sp `users.display_name == supplier.name` 反查 | **实测：20 家供应商名字全不重**；SUPPLIER 用户无重复 `display_name` ⇒ **当前不可达**。但 `supplier_service.py:384` 是**裸 `scalar`**，而同仓 `resolve_me`（`:433` 显式抛）、`bids.py`（`:66` → 422）**都有守卫** | **守卫缺口 / 当前不可达** —— **不是真缺陷**。处置：不补（补了没有验证面，会变成无消费方的实现） |
+| 6 | `complaint_tickets` 等三表清空 | — | **伪条目**（按设计 + 已备份 18 行，见 §7） |
+
+**归并**：真陈旧文档 2 条（同一病根） · 未登记尸体 1 条 · 守卫缺口 1 条（不可达） · 已撤销登记 1 条 · 伪条目 1 条。**真缺陷：0。**
+
+#### ③ 两处新发现 —— **都是我自己立过的论据过期了**
+
+**(a) sp `app/api/v1/bids.py:13-14` 的 docstring 已与数据不符。**
+它逐字写「合成数据存在同名供应商（如 **SUP-009/SUP-013**），故 display_name 反查可能多值」；
+实测 **SUP-009 = 华北泰安安防有限公司、SUP-013 = 华南云启云计有限公司** —— **两个名字完全不同**。
+⚠️ 这段是「重名防御有必要」的**唯一论据来源**；论据已过期，但防御代码（422 / 显式抛）仍在 ⇒
+**读起来像「有理由的守卫」，实际理由已不可考**。（与 `implementation-odd-is-not-defect` 互为镜像：那条防「把设计当缺陷」，这条防「把过期论据当设计」。）
+
+**(b) 我自己被二手转述骗了一次。**
+汇总把第 1 条转述为「同步结果在 UI 上无独立呈现」，我据此一度判定「UI 啥都没有 ⇒ 登记是假的、应撤回」；
+回查 §9 原文才看到精确措辞是「**无「上次同步时间」栏**」—— 而这条**是成立的**。
+⇒ **原件的精确边界会被转述磨平**；`no-evidence-still-explained` 记的「登记摘要（含自己写的）引用前必须回查实际对象」，本轮再次应验。
+
+#### ④ 复核命令
+
+```bash
+# 第 4 条：确认是空目录（应打印 1 = 它自己，即 0 文件）
+find /d/study/aiprojcet/contract-check/'backend;D' | wc -l
+
+# 第 5 条：确认无重名 ⇒ 守卫缺口不可达（容器侧展开，root 密码不进对话）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "
+select name, count(*) c from smart_procurement.supplier group by name having c>1;
+select display_name, count(*) c from smart_procurement.users where role=\"SUPPLIER\" group by display_name having c>1;"'
+
+# 第 2/3 条：真实 prefix（应输出 /auth 与 include_router 的 /api）
+grep -n 'APIRouter(\|include_router' /d/study/aiprojcet/customer-service/backend/app/api/auth.py \
+  /d/study/aiprojcet/customer-service/backend/app/main.py
+```
+
+#### ⑤ 本批边界（不夸大）
+
+- **代码改动：0 行** —— 按「一个批次 = 一份方案 + 一次独立验证」，本批产出物 = 定级本身。
+- **未做**：条目 2/3 的修复（有意不做，撞「不碰无关代码」）；条目 5 的守卫补齐（不可达，无验证面）；
+  条目 4 的删除（`rm` 按规约由用户执行）。
+- **不能证明**：条目 5「当前不可达」只对**当刻数据**成立；若日后导入重名供应商，该缺口即变可达 ——
+  它是**潜伏**而非**不存在**。
