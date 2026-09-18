@@ -8,7 +8,8 @@ import time
 from contextlib import contextmanager
 
 from _fakes import FakeAsyncSession, FakeES, es_hits, ns
-from elasticsearch.exceptions import TransportError
+from elastic_transport import ApiResponseMeta, HttpHeaders
+from elasticsearch.exceptions import NotFoundError, TransportError
 
 from app.core.config import Settings
 from app.core.db import get_session
@@ -34,6 +35,15 @@ def _token(role="viewer"):
 
 def _fake_es(response=None, exc=None):
     return FakeES(response=response, exc=exc)
+
+
+def _index_missing_404():
+    """ES 真实形态的 404（index 未建/已轮转）：ES-py 8.x 里属 ApiError 族，**不是**
+    TransportError 子类 —— 只用 TransportError 造的旧测试接不住这一类。"""
+    meta = ApiResponseMeta(status=404, http_version="1.1", headers=HttpHeaders(),
+                           duration=0.0, node=None)
+    return NotFoundError("index_not_found_exception", meta=meta,
+                         body={"error": {"type": "index_not_found_exception"}})
 
 
 @contextmanager
@@ -217,3 +227,33 @@ def test_trace_logs_body_search_true_returns_message():
                   params={"body_search": "true"})
     assert r.status_code == 200
     assert r.json()["items"][0]["log_message"] == "connection refused"
+
+
+# ---------- ApiError 族（HTTP 层错误）与 TransportError 同待遇 ----------
+
+
+def test_trace_list_api_error_maps_400():
+    es = _fake_es(exc=_index_missing_404())
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer()])
+    with _enter(app, es) as c:
+        r = c.get("/api/v1/traces", headers=_auth_hdr(), params={"trace_id": _TRACE})
+    assert r.status_code == 400 and r.json()["code"] == "ERR_TRACE_0002"
+
+
+def test_trace_detail_api_error_maps_400():
+    es = _fake_es(exc=_index_missing_404())
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer()])
+    with _enter(app, es) as c:
+        r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}", headers=_auth_hdr())
+    assert r.status_code == 400 and r.json()["code"] == "ERR_TRACE_0002"
+
+
+def test_trace_logs_api_error_maps_400():
+    es = _fake_es(exc=_index_missing_404())
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer()])
+    with _enter(app, es) as c:
+        r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}/logs", headers=_auth_hdr())
+    assert r.status_code == 400 and r.json()["code"] == "ERR_TRACE_0002"

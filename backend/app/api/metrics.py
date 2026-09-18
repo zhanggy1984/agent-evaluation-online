@@ -27,7 +27,12 @@
 import time
 from typing import Annotated, Awaitable, Callable
 
-from elasticsearch.exceptions import TransportError
+# 为什么要接两个异常（2026-09-18 实测缺陷）：ES-py 8.x 里这两族**没有公共父类** ——
+# TransportError（连接/超时）与 ApiError（HTTP 层错误，含 NotFoundError/BadRequestError…）
+# 都是 Exception 的直接子类（旧 7.x 里 NotFoundError 曾是 TransportError 的子类，
+# 本仓代码是照 7.x 语义写的）。故只写 `except TransportError` 时，**index 缺失的 404
+# 一个都接不住**，会直接冒到 FastAPI 变成裸 500。
+from elasticsearch.exceptions import ApiError, TransportError
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -274,7 +279,7 @@ async def _rollup_request_docs(
         docs = await rollup_store.fetch_rollup_hits(
             client, settings=settings, request_timeout_s=timeout_s,
             start_ms=start_ms, end_ms=end_ms)
-    except TransportError:
+    except (TransportError, ApiError):
         return []
     return [d for d in docs
             if d.get("node") == "request"
@@ -299,7 +304,7 @@ async def _rollup_covered_hours(
         return await rollup_store.fetch_rollup_covered_hours(
             client, settings=settings, request_timeout_s=timeout_s,
             start_ms=start_ms, end_ms=end_ms)
-    except TransportError:
+    except (TransportError, ApiError):
         return []
 
 
@@ -372,7 +377,7 @@ async def _load_overview(
             agent=agent, start_ts=start_ms, end_ts=end_ms,
             interval=interval if window != "7d" else "1h",
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标聚合暂不可用或超时: {exc}", http=400) from exc
 
     p50, p95, p99 = result["p50"], result["p95"], result["p99"]
@@ -425,7 +430,7 @@ async def _load_interfaces(
             client, settings=settings, request_timeout_s=timeout_s,
             agent=agent, start_ts=start_ms, end_ts=end_ms,
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标聚合暂不可用或超时: {exc}", http=400) from exc
 
     # 行级分位/计数仍实时整窗：覆盖小时不足支撑行级 covered-only 近似（每接口样本更稀疏），
@@ -458,7 +463,7 @@ async def _load_anomalies(
             client, settings=request.app.state.settings, request_timeout_s=timeout_s,
             agent=agent, start_ts=start_ms, end_ts=end_ms, size=_LIST_LIMIT,
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
     items = [AnomalyItem(**{k: h.get(k) for k in (
         "agent", "trace_id", "interface", "status", "error_type", "error_msg",
@@ -491,7 +496,7 @@ async def _load_llm_failures(
             client, settings=request.app.state.settings, request_timeout_s=timeout_s,
             trace_keys=[k for k in trace_keys if k],
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
 
     items = []
@@ -527,7 +532,7 @@ async def _load_agents(request: Request, session: AsyncSession) -> MetricsAgents
             client, settings=request.app.state.settings, request_timeout_s=timeout_s,
             start_ts=start_ms, end_ts=end_ms, size=_LIST_LIMIT,
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
     total = int(res["total"])
     return MetricsAgents(

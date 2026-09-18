@@ -16,7 +16,9 @@
 import time
 from typing import Annotated
 
-from elasticsearch.exceptions import TransportError
+# 同 metrics.py：ES-py 8.x 的 TransportError 与 ApiError 无公共父类，缺后者则
+# index 缺失的 404 接不住（详见 metrics.py 顶部注释）。
+from elasticsearch.exceptions import ApiError, TransportError
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -140,7 +142,7 @@ async def list_traces(
             from_=offset,
             size=page_size,
         )
-    except TransportError as exc:  # 超时/连接失败/5xx → §8.2 检索护栏
+    except (TransportError, ApiError) as exc:  # 超时/连接失败/5xx → §8.2 检索护栏
         raise AppError("ERR_TRACE_0002", f"检索暂不可用或超时: {exc}", http=400) from exc
 
     items = [
@@ -171,7 +173,7 @@ async def trace_detail(
             trace_id=trace_id,
             request_timeout_s=max(timeout_ms / 1000, 1.0),
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_TRACE_0002", f"检索暂不可用或超时: {exc}", http=400) from exc
 
     hits = result["hits"]
@@ -216,7 +218,7 @@ async def trace_logs(
             from_=offset,
             size=page_size,
         )
-    except TransportError as exc:
+    except (TransportError, ApiError) as exc:
         raise AppError("ERR_TRACE_0002", f"检索暂不可用或超时: {exc}", http=400) from exc
 
     items = [

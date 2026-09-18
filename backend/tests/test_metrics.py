@@ -11,7 +11,8 @@ import time
 from contextlib import contextmanager
 
 from _fakes import FakeAsyncSession, FakeES, es_hits, ns
-from elasticsearch.exceptions import TransportError
+from elastic_transport import ApiResponseMeta, HttpHeaders
+from elasticsearch.exceptions import NotFoundError, TransportError
 
 import app.api.metrics as metrics_api
 from app.core.config import Settings
@@ -55,6 +56,29 @@ def _app(es, role="viewer"):
     app = create_app(_settings())
     app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer(role)])
     return app, es
+
+
+def _index_missing_404():
+    """ES 真实形态的 404（index 未建/已轮转）：ES-py 8.x 里它属 ApiError 族、**不是**
+    TransportError 子类 —— 只用 TransportError 造的旧测试接不住这一类，故必须显式造它。"""
+    meta = ApiResponseMeta(status=404, http_version="1.1", headers=HttpHeaders(),
+                           duration=0.0, node=None)
+    return NotFoundError("index_not_found_exception", meta=meta,
+                         body={"error": {"type": "index_not_found_exception"}})
+
+
+class _RollupMissingES(FakeES):
+    """rollup index 缺失（search 抛 404），其余索引正常 —— 复现 2026-09-18 线上实况。
+
+    不能用 FakeES(exc=...) 代劳：它对**每次** search 都抛，会把实时 agg 也打掉，
+    而真实场景里 404 只来自 rollup index。
+    """
+
+    async def search(self, index=None, body=None):
+        self.calls.append((index, body))
+        if index == "dev.obs-metrics-rollup":
+            raise _index_missing_404()
+        return self._resp
 
 
 def _overview_resp():
@@ -254,6 +278,27 @@ class TestOverviewEndpoint:
         assert es.calls[2][1]["aggs"]["series"]["date_histogram"]["fixed_interval"] == "1h"
         # 无覆盖 → 卡片分位仍来自实时整窗 agg（不 merge）
         assert body["cards"]["p50"] == 12.3
+
+    def test_overview_7d_rollup_index_missing_degrades_to_realtime(self):
+        """rollup index 不存在 ⇒ 整窗实时兜底，**不是 500**（2026-09-18 线上实况回归）。
+
+        判别性：旧代码 `except TransportError` 接不住 ApiError 族的 404，本用例会拿到
+        500（未捕获异常），故本用例在修复前必红。
+        """
+        app, es = _app(_RollupMissingES(response=_overview_resp()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/overview", headers=_auth_hdr(),
+                      params={"agent": _AGENT, "window": "7d"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["source"] == "realtime"          # 降级语义：无覆盖 ⇒ 实时
+        assert body["covered_hours"] == 0
+        assert body["fallback_hours"] == []
+        assert body["cards"]["p50"] == 12.3          # 实时 agg 仍可用
+        # 两次 rollup search 都 404 被吞、第三次实时 agg 成功
+        assert [c_[0] for c_ in es.calls] == ["dev.obs-metrics-rollup",
+                                              "dev.obs-metrics-rollup",
+                                              ["dev.obs-event-*"]]
 
     def test_overview_7d_mixed_rollup_covered_percentiles(self):
         # rollup 覆盖部分小时（mixed）：卡片 p50/95/99 = 覆盖小时 sketch merge 近似口径；
@@ -592,3 +637,41 @@ class TestAgentsEndpoint:
         with _enter(app, es) as c:
             r = c.get("/api/v1/metrics/agents", headers=_auth_hdr("ops"))
         assert r.status_code == 403 and r.json()["code"] == "ERR_AUTH_0002"
+
+
+class TestApiErrorFamilyDegradesSameAsTimeout:
+    """ApiError 族（HTTP 层错误）与 TransportError 同待遇 —— 跨端点回归。
+
+    旧代码 10 处只写 `except TransportError`；ES-py 8.x 里 NotFoundError/BadRequestError
+    属 ApiError 族、**无公共父类** ⇒ 这些错误一律漏成裸 500。本类每个用例在修复前必红。
+    """
+
+    def test_overview_api_error_maps_400(self):
+        app, es = _app(FakeES(exc=_index_missing_404()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/overview", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+    def test_interfaces_api_error_maps_400(self):
+        app, es = _app(FakeES(exc=_index_missing_404()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+    def test_anomalies_api_error_maps_400(self):
+        app, es = _app(FakeES(exc=_index_missing_404()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/anomalies", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+    def test_llm_failures_api_error_maps_400(self):
+        app, es = _app(FakeES(exc=_index_missing_404()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/llm-failures", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
+
+    def test_agents_api_error_maps_400(self):
+        app, es = _app(FakeES(exc=_index_missing_404()))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/agents", headers=_auth_hdr())
+        assert r.status_code == 400 and r.json()["code"] == "ERR_METRICS_0001"
