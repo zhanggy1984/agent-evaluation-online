@@ -23,6 +23,7 @@ import type { BackflowClusterDetail, BackflowLink } from '../api/types'
 import {
   CLUSTER_STATUS_LABEL,
   conversionActionLabel,
+  conversionDetailText,
   INVALIDATE_REASON_NOTE,
   INPUT_TRUNCATED_WARN,
   OFFLINE_STATUS_TEXT,
@@ -466,7 +467,8 @@ const rows = computed(() => detail.value?.conversions ?? [])
             <span class="act-tag">{{ conversionActionLabel(c.action) }}</span>
             <span class="muted">操作人 {{ actorName(c) }}</span>
             <span class="muted tl-ts">{{ fmtTs(c.ts) }}</span>
-            <span class="tl-detail">{{ c.detail || '' }}</span>
+            <!-- P1-13：claim 的 detail 是认领表单 JSON 原文，渲染成人话（解析失败回退原文） -->
+            <span class="tl-detail">{{ conversionDetailText(c.action, c.detail) }}</span>
           </div>
         </div>
       </section>

@@ -79,6 +79,19 @@ describe('fmtPct / fmtQps / fmtInt', () => {
     expect(fmtInt(null)).toBe('-')
   })
 
+  // P1-19：判别性 —— 老实现是裸 toFixed(2)，下面 |v|<1 的三条全都会得 '0.00'。
+  // 0.0006 = 7d 窗 379 次请求的真实读数（379/604800）：改前显示 0.00 = 「没有」，而不是「很小」。
+  it('fmtQps：|v|<1 走有效数字，不再被 toFixed(2) 压成 0.00', () => {
+    expect(fmtQps(379 / 604800)).toBe('0.000627')
+    expect(fmtQps(1 / 3600)).toBe('0.000278')
+    expect(fmtQps(0.5)).toBe('0.5')
+  })
+
+  it('fmtQps：v≥1 仍是 2 位小数（改动不波及常用区间）', () => {
+    expect(fmtQps(1)).toBe('1.00')
+    expect(fmtQps(12.345)).toBe('12.35')
+  })
+
   it('比率按百分比保留 2 位', () => {
     expect(fmtPct(0.1234)).toBe('12.34%')
     expect(fmtPct(1)).toBe('100.00%')

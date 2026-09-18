@@ -71,6 +71,31 @@ export function conversionActionLabel(action: string): string {
   return CONVERSION_ACTION_TEXT[action] ?? action
 }
 
+// conversion detail → 可读文本（P1-13）。claim 的 detail 是**认领表单的 JSON 原文**
+// （backend/app/backflow/claim.py:141 写入 {fix_version,k,ttl_days,note}），原样显示会
+// 露出 fix_version/k/ttl_days 这些内部字段名。实测该 action **15/15 为 JSON**，
+// 其余 action **0/15**（regression_result/assemble/auto_fixed/config_change/requeue
+// 都是纯文本），故只对 claim 做结构化。
+// **解析失败一律回退原文**：后端改格式时退化成改前行为，不白屏、不吞信息。
+export function conversionDetailText(action: string, detail: string | null): string {
+  if (action !== 'claim' || !detail) return detail ?? ''
+  let o: unknown
+  try {
+    o = JSON.parse(detail)
+  } catch {
+    return detail
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return detail
+  const m = o as Record<string, unknown>
+  const parts: string[] = []
+  if (m.fix_version) parts.push(`修复版本 ${String(m.fix_version)}`)
+  // k = claim_k：k_seq ≥ claim_k 才判 passed（verify.py decide_k），即需连续通过的 run 数
+  if (m.k !== undefined && m.k !== null) parts.push(`连续通过阈值 K=${String(m.k)}`)
+  if (m.ttl_days !== undefined && m.ttl_days !== null) parts.push(`复核窗 ${String(m.ttl_days)} 天`)
+  if (m.note) parts.push(`备注：${String(m.note)}`)
+  return parts.length > 0 ? parts.join(' · ') : detail
+}
+
 // watch 筛选选项（值 = 后端 watch 参数；'' = 全部）
 export const WATCH_OPTIONS = [
   { value: '', label: '全部 offline 态' },

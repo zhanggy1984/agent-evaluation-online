@@ -32,8 +32,13 @@ export function fmtPct(v: number | null | undefined): string {
   return `${(v * 100).toFixed(2)}%`
 }
 
+// 速率（P1-19）。0 是合法值，仍返回 '0.00'（≠ '-'）。
+// |v|<1 时改走 3 位有效数字：固定 toFixed(2) 会把 7d 窗的 0.0006 压成 '0.00'，
+// 读的人看到的不是「很小」而是「没有」——这是本函数的原始缺陷。
 export function fmtQps(v: number | null | undefined): string {
   if (v === null || v === undefined) return '-'
+  if (v === 0) return '0.00'
+  if (Math.abs(v) < 1) return String(Number(v.toPrecision(3)))
   return v.toFixed(2)
 }
 

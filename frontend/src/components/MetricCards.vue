@@ -14,7 +14,10 @@ interface CardCell {
 }
 
 const perf = (): CardCell[] => [
-  { label: 'QPS', main: fmtQps(props.cards?.qps) },
+  // P1-19：叫「平均 QPS」而不是「QPS」——后端口径是 total/整窗秒数（metrics.py 的
+  // _load_overview），是**整窗平均速率**；而同一页图表的序列走**桶实际覆盖窗宽**折算
+  // （_overview_series，v1.14 缺陷修）。两者口径不同，标题不区分会被读成同一个数。
+  { label: '平均 QPS', main: fmtQps(props.cards?.qps) },
   { label: 'P50', main: `${fmtMs(props.cards?.p50 ?? null)} ms` },
   { label: 'P95', main: `${fmtMs(props.cards?.p95 ?? null)} ms` },
   { label: 'P99', main: `${fmtMs(props.cards?.p99 ?? null)} ms` },

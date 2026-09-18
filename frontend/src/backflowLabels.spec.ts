@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest'
 import {
   CLUSTER_STATUS_LABEL, CONVERSION_ACTION_TEXT, INVALIDATE_REASON_NOTE,
   INPUT_TRUNCATED_WARN, LAYER_OPTIONS, OFFLINE_STATUS_TEXT, REVIEW_REASON_TEXT,
-  STATUS_OPTIONS, VERIFY_STATUS_TEXT, WATCH_OPTIONS, conversionActionLabel, reentryCaption,
+  STATUS_OPTIONS, VERIFY_STATUS_TEXT, WATCH_OPTIONS, conversionActionLabel,
+  conversionDetailText, reentryCaption,
 } from './backflowLabels'
 
 // 后端写面的真实值域（自 backend/ 源码 grep 核对，2026-09-10）
@@ -13,6 +14,42 @@ const BACKEND_WRITTEN_ACTIONS = [
   'assemble', 'auto_fixed', 'claim', 'claim_ttl_expire', 'fixed_review', 'ignore',
   'invalidate', 'needs_review', 'needs_review_resolve', 'reentry', 'reopen', 'requeue',
 ]
+
+// 真实样例取自 dev.obs conversion_record 实测（2026-09-18）：
+// action 分布 claim 15/15 为 JSON，其余 5 种 action 0/15 全为纯文本。
+const CLAIM_DETAIL =
+  '{"fix_version": "0.2.1", "k": 2, "ttl_days": 14, "note": "sp 复核后确认是 error 分支"}'
+const REGRESSION_DETAIL =
+  'cluster=3881 link=2256 case_id=4084 run_id=3717 agent=smart-procurement@0.2.1 ' +
+  'run_status=completed cases=1 dropped=0'
+
+describe('conversionDetailText（P1-13）', () => {
+  it('claim：JSON 原文 → 人话，不露出 fix_version/k/ttl_days 字段名', () => {
+    const s = conversionDetailText('claim', CLAIM_DETAIL)
+    expect(s).toBe('修复版本 0.2.1 · 连续通过阈值 K=2 · 复核窗 14 天 · 备注：sp 复核后确认是 error 分支')
+    expect(s).not.toContain('fix_version')
+    expect(s).not.toContain('{')
+  })
+
+  it('非 claim：原样透出（纯文本，含 regression_result 的 key=value）', () => {
+    expect(conversionDetailText('regression_result', REGRESSION_DETAIL)).toBe(REGRESSION_DETAIL)
+    expect(conversionDetailText('auto_fixed', 'K 序列 0.2.1→1.16.0 连续 2 次 pass'))
+      .toBe('K 序列 0.2.1→1.16.0 连续 2 次 pass')
+  })
+
+  it('claim 但 detail 不是 JSON / 是空 / 是数组：一律回退原文，不白屏', () => {
+    expect(conversionDetailText('claim', '历史遗留的纯文本备注')).toBe('历史遗留的纯文本备注')
+    expect(conversionDetailText('claim', '')).toBe('')
+    expect(conversionDetailText('claim', null)).toBe('')
+    expect(conversionDetailText('claim', '"just a string"')).toBe('"just a string"')
+    expect(conversionDetailText('claim', '[1,2]')).toBe('[1,2]')
+  })
+
+  it('claim 的 JSON 缺字段时不臆造：只渲染存在的那些', () => {
+    expect(conversionDetailText('claim', '{"fix_version": "1.0.0"}')).toBe('修复版本 1.0.0')
+    expect(conversionDetailText('claim', '{}')).toBe('{}')
+  })
+})
 
 describe('CLUSTER_STATUS_LABEL', () => {
   it('覆盖后端 cluster_status 全部取值', () => {
