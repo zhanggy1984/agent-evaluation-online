@@ -2282,13 +2282,15 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
 
 - 实现 = 事务内 `DELETE return_orders, refund_orders, complaint_tickets, order_items, orders`，**只重建** `_SEED_ORDERS` + `_SEED_ITEMS`
 - **⚠️ 不可逆**：被删的 `complaint_tickets` **16 行**、`refund_orders` 1 行、`return_orders` 1 行 **不重建**
-- **执行前已全量备份** 18 行 → `.tmp-probe/cs-reset-backup-20260918.sql`
+- **执行前已全量备份** 18 行 → `docs/backups/cs-reset-backup-20260918.sql`
   （`--no-create-info --complete-insert --skip-extended-insert`；文件内 INSERT **18 条 = 库内计数** ✓）
+  **【路径订正（2026-09-18，见 §16）：原在 `.tmp-probe/`，该目录已按 T-5.13 口径清理；本文件是其**唯一**幸存者，
+  已转正入库到 `docs/backups/`】**
 - 实测 diff：`orders.id` 113-117 → **486-490**（重建换新自增 id）；`ORD-20240801-001` 商品 **已退货×2 → 正常×2**；
   三表 1/1/16 → **0/0/0**；`conversation_history` 553 / `tool_call_log` 352 **不动**
 - ⇒ 与 docstring 用途**逐字吻合**（「退货后 SKU 变 RETURNED…测试前调用恢复到初始状态」）⇒ **符合设计，非缺陷**
 - **回灌命令**（如需恢复那 18 行，**须你确认后再执行**）：
-  `docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" customer_service' < .tmp-probe/cs-reset-backup-20260918.sql`
+  `docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" customer_service' < docs/backups/cs-reset-backup-20260918.sql`
   （注意 `complaint_tickets.idempotency_key` 是唯一键，期间若产生同键行会撞）
 
 ### 8. 本批自我纠错 ×2（同一病根：**取证选择器**）
@@ -2437,8 +2439,13 @@ ignore 是**按名枚举的列举法**，而派生目录会不断造新路径；
 **已提交并推送**：`contract-check` **`1e4fae4`** `chore(gitignore): 挡住 .env 派生名，堵住明文凭据入库路径`（1 file changed, +5）。
 ⚠️ **提交信息里刻意不含那个 md5** —— 它是凭据文件的摘要，写进仓库等于把摘要留在历史里（比对只在会话内用哈希前缀，落库不落）。
 
-**⚠️ 一条不得连坐的耦合**：`online/.tmp-probe/cs-reset-backup-20260918.sql` 是「重置测试数据」执行前 18 行的**唯一备份**
+**⚠️ 一条不得连坐的耦合**：`online/.tmp-probe/cs-reset-backup-20260918.sql`（**原路径**，今已转正为
+`docs/backups/cs-reset-backup-20260918.sql`，见下）是「重置测试数据」执行前 18 行的**唯一备份**
 （16 工单 + 1 退款 + 1 退货）⇒ **清 `.tmp-probe` 时必须先单独救出它**，否则那三张表永久不可恢复。
+
+**【✅ 该义务已于 2026-09-18 履行完毕（见 §16）】：清理时按本句要求把该文件**排除在删除清单之外****
+（删前核对：待删 52 个、备份未混入），随后转正入库到 **`docs/backups/cs-reset-backup-20260918.sql`**，
+`.tmp-probe/` 已 `rmdir`。⇒ 本句的**警示仍然有效**（它是这条耦合的由来），但其**待办状态已结**。
 
 **清理命令（我未执行 —— 按全局规约 `rm -rf` 必须由用户自己跑）**：
 
@@ -2794,4 +2801,90 @@ print(len(dn),len(set(dn)),len(en),len(set(en)),set(en)-set(dn),set(dn)-set(en),
 
 # 真机：2 行 + 静默取第一 + 命中顺序（脚本内容见批 3 报告，容器内实跑）
 docker cp <探针> sp-app:/tmp/p2.py && docker exec sp-app sh -c 'PYTHONUTF8=1 python /tmp/p2.py'
+```
+
+---
+
+### 16. online `.tmp-probe/` 清理（2026-09-18）—— 按本仓 T-5.13 口径，兼一处**跨仓口径冲突**的裁定
+
+**由来**：用户令「给 cs 补一下」（`.gitignore` 忽略 `.tmp-probe/`）后，顺带清 online 仓同款噪音源。
+清理前该目录 = **53 个文件 / 529K，全部造于 2026-09-18**（本轮 cc/gq/sp/cs 验收的产物）。
+
+#### ① 清理前先撞出一处**跨仓口径相反**，交用户裁定
+
+| 出处 | 做法 | 原话 |
+|---|---|---|
+| **本仓 T-5.13**（2026-09-17，明写「口径…**供后续引用**」） | **删掉，不盖** | 「`.gitignore` **未改**（不把噪音源盖起来，删掉它）」 |
+| offline `a6ad3a3` / cs `420e62d` | **盖起来** | 加 `.gitignore` 忽略 `.tmp-probe/` |
+
+**这是「同一条纪律在两仓写法相反」的形态**（与 `same-day-contradictory-records` 同族）。
+**用户 2026-09-18 拍板：按本仓 T-5.13 口径清掉** ⇒ online 仓**不加 `.gitignore`**，保持「删掉它」。
+⚠️ **本裁定只对 online 成立** —— offline/cs 的 `.gitignore` 做法**未改、未回退**（那是另两仓的事）。
+
+#### ② 删除前的台账代价核实 = **0**（这一步是 T-5.13 教训的直接应用）
+
+`grep -n "tmp-probe" task.md | awk -F: '$1>2450'` ⇒ 本轮新写的 **§13/§14/§15/批 3/批 4 零处**引用 `.tmp-probe/`
+路径（唯一命中 `:2604` 是 grep 的 `--exclude-dir` 参数，`:ring_baseline_probe.py:11` 是把它当建议输出路径），
+⇒ **清理不会产生任何空引用**，无需像 T-5.13 那样做 9 处引用订正。
+
+#### ③ 处置：**删 52 / 留 1（转正入库）**
+
+- **删除 52 个（逐名列举，非「删了那一堆」）**：`a5_conflict.pdf` `conflict-import.csv` `conflict-import2.csv`
+  `cs-admin-snap.txt` `cs-admin-snap2.txt` `cs-admin-snap3.txt` `cs-login-snap.txt` `cs-order-snap.txt`
+  `cs-status-snap.txt` `expert-import.xlsx` `f3probe_918a.pdf` `f3probe_919b.pdf` `f6-b1.txt`~`f6-b7.txt`
+  `f6-snap.txt` `gq-1.txt`~`gq-9.txt` `gq-on.txt` `gq-w1.txt`~`gq-w8.txt` `mk_expert_xlsx.py`
+  `rules-snap.txt` `rules-snap2.txt` `rules-snap3.txt` `sp-1.txt`~`sp-5.txt` `sp-conf-snap1.txt`
+  `sp-exp-snap1.txt` `sp-exp-snap2.txt` `sp-login-snap.txt` `sp-sup-snap1.txt` ⇒ 目录已 `rmdir`。
+  **⚠️ 未跟踪文件无 git 历史，删除不可逆**（用户已知悉并拍板）。
+- **`mk_expert_xlsx.py` 判「不够格转正」的理由**（留档防复问）：11 行一次性 fixture，输出路径**硬编码本机绝对路径**，
+  内容是自造的「导入探针甲/乙」；与 T-5.13 转正那两个（跨 agent 可复用的 baseline/state 探针）不同档。
+  它唯一还有价值的是「sp 专家导入页列头」这一事实，那该进台账而非靠留脚本。
+
+#### ④ 幸存者 `cs-reset-backup-20260918.sql` —— **转正入库**（用户拍板）
+
+**为什么不能按一次性载体删**：它**不是载体，是台账两条命令的落点** ——
+`task.md:2291` 的**回灌（回滚）命令**逐字指向它，`:2440` 明写它是那 18 行的**唯一备份**，
+`:2285` 记其生成参数。⇒ 正中 **T-5.13 自己写下的那条口径**：「台账的复核命令**不该指向临时文件路径**。
+证据**要么入库（转正）、要么别引**」。故「加 `.gitignore` 盖起来」对它尤不可取（等于承认台账长期指向临时路径）。
+
+- **落地**：`docs/backups/cs-reset-backup-20260918.sql`（8,041 字节 / 18 条 INSERT / 覆盖
+  `complaint_tickets` + `refund_orders` + `return_orders`；`file` 显示 UTF-8 含超长行，**与移动前一致**）。
+- **删前核对**（先干跑再删）：待删 52 个、**备份未混入**（`grep -c 'cs-reset-backup'` = 0）⇒ 才执行删除。
+  **这正是 `:2440` 那句「清 `.tmp-probe` 时必须先单独救出它」所要求的动作**，属**履行台账既有义务**、非新增判断。
+
+#### ⑤ 台账订正（站点全集先 grep 定死）
+
+`grep -n "cs-reset-backup" task.md` ⇒ **3 处**（另 `:2486` 仅写「已备份 18 行」未含路径，**不动**）：
+
+- `:2285` 生成记录 → 路径改 `docs/backups/…` + 加转正说明
+- `:2291` **回灌命令** → 路径改 `docs/backups/…`（**命令本身仍可执行，未失效**）
+- `:2442` 「不得连坐的耦合」→ **原句一字不改**（它承载「这条耦合的由来」这个结论，按 `evidence-site-number-edit-restates-verdict`
+  只能**重述结论**不能替换论据），仅在原路径后就地标注「**原路径**，今已转正为 `docs/backups/…`」+ 下方加
+  「该义务已履行完毕」标记（**警示保留、待办状态结**）
+  ⚠️ **本处是 §16 自己的第一次打脸**：首稿的 §16 ⑤ 曾声称该处「路径改」——**实际只追加了标记、原路径未动**，
+  是**台账新写的断言与现场不符**，当场读原文才发现并订正（与 `no-evidence-still-explained` 同形：**越像样的描述越易被采信**）。
+
+#### ⑥ 本批边界
+
+- **代码改动 0 行**；**online 仓 `.gitignore` 未改**（按 ① 的裁定）。
+- **不能证明**：本裁定**不构成**对 offline/cs 做法的否定 —— 那两仓的 `.gitignore` 仍在，**两仓口径仍不一致**，
+  本条**只登记该不一致**，未消解它。
+- **未做**：offline 仓的 `.tmp-probe/`（`c2c3_wordlist_judge.py` 等）**未动、未扫全集**；cs 仓的只加了 `.gitignore`、
+  内容未清。**不许把「online 清完了」读成「三仓都清了」**。
+
+#### ⑦ 复核命令
+
+```bash
+# ① 目录应已不存在（应输出「不存在」）
+[ -d /d/study/aiprojcet/agent-evaluation-online/.tmp-probe ] && echo 仍在 || echo 不存在
+
+# ② 幸存者已入库，且条数未变（应为 18）
+grep -c "INSERT INTO" /d/study/aiprojcet/agent-evaluation-online/docs/backups/cs-reset-backup-20260918.sql
+
+# ③ 台账里指向 .tmp-probe 的 **cs-reset-backup 旧路径**应只剩 1 处，且必带「原路径」标注
+#    （模式按「路径」构造而非按目录名，否则 §16 自身正文会命中一大片、判不出来）
+grep -n "tmp-probe/cs-reset-backup" /d/study/aiprojcet/agent-evaluation-online/task.md
+# 预期：**2 行** = :2442（正文，含「原路径」标注）+ 本复核命令自身那一行（模式串自命中，恒为 1）。
+#   ⇒ 判据是「除自命中外**有且仅有 1 处**，且它带『原路径』标注」；**不许写成「应输出 1」**——
+#     那样照跑得 2，会被下一个人读成「有残留路径」而误判（属 `chronic-noise-defeats-gate` 的造噪音）。
 ```
