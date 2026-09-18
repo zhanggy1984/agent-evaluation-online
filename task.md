@@ -1273,6 +1273,417 @@ UI 独有=0  ES 独有=0     agent 列不符条数: 0
   也可能是真缺口（`error_rate_block` / `assertion_penalty` 听上去像评分侧硬门禁）。
   **本次没有取证，故不下结论**；判定它需要逐项回查处置（属另一批）。
 
+#### 3.8 批 1：cc 真实操作 → 跨端验收（**本批第一次「在 agent 自己的 UI 上操作」**）—— ✅ 验收完成，**带出 1 个真实可复现缺陷 F1（已修，见 §3.9）**
+
+> **背景**：§3.1–3.7 全部是**「验收」**半边（把 UI 显示的值与库里/ES 里的值对上），
+> **「操作」半边一次都没做** —— `cc`/`sp`/`gq`/`cs` 四个 agent 自己的前端，本批之前**一个都没打开过**。
+> 用户原话「在浏览器端，对 4 个 agent 进行页面功能操作」指的正是这半边。§3.8 起补。
+
+**操作（全部在 `localhost:8088` cc 自己的页面上、由人点击完成）**：
+
+| # | 输入 | 结果 |
+|---|---|---|
+| 1 | `a5_conflict.pdf`（160 KB，`char_count=28091`） | 任务 **#660 FAILED** @40% |
+| 2 | 同上（重跑，验可复现性） | 任务 **#661 FAILED** @40%（**2/2 可复现**） |
+| 3 | `good.pdf`（1.7 KB，单段） | 任务 **#662 WAITING_REVIEW** @100% ✓（判别实验，见下） |
+
+**缺陷 F1（真实、可复现、非我注入）** —— 修复与复验见 **§3.9**：
+
+```
+error_type : INTERNAL_ERROR
+error_msg  : cannot enter context: <_contextvars.Context object at 0x7ebdf781e940> is already entered
+interface  : GET /api/tasks/{id}/result      node: request      duration_ms: 7262
+```
+
+- **根因（已回读代码 + 判别实验坐实）**：`contract-check/backend/app/llm/extractor.py:532-533`
+  ```python
+  ctx = contextvars.copy_context()
+  results = list(ex.map(lambda s: ctx.run(_single, s, partial_model, schema), segments))
+  ```
+  **同一个 `ctx` 被 `ThreadPoolExecutor` 的多个 worker 并发 `run()`** —— `Context.run()` 并发进入会抛
+  「already entered」。`max_workers = min(len(segments), MAX_PARALLEL=8)`（`:528`）。
+- **判别实验（不是推测，是跑到才写的）**：`SINGLE_SEGMENT_CHAR_LIMIT=20000`（`:26`）⇒
+  `char_count=28091` 被切成 ≈9 段、8 线程并发 ⇒ 必撞；`good.pdf` 极小 ⇒ 单段 ⇒ 无并发 ⇒ **不报错**。
+  **实测与预测逐条吻合**（662 跑到 100%）。
+- **为什么一直没被发现**：验收样本集里唯一的「正常件」`good.pdf` 只有 1.7 KB，
+  **正好绕开了并行路径** —— 样本集**不含多段用例**。
+- ⚠️ **归属已验**：这是 cc 仓自身的缺陷，**不是**平台（online/offline）的问题。
+
+**缺陷 F2（同一次操作里暴露）**：错误信息把 **Python 原始异常串连同内存地址
+`0x7ebdf781e940`** 直接显示给终端用户（cc 页面「任务 #660 FAILED 40% cannot enter context…」）。
+
+**观察 O1（不判缺陷，仅登记）**：任务 FAILED 后**上传按钮保持禁用**，刷新页面才恢复。
+可能是「一次只允许一个任务」的有意设计，本次未取证，不判。
+
+**跨端结论（用户判据：「同一份 agent 产生的数据在两端对得上」）**：
+
+| 端 | 结果 |
+|---|---|
+| **online** | ✅ **逐字对得上**。链路查询详情页 `/traces/contract-check/task-660` 显示 `2/2 事件`：seq0 `request` `error` + 完整 `error_msg`、seq2 `llm_call` `ok`（`deepseek-chat`，prompt 3050 · completion 2398 · total 5448）。与 ES 原始事件、与 cc 页面上的报错**三处逐字一致** |
+| **offline** | **零新增**（`eval_run` 仍 24 行 / max id 3708；`test_case` 仍 149）。**这不是缺陷** —— 成功流量本就不进离线；失败两次的错误又被值域挡（见下） |
+
+**🔴 关于「真实流量走七环」这条，本次拿到了一个比原先更精确的结论**：
+
+原来的记载是「无一条**真实用户流量**走完七环」。本次**真实流量到了、也产生了真实 error**，
+但它**进不了七环** —— 被**回流值域**挡在门外：
+
+- 值域 = `backend/app/analyzer/classify.py:38-51`，**恰好 11 词**
+  （L1 七类 `llm_*` + L2 四类 `llm_interface_business`/`external_non_llm`/`db_error`/`redis_error`）。
+- `INTERNAL_ERROR` **不在其中** ⇒ 不建簇。**实测佐证**：`dev.obs.error_cluster` 最新仍是 **3881**
+  （sp，2026-09-17），本批**未新增任何簇**。
+- 故本批**仍未能让真实流量走完七环** —— 但成因从「没有真实流量」**订正为**
+  「**真实流量来了，其错误类型不在回流值域内**」。这两句不是同一回事，后者可查、可复现。
+
+> ⚠️ **本文写的是「值域不含 INTERNAL_ERROR」这个事实**，**不是**「值域该不该含它」的裁决 ——
+> 那属于设计决策，本次不下结论。
+
+**复核命令**：
+
+```bash
+# ① 本批三次操作在 ES 的新增事件（基线 = 操作前 max ts）
+#    48 条 request 事件 + 3 个 task trace；F1 的两条可按下式直接取
+#    见 §3.6 末的 ES 查询模板，filter: agent=contract-check, ts>操作前基线, must_not node=heartbeat
+# ② 回流值域（11 词）
+sed -n '37,51p' backend/app/analyzer/classify.py
+# ③ 根因（并发复用同一 Context）
+sed -n '528,534p' ../contract-check/backend/app/llm/extractor.py
+sed -n '26,31p' ../contract-check/backend/app/llm/extractor.py   # 20000 / 3500 / 8 三个常量
+# ④ 未新增簇（最新仍应是 3881）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -t -e \
+  "select id,agent,error_type,status,first_trace_id from \`dev.obs\`.error_cluster order by id desc limit 3;"'
+# ⑤ offline 零新增
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -t -e \
+  "select count(*) cnt,max(id) from ai_evaluation.eval_run where agent_id=2299; select count(*) from ai_evaluation.test_case;"'
+```
+
+**本批证不了什么（勿外推）**：
+
+1. **证不了「真实用户用了系统」** —— 操作是我在浏览器里点的，仍**不是真实用户**。
+2. **证不了七环** —— F1 的错误进不了值域；`good.pdf` 那条是成功流量，本就不回流。**七环的 error 分支仍无真实流量**。
+3. **证不了 `sp`/`gq`/`cs`** —— 本批只做了 cc 一家（批 2/3/4 未开工）。
+4. **F1 的修复未做** —— 本批只取证、未改 cc 代码（改 cc 属另一仓另一批）。→ 已于 §3.9 修复并复验。
+
+#### 3.9 F1 修复 + 真机复验（**批 1 的补章**）
+
+**改动**：`../contract-check/backend/app/llm/extractor.py:528-539`（cc 仓，1 处）：
+
+```python
+# 前：ctx 在循环外取一次，被 min(len(segments), 8) 个 worker 并发 run() ⇒ 并发 enter 同一 Context
+ctx = contextvars.copy_context()
+results = list(ex.map(lambda s: ctx.run(_single, s, partial_model, schema), segments))
+# 后：每段各拿一份副本
+parent_ctx = contextvars.copy_context()
+results = list(ex.map(lambda s: parent_ctx.copy().run(_single, s, partial_model, schema), segments))
+```
+
+**修法上有个陷阱（已实测排除）**：**不能**把 `copy_context()` 挪进 lambda —— 那拷的是 **worker 线程自己的空上下文**，会丢掉提交方的 task span，**修好并发却弄坏 `record_llm` 的观测锚点**。实测 `parent_ctx.copy().run()` 在 4 个 worker 里读到的仍是提交方设的值 ✓。
+
+**实验室判别实验**（容器内 Python 3.11.16，临界区 `time.sleep(0.3)` 拉长）：
+
+| 写法 | 8 线程结果 | 耗时 |
+|---|---|---|
+| 共享同一 ctx（原） | **7/8 报错**，串与生产逐字同形 | 0.30s |
+| 各自 copy（新） | **0/8 报错** | 0.30s |
+
+⇒ 修复有效，且**并行性未损**（耗时相同）。⚠️ 注意：若不拉长临界区，两种写法**都报无错** —— 该实验本身若不设争用就无判别力。
+
+**🔴 为什么既有 58 个绿单测没抓住它（已定位到具体那一行）**：`cc/backend/tests/test_defensive_paths.py:276-284`
+`test_segmented_llm_error_clean_failed` **确实构造了多段输入**（`SINGLE_SEGMENT_CHAR_LIMIT // 12 + 100` 行 ≈ **21,000 字符 > 20,000**）⇒ **确实开了 8 线程**。
+但它用 `patch.object(extractor, "call_json", side_effect=LLMError(...))` —— 替身**瞬间抛异常、临界区长度为零** ⇒ 8 个线程**永远不重叠** ⇒ **撞不上**。
+**故 F1 活了这么久的成因不是「缺一条覆盖多段的测试」，而是「那条测试里没有争用」**（memory `concurrency-test-needs-contention-proof` 的教科书式实例：**跑在并行路径上 ≠ 并发真的发生**）。
+⇒ 本次**未新增回归测试**（按拍板口径只修不扩）：**该缺陷目前仍无任何测试守护**，后人改回共享 ctx 不会变红。要补须让替身带 `time.sleep` 制造重叠，**属另一批**。
+
+**真机复验**（cc UI 重传同一份 `a5_conflict.pdf` → 任务 **#663**）：
+
+| 口径 | 修前（#660/#661） | 修后（#663） |
+|---|---|---|
+| 任务终态 | FAILED @40% ×2 | **WAITING_REVIEW @100%** |
+| 抽取质量 | — | **COMPLETE** |
+| `request` 事件 | `error` / `INTERNAL_ERROR` | **`ok` / error_type=None** |
+| `llm_call` 事件 | — | **8 条全 `ok`**（+3 条后段），零 INTERNAL_ERROR |
+| 耗时 | 7262ms（中途炸） | 12468ms（跑完） |
+
+**并发争用证据**（不是「跑绿就算过」）：8 条 `llm_call` 启动时刻 `…427861 / 427953 / 428132 / 428140 / 428156 / 428331 / 428511`，**彼此仅隔 8~200ms**，而各自 duration 1167~1827ms ⇒ **时间窗高度重叠**，确属并发。这也解释了 cc 页面上出现的「**跨段字段冲突**（已标低置信）」——多段并行真的发生了。
+
+**跨端核（修后同样是三处一致）**：
+- **online UI** `/traces/contract-check/task-663` = **12/12 事件**，seq / 时间 / 耗时 / usage 与 ES 原始事件**逐字全等**（如 seq=18：`prompt 3050 · completion 2398 · total 5448`）。
+- **offline 零新增**：本批（09-18 08:13）在 `eval_run` **无新行** —— 以 `id > 3705` 实查，3709~3717 全部是 09-16/09-17 的历史行（**这不是「本批没新增」的间接推断，是逐行看时间戳**）。成功流量不进离线，失败那条进不了值域，两侧都符合设计。
+- **回流零新增簇**：最新仍 **3881**（09-17 05:34）。
+
+**失败证据保留**：`task-660`/`task-661` 两条 `INTERNAL_ERROR` 事件**仍在 ES**（`error_msg` 含 `cannot enter context: <_contextvars.Context object at 0x7ebdf781e940>`）—— 修复**没有覆盖**失败现场，两批证据并存成对照。
+
+**🔴 本批订正我一处错报**：批 1 时我报「offline `eval_run` max=3708」，**该数字是错的**（真实 3717）。结论（本批零新增）不变，但当时那个数字不是当次实查所得，已作废。
+
+**复核命令（§3.9 增补）**：
+
+```bash
+# ① 容器内确认跑的是新代码（cc 无源码 bind mount ⇒ 必须重建镜像，只重启无效）
+docker exec contract-check-backend sh -c 'grep -n "parent_ctx" /app/app/llm/extractor.py'
+# ② 修后任务的 ES 事件（应全 ok、零 INTERNAL_ERROR）
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H 'Content-Type: application/json' \
+  -d '{"size":50,"sort":[{"ts":"asc"}],"query":{"bool":{"filter":[{"term":{"trace_id":"task-663"}}]}}}'
+# ③ 失败证据未丢（应仍是 2 条 INTERNAL_ERROR）
+#    同上查询，trace_id 换 terms:["task-660","task-661"]，filter 加 {"term":{"status":"error"}}
+# ④ offline 本批零新增（逐行看时间戳，勿只看 max）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -t -e \
+  "select id,agent_id,started_at from ai_evaluation.eval_run where id > 3705 order by id;"'
+```
+
+**§3.9 证不了什么**：① 仍**不是真实用户**（我在浏览器点的）；② cc 仓的改动**未提交**（是否提交由人定）；③ 一次成功**不能证明**该并发缺陷在全部分段规模下都不再出现（只在 ≈9 段这一档复验过）。
+
+#### 3.10 批 1 补章：cc 四个视图补全 + 复核提交走通（**带出 3 条新发现**）
+
+> **由来**：用户质问「cc 彻底验证完了吗」—— **答：没有**。§3.8/3.9 只覆盖了 cc 前端 4 个视图里的 `Workbench` 的上传半边；
+> `History` / `Rules` **一次都没打开**，`Login` 只走过「401 被迫重登」，且主链路的**最后一步「提交审核」从未点过**。
+> 本节即补这一轮。视图全集取自 `frontend/src/App.vue:9-22`（cc **无 router 文件**，菜单即视图切换）。
+
+**① 复核提交走通（主链路最后一段）**
+
+`#662` 1 条异常、`#663` 2 条异常，逐条选完后方可提交（未选满时「提交审核」禁用、提示「请为全部异常选择…」，**这是页面级硬闸，已实测**）。
+
+| 任务 | 我的选择 | 落库 `violation.status` |
+|---|---|---|
+| #662 | 确认问题 | `CONFIRMED` |
+| #663 | 确认问题 | `CONFIRMED` |
+| #663 | **误报** | `FALSE_POSITIVE` |
+
+⇒ **两个分支都取到真值**。提交后任务 `WAITING_REVIEW` → **`FAILED`**（有确认的问题即判失败，实测一致）。
+
+**接口是 `POST /api/tasks/{id}/resume`（`frontend/src/api.js:38`），不是 `PATCH /violations/{id}/status`。** 三处对得上：
+ES 事件 `POST /api/tasks/{id}/resume` `ok` `duration_ms=124` `ts=1789690822772` ↔ 库 `check_task 662.update_time = 00:20:23` ↔ 页面状态跳转。
+
+**② 四个视图补全**
+
+| 视图 | 本轮结果 |
+|---|---|
+| Workbench | 上传 + **复核提交**（上表） |
+| History | **首次打开**：`Total 539`，行内可看 `#660~#664`、状态、抽取质量、创建时间，操作列（PDF/Excel/删除） |
+| Rules | **首次打开**：`Total 34`、2 页；行含类型/级别/来源/聚合/状态/操作（编辑·试跑·启用·失效·删除） |
+| Login | 退出登录 → 重新登录成功（token 重建） |
+
+**③「Rules 页 Total 34 vs 库 56」不是缺陷（已论证，勿再登记）**
+
+`check_rule` 按 `ontology_version_id` 分组 = **NULL 9 条（手写规则）+ v2 22 条 + v3 25 条**；
+**34 = 9 + 25** ⇒ 页面显示的是**当前本体版本 + 手写规则**，排除 v2 的 22 条历史规则。
+`ontology_version` 最新行 = `id=3`（`loaded_time 2026-08-11`）⇒ **v3 即当前版本，页面口径正确**。
+
+**④ 三条新发现**
+
+**F3 —— 真缺陷（数据正确性，sha256 级证据）**：`check_task_service.py:722-723`
+```python
+cf = db.query(ContractFile).filter(ContractFile.sha256 == sha).first()
+if cf is None:
+    ...
+    cf = ContractFile(file_name=_sanitize_filename(original_name), ...)   # ← 只有首次创建才写名字
+```
+**sha256 去重命中时直接复用旧行，本次上传的 `original_name` 被丢弃** ⇒「同一份内容，第一次叫什么、以后永远叫什么」。
+
+| 实测 | 我实际传的 | 落库 `file_name` | 内容真身（sha256 / size） |
+|---|---|---|---|
+| #664 | `f3probe_918a.pdf` | `data/acceptance/good.pdf` | good.pdf ✓（`58c7f413…` / 1695） |
+| #660 / #661 / #663 | `a5_conflict.pdf` | **`good.pdf`** | **a5_conflict.pdf**（`23ccb494…` / **160295**） |
+
+⇒ **名字与内容可以完全不符，且在 `History` 页直接展示给用户**。这正是本批判据（两端数据对得上）的反面 —— **连 cc 自己一端的 UI 与库都对不上**。
+附带：名字里还会存进**相对路径**（`data/acceptance/good.pdf`），`_sanitize_filename` 未剥路径。
+**未修**（属 A 级、改 cc 核心代码，须先出方案）。
+
+**F4 —— 复核提交的观测无法归因（覆盖缺口）**：该事件 `extra` 为空、`extra` 侧无 task id；
+`app/api/files.py:19` 注释明写「本路由（upload）是 cc **唯一**携带业务入参的 HTTP 入口」⇒
+**从 ES 看不出某次复核审的是哪个任务、选了什么**。另：后端存在 `PATCH /violations/{id}/status` 路由，**全时段 0 次调用**（前端不走它）。
+
+**F5 —— 人工复核无审计**：`violation.confirm_user` 列存在、`Workbench` 审核表有「确认人」列，
+但**全表 559 行非空 = 0**（其中 **11 行已被复核过**）⇒ **无任何写入方**。典型 [[existence-is-not-reachability]]。
+
+**⑤ 本轮我自己的两处失误（如实记）**
+
+1. **又猜列名一次**：查 `check_rule` 时写了 `status='DISABLED'`，真列名是 `enabled`。**这次 `SHOW COLUMNS` 跑在前**，所以只废掉后续两条查询、未产生错结论。
+2. **说错一句话并当场订正**：我先断言「复核提交没有任何观测事件」，随后查到 `POST /api/tasks/{id}/resume` 就是它、且事件存在 ⇒ **该句作废**。教训 = 认接口名不能只看 `grep` 的一个方向，要回前端 `api.js` 取调用点。
+
+**复核命令（§3.10 增补）**：
+
+```bash
+# ① 复核提交的三处一致（ES 事件 / 库 update_time / violation 状态）
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H 'Content-Type: application/json' \
+  -d '{"size":5,"query":{"bool":{"filter":[{"term":{"interface":"POST /api/tasks/{id}/resume"}},{"range":{"ts":{"gt":1789690803835}}}]}}}'
+docker exec contract-check-backend sh -c 'python -c "
+import os,pymysql
+c=pymysql.connect(host=os.environ[\"MYSQL_HOST\"],port=int(os.environ[\"MYSQL_PORT\"]),user=os.environ[\"MYSQL_USER\"],password=os.environ[\"MYSQL_PASSWORD\"],database=os.environ[\"MYSQL_DATABASE\"])
+cur=c.cursor()
+cur.execute(\"SELECT id,task_id,status,confirm_user FROM violation WHERE task_id IN (662,663)\")
+print(cur.fetchall())
+cur.execute(\"SELECT COUNT(*) total,COUNT(confirm_user) with_user FROM violation\")
+print(\"F5: confirm_user 非空 =\", cur.fetchone())
+"'
+# ② F3：文件名与内容 sha256 不符（决定性）
+#    同一脚本内改为 SELECT id,file_name,file_size,sha256 FROM contract_file WHERE id IN (91,94)
+#    再与本仓样本比对：sha256sum backend/data/acceptance/{good.pdf,a5_conflict.pdf}
+# ③ Rules 页 34 的论证
+#    SELECT ontology_version_id, COUNT(*) FROM check_rule GROUP BY ontology_version_id;   -- 9 / 22 / 25
+```
+
+**§3.10 证不了什么**：① 仍**不是真实用户**；② `Rules` 页只读了列表，**写操作（新建/编辑/试跑/启用/失效/删除）一个都没点**；③ `History` 页的删除、导出 PDF/Excel **未点**；④ F3/F4/F5 **均未修**。
+
+#### 3.11 处置 F3（上传文件名归属「本次上传」而非「这份内容」）—— ✅ 已修并真机复验
+
+**缺陷 F3（真实、可复现、非注入）**：`contract_file` 按 sha256 去重，同一行被多个 task 引用；
+而文件名存在 `contract_file.file_name` 上 ⇒ **同一份内容被第二次上传时，历史记录显示的是首次的名字**。
+实测 #664 传 `f3probe_918a.pdf`（1695B，`good.pdf` 副本），落库显示 `data/acceptance/good.pdf`；
+`contract_file` id=91 同时被 #662/#664 引用，id=94 同时被 #660/661/663 引用。
+
+**为什么不能就地改 `contract_file.file_name`**：会波及引用同一行的**历史** task（列表/导出名一起变）。
+**为什么不能改成「每次新建 contract_file 行」**：`contract_file.sha256` **有唯一索引**（见 `models.py:25`），
+建不了第二行。⇒ 名字必须落到 task 侧，新增 `check_task.original_name`。
+
+**改动（6 处，全在 cc 仓，⚠️ 未提交）**：
+
+| # | 文件:行 | 改动 |
+|---|---|---|
+| 1 | `db/models.py:54` | `CheckTask` 新增 `original_name`（`VARCHAR(255) NOT NULL DEFAULT ''`） |
+| 2 | `main.py:243` | `_ensure_column(engine, "check_task", "original_name", ...)` 幂等迁移 |
+| 3 | `service/check_task_service.py:434` | `_sanitize_filename` **先剥路径再判长度**（`\` 与 `/` 都取末段） |
+| 4 | `service/check_task_service.py:770` | 建 task 时写 `original_name=_sanitize_filename(original_name)` |
+| 5 | `service/check_task_service.py:673/681` | `list_tasks` 展示与筛选走**同一表达式** `coalesce(nullif(original_name,''), contract_file.file_name)` |
+| 6 | `report/report_data.py:123` | 导出名同口径 `task.original_name or cf.file_name` |
+
+**前端（`History.vue` / `Rules.vue`）零改动** —— 两处都经 `listTasks` 取数（`api.js:37`），
+改在 service 层即全覆盖；改前先 grep 确认过，不是省事。
+
+**单测（新增 `tests/test_upload_name.py` 11 条 + `test_report.py` 补 1 条）**：
+覆盖「剥路径 5 条 / 去重命中仍记本次名 3 条 / 存量行回退 3 条 / 导出名同口径 1 条」。
+全量 `429 passed`（改前 428）。
+
+**判别性验证（这一步是重点，不是走过场）**：把上述 4 个后端文件**回退到 `HEAD` 版本**再跑同一份新单测
+⇒ **7 failed, 4 passed**，红的正是 F3 相关断言（`good.pdf` != `f3probe_919b.pdf` 等），
+绿的是本就与修复无关的 4 条。**证明这些断言在修前会红，不是「怎么写都绿」**。
+
+**真机复验**（重建镜像 `docker compose build backend && up -d` → 迁移自动建列）：
+
+| 判据 | 结果 |
+|---|---|
+| 库里新列 | `check_task.original_name` `varchar(255) NOT NULL` ✅ |
+| **回归（最重要）** | #655–664 **10 行展示名与修复前基线逐字相同**（655-659 `b1_missing_date.pdf`；660/661/663 `good.pdf`；662/664 `data/acceptance/good.pdf`）✅ **修法没波及历史** |
+| 新上传 #665（传 `f3probe_919b.pdf`，sha 命中 id=91） | `original_name=f3probe_919b.pdf`，`status=WAITING_REVIEW@100%` ✅ |
+| **同一 `contract_file` 行两个名字** | #664 与 #665 **同引 cf id=91**，分别显示 `data/acceptance/good.pdf` / `f3probe_919b.pdf` ✅ **这才是 F3 的判据** |
+| `contract_file` 未被就地改 | id=91 仍是 `data/acceptance/good.pdf` ✅ |
+| UI 列表 | `f3probe_919b.pdf`（#665 行）✅ |
+| UI 筛选（有区分度） | 搜 `good.pdf` **不含 #665**（修前会含）；搜 `f3probe` 命中 #665 ✅ |
+| 导出名同口径 | `Content-Disposition` = `合同校验报告_f3probe_919b.pdf_665.{pdf,xlsx}` ✅（修前是 `…data/acceptance/good.pdf…`，还带 `/`） |
+
+**跨端核对（#665）**：ES `trace_key="contract-check#task-665"` 恰 **3 条**，与 online UI「3 / 3 事件」
+（seq 0 request / 2 llm_call / 4 llm_call，model/status/耗时/时间逐项）**全等**；
+offline `eval_run` max **仍 3717**、online `error_cluster` max **仍 3881** —— **两处零新增**。
+（**注意别复用「cc 白名单设计上关闭」这句**：§六 已核库内 cc `backflow_allow=1`、`backflow_enabled=true`，
+零回流的真因是 §3.8 订正的「`INTERNAL_ERROR` 不在回流值域 11 词内」。）
+
+**§3.11 证不了什么**：① 只验了「名字归属」这一条，**没验并发上传同 sha 时 `original_name` 的竞态**
+（走的是同一分支，理论上同形，但未实测）；② 导出只读了 `Content-Disposition`，
+**未开文件核对内容**；③ F4/F5 **仍未处置**；④ cc 两处代码改动 **仍未提交**。
+
+**复核命令（§3.11）**：
+
+```bash
+# ① 回归：展示名表达式对存量行的取值（须与修复前基线逐字相同）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -t -e \
+ "SELECT t.id,t.original_name,COALESCE(NULLIF(t.original_name,\"\"),cf.file_name) AS display_name,cf.id AS cfid \
+  FROM check_task t LEFT JOIN contract_file cf ON cf.id=t.contract_file_id WHERE t.id>=655 ORDER BY t.id" contract_check'
+# ② 判别性：4 个后端文件回退 HEAD 后重跑 tests/test_upload_name.py，期望 7 failed / 4 passed
+# ③ 同 sha 命中行：SELECT id,file_name,file_size,sha256 FROM contract_file WHERE id IN (91,94)
+# ④ 导出名：页面 fetch /api/tasks/{id}/report?format=pdf 后读 content-disposition
+```
+
+#### 3.12 cc Rules 写操作面全量走查 —— ✅ 走通，**带出并修复 F6**
+
+**范围**：cc「规则管理」页六个写操作（新建 / 编辑 / 试跑 / 启用 / 失效 / 删除）+ 本体规则的只读边界。
+全部经**真实鼠标点击**（el-radio-button 的 JS `.click()` 不生效，须用 MCP 点击 uid），每个动作**逐条对库取证**。
+
+| 写操作 | 真机结果（库侧回读） |
+|---|---|
+| 新建 | #63 落库，UI `Total 34→35`，行显示「失效」+ 启用/删除按钮（`MANUAL` 分支正确）✅ |
+| 编辑 | 级别 `MEDIUM→HIGH` **落库**；**改名未落库** ❌ ← 见 F6 |
+| 试跑 | 返回 `FAIL / LOW / token=6749` + reason；回查 `rule_id=63` 的 `rule_check_result` 与 `violation` **均 0 行** ⇒ 规格「试跑不落库」属实 ✅ |
+| 启用 | `enabled 0→1`，`update_time` 变更 ✅ |
+| 失效 | `enabled 1→0`，`update_time` 变更 ✅ |
+| 删除 | 物理删除；回到基线 **56 行 / 54 启用 / max_id=62**，零残留 ✅ |
+| 本体规则只读 | UI 层：无「删除」按钮、失效按钮 `disabled`；**API 层守卫未实测**（见「证不了什么」）✅ |
+
+**剔除的假缺陷**：新建抽屉无「类型」选择器 —— 与 API `CreateBody.type: Literal["SEMANTIC"]` 一致
+（确定性规则由本体生成），**不是缺陷**，勿登记。
+
+#### F6（真实缺陷，已修）：规则改名经 `PUT /api/rules/{id}` 静默失效
+
+- **现象**：编辑规则改名 → 弹「保存成功」→ **名字不变**；**同一请求里的 severity 却落库**
+  （即「部分字段生效」——正是这个不对称让它看起来像前端缓存问题，实为服务端死键）。
+- **根因（不是推断，是唯一调用点对比）**：`api/rules.py:52` 传 `UpdateBody.model_dump(exclude_none=True)`，
+  键为 **`name`**；而 `service/rule_service.py:205` 遍历的元组里写的是 **`"rule_name"`**
+  ⇒ `"rule_name" in data` **恒 False**，是条**死分支**。全仓 `update_rule` 仅此一个调用点，
+  没有任何路径能发出 `rule_name` 键。
+- **同文件内自证**：`create_rule` 第 182 行用的是 `data["name"]` —— **同一模块两种口径**，
+  这是「建/改同一字段应同名」的最直接铁证。
+- **为何长期未暴露**：`tests/test_rule_service.py` 对 `update_rule` **零覆盖**（只有 `rule_name`
+  作为 ORM 构造参数出现）；UI 走 `name`（与 API 契约一致）⇒ **服务层单侧缺陷，前端无过错**。
+- **修法（用户 2026-09-18 拍板「改 service 认 name 键」）**：`update_rule` 里显式映射
+  `name → rule_name`，从遍历元组中摘掉 `"rule_name"`；**不动 API 契约、零前端改动**。
+  取舍：触及服务层（A 级，已先出方案）；换来建/改同名自洽。
+
+**单测**：新增 `TestUpdateRule`（4 条）/ 全量 **433 passed**（改前 429 + 4，既有用例零调整）。
+
+**判别性验证**：4 个后端文件回退 HEAD 后重跑同一份新测试 → **1 failed / 19 passed**，
+红的恰是 `test_rename_takes_effect`，断言 `AssertionError: '旧名' != '新名'`。
+⚠️ **另 3 条修前也是绿的**（「不改名时别丢名字」「本体规则别越权」「404 返回 None」锁的是
+**别改坏**的边界，修前本就不违反）⇒ **判别性的只有 1 条，不是 4 条**，勿把 4 条都算作判据。
+
+**真机复验（连跑两遍，符合探针可重复性要求）**：
+
+| 组 | 操作 | 库侧结果 |
+|---|---|---|
+| A | 新建 #64「F6复验A-原名」→ 改名 + 同级改 severity | `rule_name=F6复验A-新名-20260918`、`severity=HIGH` **两项均落库** ✅ |
+| B | 新建 #65「F6复验B-原名」→ **纯改名**（不碰 severity） | `rule_name=F6复验B-新名-20260918`、`severity` **仍 MEDIUM**（未被误改）✅ |
+
+两组 UI 列表均同步显示新名；删除确认弹窗文案也用的是**新名**（改名已传播到 UI 各消费点）。
+镜像重建后**在容器内**读 `/app/app/service/rule_service.py` 复核，确认跑的是修后版本
+（cc 无源码 bind mount，改后端必须 `docker compose build backend`）。
+
+**跨端核对**：900 秒窗口内 cc 写操作事件 = `POST /api/rules` **2** + `PUT /api/rules/{id}` **2**
++ `DELETE /api/rules/{id}` **2** = **6 条，全部 `ok`** —— 与本轮实际操作次数（2 建 / 2 改 / 2 删）
+**精确相等**（既证「事件齐全」，也证「无多计」）。offline `eval_run` max **仍 3717**、
+online `error_cluster` max **仍 3881**，两处零新增（规则 CRUD 属管理面，不产生 agent 故障回流）。
+
+**订正上一轮的一处误记**：我此前把「改名后 `rule_iri` 与 `rule_name` 不一致」写成 F6 的副作用 ——
+**错**。`_gen_rule_iri` 仅在 `create_rule` 调用，update 从不重算 iri，**这是有意设计**
+（iri 是创建后稳定的技术标识）。修前之所以看不出不一致，只是因为**改名根本没生效**。
+
+#### F7（只读观察，**未真机实证**，勿当已验缺陷）
+
+`Rules.vue` 对 `ONTOLOGY_GENERATED` 规则也开放「编辑」入口，且抽屉内 名称 / 表达式 / 描述
+输入框**均未禁用**，而 `update_rule` 的本体分支**只认 `enabled` / `severity`，其余静默忽略**。
+仅由静态读码得出；我试图实测（改 #55 表达式后保存）**被权限拦截，我未绕过**，
+遂取消抽屉未保存，并回查确认 #55 未被改动（`update_time` 仍 `2026-08-11 07:43:59`、总数仍 56）。
+⇒ 登记为**观察**，不是结论。
+
+**§3.12 证不了什么**：① **「删除被引用规则应被拒」分支未验** —— 拟用 #23 实测时被权限拦截，
+未绕过（`delete_rule` 的 refs 检查 + FK RESTRICT 仅静态读码，未跑真机）；② 本体规则的
+**API 层**写守卫未实测（只验了 UI 层按钮态）；③ 试跑只验了「不落库」，**未核对 LLM 判定质量**；
+④ F4/F5 **仍未处置**；⑤ cc 侧 F1/F3/F6 三处代码改动与 online 台账**均未提交**。
+
+**复核命令（§3.12）**：
+
+```bash
+# ① 规则表基线与残留（期望恒为 56 / 54 / 62 / 0）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -t -e \
+ "select count(*) total,sum(enabled) enabled_cnt,max(id) max_id,sum(id>62) probe_left from contract_check.check_rule"'
+# ② 改名落库（对任一 MANUAL 规则经 UI 改名后回读）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e \
+ "select id,rule_name,rule_iri,severity,update_time from contract_check.check_rule where id=:id"'
+#   ↑ rule_iri 不随改名变 = 设计（_gen_rule_iri 仅 create 调用），不是缺陷
+# ③ 判别性：rule_service.py 回退 HEAD 后重跑 tests/test_rule_service.py，期望 1 failed / 19 passed
+# ④ 容器内代码版本（cc 无 bind mount，改后必须重建镜像才生效）
+docker exec contract-check-backend sh -c 'sed -n "199,214p" /app/app/service/rule_service.py'
+# ⑤ 本轮写操作事件（相对窗口，勿用过窄的绝对时间窗 —— 会静默排掉边界外事件）
+SINCE=$(( ($(date +%s) - 900) * 1000 ))
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H "Content-Type: application/json" \
+ -d "{\"size\":0,\"query\":{\"bool\":{\"filter\":[{\"term\":{\"agent\":\"contract-check\"}},{\"range\":{\"ts\":{\"gte\":$SINCE}}}]}},\"aggs\":{\"by_if\":{\"terms\":{\"field\":\"interface\",\"size\":30}}}}"
+```
+
 ### 四、复核命令（**结论数字必须连同产出命令一起引用**，勿只搬数字）
 
 ```bash
@@ -1376,7 +1787,26 @@ SQL
   **唯一未验页 = 修改密码**（未列入本批范围）。
 - **§3.5 登记的 1 处缺陷 + 观察 2 已处置**（配置中心只读数值失真、非 text 项多渲染文本域，
   见 §3.7 已修并真机复验）；**观察 1（用户管理禁用按钮标签）仍未处置**。
-- **「浏览器造错 → 新簇」这段链路本次始终没被真跑过**（原因见 §二）
+- ~~「浏览器造错 → 新簇」这段链路本次始终没被真跑过~~ **§3.8 已把这段推进到底并给出确切成因**：
+  真实流量**到了**、**也产生了真实 error**（`INTERNAL_ERROR`，2/2 可复现），
+  **但该 error_type 不在回流值域 11 词内 ⇒ 不建簇**（实测未新增簇，最新仍是 3881）。
+  **七环的 error 分支仍无真实流量，但成因已从「没有真实流量」订正为「真流量来了、类型不在值域内」**（见 §3.8）。
+- ~~F1 未修（改 cc 属另一仓另一批）~~ **已于 §3.9 修复并真机复验**：`extractor.py` 改为每 worker 各持一份
+  `parent_ctx.copy()`，重跑 `a5_conflict.pdf` 从 `FAILED@40%` → `WAITING_REVIEW@100%`，
+  8 条 `llm_call` **并发重叠且全 `ok`**，online UI 12/12 与 ES 逐字全等，offline 零新增。
+  ⚠️ cc 仓该改动**未提交**（是否提交由人定）。
+- ~~F3 未修~~ **已于 §3.11 修复并真机复验**（`check_task.original_name` + 展示/筛选/导出三处同口径），
+  7 项判据全过（含「回归：存量 10 行显示名逐字不变」与「同一 `contract_file` 行两个名字」）。
+  ⚠️ cc 仓该 6 处改动**未提交**（是否提交由人定）。
+- **F4（复核提交事件 `extra` 为空、不带 task id；`PATCH /violations/{id}/status` 全时段 0 次调用）仍未处置**。
+- **F5（`violation.confirm_user` 全表 559 行非空 = 0，UI 有「确认人」列但无写入方）仍未处置**；
+  §3.11 又新增一例佐证：复核提交后 #665 的 violation 789 `confirm_user` 仍为 `NULL`。
+- **「对 4 个 agent 进行页面功能操作」这半边**：**本批此前只做过验收半边**；
+  §3.8 已补 **cc 一家**（批 1）。**批 2/3/4（gq / cs / sp）未开工** —— 四家里的三家 agent 前端仍未打开过。
+- ~~cc 的写操作面仍只走了一部分~~：§3.10 走了复核提交、§3.11 走了**导出 PDF/Excel**、
+  **§3.12 已把 `Rules` 页六项写操作（新建/编辑/试跑/启用/失效/删除）全部走通**并带出修复 **F6**。
+  **仍未点**：`History` 页的删除；另 §3.12 另有两条未验（`删除被引用规则应被拒` 分支、本体规则
+  的 **API 层**写入守卫）—— 均因权限拦截未绕过，已在 §3.12「证不了什么」逐条登记。
 - 批 2（造错）中 cc / gq 之外的两家（cs / sp）**未单独跑**，结论由分类器同构外推；
   但 **§3.4 的跨端对账覆盖了 4 家全量**（cs 2 条 / sp 1 条），那一段不是外推。
 
