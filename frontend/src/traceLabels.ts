@@ -34,8 +34,11 @@ export function errorTypeHint(t: string): string {
   return ''
 }
 
-// 失败详情（P0-1）。request 级 error 现状只采到状态码、源头无 error_msg（2026-09-18 取证：
-// node=request 且 status=error 共 152 条、error_msg 全空；对照组 llm_call 级有且 API 原样下发）
+// 失败详情（P0-1）。request 级 error **多数**只采到状态码（2026-09-18 结项轮实测：
+// node=request 且 status=error 共 152 条，其中**缺 error_msg 126 条 / 带值 26 条** ——
+// 此处早先写的「152 条、error_msg 全空」把**总数当成了缺失数**，已订正。缺的 126 条
+// 全是状态码已自明的 4xx（404/401/422/400/403/409），带值的 26 条是业务层手动埋点
+// 的 llm_timeout/biz_error ⇒ 详见 docs/ux-review-newbie.md 的 P0-1「结项轮」）
 // ⇒ 无消息时**显式说明**，而不是照旧拼出一行裸码「HTTP_422」——那读起来像「有错但查不到」。
 export interface ErrorRowLike {
   // 对齐视图侧实际用到的行类型（其 status 是 string|null，非 TraceEventRow 的字面量联合）：
