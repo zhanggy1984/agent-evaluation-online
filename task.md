@@ -2381,7 +2381,9 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
   ⚠️ **与 [[local-precommit-hook-gap]] 的一处对照**：该 memory 记「覆盖率门禁对 `backend/` 布局的仓是死代码」——
   sp 是 `app/` 布局，**本例中门禁确实生效并打印了覆盖率**。两条不冲突，但**判「钩子管不管用」必须先看仓的布局**。
 - online `b52d193` `docs(task): 批 3 cs 收尾 ……`（`task.md` +553/−0 纯新增）。
-- **未 push 合计 11 笔**：online 5 · offline 2 · contract-check 3 · smart-procurement 1。
+- **推送（用户拍板「四仓一起 push，全快进」）**：online `2bc8d4b..7dd02ce` · contract-check `3f9a9a7..1e4fae4`
+  · offline `a6ad3a3..a69ae1b` · smart-procurement `a10a0ec..df28261`，**四仓 ahead 均归 0**。
+  ⚠️ 四点全部是**两点格式 `a..b`（快进）** —— 若为强推会显示带 `+` 的三点格式；本批**未用 `--force`**。
 
 **残留清点（我只列出，不删）**：
 
@@ -2427,7 +2429,7 @@ ignore 是**按名枚举的列举法**，而派生目录会不断造新路径；
    | `backend/.env.example` | **不被忽略** ✓（`!.env.example` 必需 —— 它是**已跟踪**文件） |
    | `backend/.env` / `.env` | 仍被 `.gitignore:3` 挡住 ✓ |
 
-**已提交（未 push）**：`contract-check` **`1e4fae4`** `chore(gitignore): 挡住 .env 派生名，堵住明文凭据入库路径`（1 file changed, +5）。
+**已提交并推送**：`contract-check` **`1e4fae4`** `chore(gitignore): 挡住 .env 派生名，堵住明文凭据入库路径`（1 file changed, +5）。
 ⚠️ **提交信息里刻意不含那个 md5** —— 它是凭据文件的摘要，写进仓库等于把摘要留在历史里（比对只在会话内用哈希前缀，落库不落）。
 
 **⚠️ 一条不得连坐的耦合**：`online/.tmp-probe/cs-reset-backup-20260918.sql` 是「重置测试数据」执行前 18 行的**唯一备份**
