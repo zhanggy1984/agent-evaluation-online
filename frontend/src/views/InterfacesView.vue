@@ -13,6 +13,12 @@ import { useMetricFilter } from '../composables/useMetricFilter'
 
 const { filter } = useMetricFilter()
 
+// 空态动作（P1-16）：清除筛选 = 回到默认窗口 + 全站（与 useMetricFilter 的默认值一致）
+function resetFilter(): void {
+  filter.window = '24h'
+  filter.agent = ''
+}
+
 const payload = ref<MetricsInterfaces | null>(null)
 const loading = ref(false)
 const errorMsg = ref('')
@@ -62,7 +68,17 @@ onMounted(() => void load())
 
     <template v-else-if="payload">
       <!-- 请求级/LLM 级桶均空 = 该范围无流量 → no_traffic；有桶才出 section（双 tab 明细） -->
-      <EmptyState v-if="!hasRows" kind="no_traffic" />
+      <EmptyState v-if="!hasRows" kind="no_traffic">
+        <template #actions>
+          <button
+            v-if="filter.window !== '7d'"
+            class="btn"
+            type="button"
+            @click="filter.window = '7d'"
+          >改为近 7 天</button>
+          <button class="btn-ghost" type="button" @click="resetFilter">清除筛选</button>
+        </template>
+      </EmptyState>
       <InterfacesSection v-else :payload="payload" :loading="loading" />
     </template>
   </div>

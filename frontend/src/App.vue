@@ -57,7 +57,7 @@ onUnmounted(() => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired))
     <header v-if="user" class="topbar">
       <div class="row-brand">
         <router-link class="brand" :to="{ name: 'overview' }">obs 观测台</router-link>
-        <span class="muted tag">agent-evaluation-online</span>
+        <span class="muted tag">agent 调用链路的错误聚类与回归回流平台</span>
         <span class="spacer" />
         <span class="muted who">{{ user.username }}（{{ user.role }}）</span>
         <button class="btn-ghost" type="button" @click="doLogout">退出</button>

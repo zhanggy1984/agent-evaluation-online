@@ -398,7 +398,7 @@ const rows = computed(() => detail.value?.conversions ?? [])
               <th>类型</th>
               <th>offline 状态</th>
               <th>回查状态</th>
-              <th>admin</th>
+              <th>处理人</th>
             </tr>
           </thead>
           <tbody>
@@ -440,9 +440,9 @@ const rows = computed(() => detail.value?.conversions ?? [])
             <span class="run-status" :class="r.case_pass ? 'ok' : 'fail'">
               {{ r.case_pass ? 'pass' : 'fail' }}
             </span>
-            <span class="mono">{{ r.run_id }}</span>
+            <span class="mono">run {{ r.run_id }}</span>
             <span class="muted">v{{ r.bound_version }}</span>
-            <span class="muted">{{ r.run_status }}</span>
+            <span class="muted">状态 {{ r.run_status }}</span>
             <span v-if="r.excluded_hit" class="warn-tag">excluded</span>
             <span class="muted tl-ts">{{ fmtTs(r.verified_ts) }}</span>
           </div>
@@ -456,7 +456,7 @@ const rows = computed(() => detail.value?.conversions ?? [])
         <div v-else class="tl">
           <div v-for="c in rows" :key="c.record_id" class="tl-row">
             <span class="act-tag">{{ conversionActionLabel(c.action) }}</span>
-            <span class="muted">{{ actorName(c) }}</span>
+            <span class="muted">操作人 {{ actorName(c) }}</span>
             <span class="muted tl-ts">{{ fmtTs(c.ts) }}</span>
             <span class="tl-detail">{{ c.detail || '' }}</span>
           </div>

@@ -34,7 +34,7 @@ async function submit(): Promise<void> {
   <div class="login-wrap">
     <form class="panel login-card" @submit.prevent="submit">
       <h1 class="title">obs 观测台</h1>
-      <p class="muted sub">agent-evaluation-online · 链路查询</p>
+      <p class="muted sub">agent 调用链路的错误聚类与回归回流平台</p>
       <label class="row">
         <span class="muted">用户名</span>
         <input v-model="username" name="username" autocomplete="username" />

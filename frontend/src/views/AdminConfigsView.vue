@@ -73,9 +73,8 @@ onMounted(() => void load())
   <div>
     <h2>系统管理 · 配置</h2>
     <p class="hint">
-      v1 生效键（全局）。写入后 <code>version</code> 自增并落 <code>config_change</code> 审计。
-      词表 <code>fallback_utterance</code> 为 per-agent 键，其 version 即 D19
-      <code>wordlist_version</code>。
+      当前生效的配置键（全局）。写入后 <code>version</code> 自增并落 <code>config_change</code> 审计。
+      词表 <code>fallback_utterance</code> 为 per-agent 键，每个 agent 各自维护版本。
     </p>
     <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
     <p v-if="notice" class="ok">{{ notice }}</p>
@@ -106,8 +105,7 @@ onMounted(() => void load())
       </tbody>
     </table>
     <p class="hint">
-      注：审计行当前无独立读面（跨 cluster 检索与导出归 <code>T-3.13</code>），
-      本页不展示变更历史。
+      注：审计记录当前没有独立的查询入口，本页不展示变更历史。
     </p>
   </div>
 </template>

@@ -19,6 +19,12 @@ import { fmtAxis, fmtPct } from '../format'
 
 const { filter } = useMetricFilter()
 
+// 空态动作（P1-16）：清除筛选 = 回到默认窗口 + 全站（与 useMetricFilter 的默认值一致）
+function resetFilter(): void {
+  filter.window = '24h'
+  filter.agent = ''
+}
+
 // 45s：< 后端 O-1 60s TTL 且非其整约数 → 每 tick 落在缓存存活期多命中一次；选 45 不为 60 的
 // 约数，避免 30s 等仍会周期性对齐后端失效瞬间。TTL=0（禁缓存）时接受每分钟实查全量（运维权衡）。
 const AUTO_REFRESH_MS = 45_000
@@ -81,9 +87,9 @@ const sourceLabel = computed(() => {
 const banner = computed(() => {
   if (filter.window !== '7d' || !overview.value) return null
   const src = overview.value.source
-  if (src === 'realtime') return '7d 无 rollup 覆盖，整窗按实时口径回算（聚合索引未生成或缺口）'
+  if (src === 'realtime') return '7d 无聚合数据，整窗按实时数据计算（聚合索引未生成或缺口）'
   if (src === 'mixed' && overview.value.fallback_hours.length > 0) {
-    return `部分时段回退实时口径（${overview.value.fallback_hours.length} 个整点小时无 rollup 覆盖）`
+    return `部分时段按实时数据计算（${overview.value.fallback_hours.length} 个小时没有聚合数据）`
   }
   return null
 })
@@ -95,8 +101,8 @@ const rollupNote = computed(() => {
   if (filter.window !== '7d' || !o) return null
   if (o.source !== 'rollup' && o.source !== 'mixed') return null
   return (
-    `分位(P50/P95/P99) 基于 ${o.covered_hours} 个已完成小时聚合` +
-    '（截至上一整点，整点后迟到流量不计入分位）；总数/失败率/序列为实时全窗'
+    `延迟分位(P50/P95/P99) 基于 ${o.covered_hours} 个小时的汇总数据` +
+    '（汇总只到上一个整点，之后的流量不计入分位）；总数/失败率/序列按实时数据统计'
   )
 })
 
@@ -179,7 +185,17 @@ onUnmounted(() => {
     <!-- 查询失败且无旧数据：只显示错误，不再渲染"暂无流量"空态以免误导 -->
     <p v-else-if="errorMsg && !hasTraffic" class="muted">本次查询无可用数据，请按上方错误提示处理。</p>
 
-    <EmptyState v-else-if="!hasTraffic" :kind="emptyKind()" />
+    <EmptyState v-else-if="!hasTraffic" :kind="emptyKind()">
+      <template #actions>
+        <button
+          v-if="filter.window !== '7d'"
+          class="btn"
+          type="button"
+          @click="filter.window = '7d'"
+        >改为近 7 天</button>
+        <button class="btn-ghost" type="button" @click="resetFilter">清除筛选</button>
+      </template>
+    </EmptyState>
 
     <template v-else>
       <section class="panel">

@@ -30,7 +30,7 @@ function reqStatus(r: LlmFailureItem): string {
   <div class="panel">
     <p class="slim head">LLM 失败现场（请求 ok + LLM 节点失败，时间倒序）</p>
     <p class="muted slim note">
-      兜底/降级现场不计入接口失败率（v1 不回流、L3 二期接入）；点击行下钻原 trace。
+      兜底/降级现场不计入接口失败率；点击行下钻原 trace。
     </p>
     <p v-if="loading && items.length === 0" class="muted slim">加载中…</p>
     <p v-else-if="items.length === 0" class="muted slim">窗口内无 LLM 失败现场</p>
