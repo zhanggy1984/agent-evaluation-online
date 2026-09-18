@@ -2370,3 +2370,43 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
 
 - **登记未处置（观察项，未判缺陷）**：`GET /api/v1/sessions` 当日有 1 条 `HTTP_401`
   （我未登录时碰的，客户端 4xx）⇒ **与「4xx 永不回流」一致，未建簇**，是既有判据的又一次独立复现。
+
+### 12. 四家页面面收口 —— 提交与残留清点（2026-09-18）
+
+**已提交（用户拍板「只 commit，不 push」）**：
+
+- sp `df28261` `fix(supplier): 解除拉黑同步恢复登录账号（修「只禁不启」）`
+  —— **本批唯一一处真代码修复未落地，现已落地**。提交前实跑 `tests/unit/test_supplier_service.py` = **15 passed**（含新增 2 条）；
+  仓内 pre-commit 钩子实跑 **380 passed / 覆盖率 70.64%（阈值 45%）**。
+  ⚠️ **与 [[local-precommit-hook-gap]] 的一处对照**：该 memory 记「覆盖率门禁对 `backend/` 布局的仓是死代码」——
+  sp 是 `app/` 布局，**本例中门禁确实生效并打印了覆盖率**。两条不冲突，但**判「钩子管不管用」必须先看仓的布局**。
+- online `b52d193` `docs(task): 批 3 cs 收尾 ……`（`task.md` +553/−0 纯新增）。
+- **未 push 合计 11 笔**：online 5 · offline 2 · contract-check 3 · smart-procurement 1。
+
+**残留清点（我只列出，不删）**：
+
+| 位置 | 体积 | 性质 | 处置 |
+|---|---|---|---|
+| `contract-check/.tmp-revert/` | **1.2 GB / 34,727 文件**（真身 = 拷贝出的 `.venv` 1.1 G + `data` 74 M + `fonts` 17 M） | F3 判别性回退用的整仓拷贝，**无 `.git`、可重建** | **用户拍板清除**（命令见下） |
+| `agent-evaluation-online/.tmp-probe/` | 529 KB / 53 文件 | 各批真机探针取证快照（`gq-*`/`sp-*`/`f6-*`/`rules-*`/`cs-*-snap` 等），**被本台账 §6~§11 多处引作复核依据** | **留** |
+| `customer-service/.tmp-probe/` | 8 KB / 2 文件 | cs 探针脚本 | **留** |
+| `smart-procurement/.env.c1bak` · `contract-check/backend/.env.c1bak` · `contract-check/.tmp-revert/.env.c1bak` | — | 凭据备份 | **一律保留，不读不删** |
+
+**🔴 本次新登记的隐患（只登记，未处置）**：`contract-check` 仓的 **`backend/.env.c1bak` 与 `.tmp-revert/.env.c1bak` 均未被 `.gitignore` 覆盖**
+⇒ 任何人一次 `git add -A` 就会把**明文凭据**收进暂存区。
+对照（说明这是可修的）：同目录 `.tmp-revert/.env` **被忽略**（`.gitignore:3` 的 `.env` 规则任何层级都匹配）；`smart-procurement/.env.c1bak` **也被忽略**。
+⇒ 补忽略规则属**改配置 = A 级**，须另开一条先出方案，**不在本批顺手做**。
+
+**⚠️ 一条不得连坐的耦合**：`online/.tmp-probe/cs-reset-backup-20260918.sql` 是「重置测试数据」执行前 18 行的**唯一备份**
+（16 工单 + 1 退款 + 1 退货）⇒ **清 `.tmp-probe` 时必须先单独救出它**，否则那三张表永久不可恢复。
+
+**清理命令（我未执行 —— 按全局规约 `rm -rf` 必须由用户自己跑）**：
+
+```bash
+# 1) 先确认对象（应打印 1.2G）
+! du -sh /d/study/aiprojcet/contract-check/.tmp-revert
+# 2) 再删
+! rm -rf /d/study/aiprojcet/contract-check/.tmp-revert
+# 3) 删后复核：应只剩 ?? backend/.env.c1bak
+! git -C /d/study/aiprojcet/contract-check status --short
+```
