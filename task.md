@@ -2392,10 +2392,43 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
 | `customer-service/.tmp-probe/` | 8 KB / 2 文件 | cs 探针脚本 | **留** |
 | `smart-procurement/.env.c1bak` · `contract-check/backend/.env.c1bak` · `contract-check/.tmp-revert/.env.c1bak` | — | 凭据备份 | **一律保留，不读不删** |
 
-**🔴 本次新登记的隐患（只登记，未处置）**：`contract-check` 仓的 **`backend/.env.c1bak` 与 `.tmp-revert/.env.c1bak` 均未被 `.gitignore` 覆盖**
-⇒ 任何人一次 `git add -A` 就会把**明文凭据**收进暂存区。
-对照（说明这是可修的）：同目录 `.tmp-revert/.env` **被忽略**（`.gitignore:3` 的 `.env` 规则任何层级都匹配）；`smart-procurement/.env.c1bak` **也被忽略**。
-⇒ 补忽略规则属**改配置 = A 级**，须另开一条先出方案，**不在本批顺手做**。
+**🔴 cc 凭据忽略缺口 —— 已出方案并处置（用户拍板方案 A）**
+
+**先订正我自己的一条腐化断言**：我此前**多次**记「sp 的 `.env.c1bak` 不得删除（按规约）」——
+**该文件根本不存在**。全盘 `find -maxdepth 3 -name '*c1bak*'` 只有 cc 那 2 个，其他五仓**一个都没有**。
+⇒ 我引用了一个**不存在的资产**（同族：[[no-evidence-still-explained]] 的子面「搬运既往结论须回查来源资产是否仍在」），
+且据此得出的「三份 c1bak 要统一口径」这个前提**随之作废**。
+
+**取证（不读内容，只比哈希与 git 元数据）**：
+
+| 事实 | 值 |
+|---|---|
+| `cc/backend/.env.c1bak` vs `cc/backend/.env` | **md5 全等（`d14f878c`，均 611 B）⇒ 逐字节冗余副本** |
+| `cc/.tmp-revert/.env.c1bak` | 同一内容 —— 是 `cp -r` **派生**过去的 |
+| 凭据是否进过 git 历史 | **0 提交（全分支）⇒ 无已发生的泄露，不需 rewrite 历史** |
+| cc `.gitignore` 原有 | `**/.env` + `.env` 两条，**覆盖 `.env`、不覆盖 `.env.c1bak`** |
+
+**三条挑战（当时提给用户）**：① 「忽略缺口」是**伪问题** —— 它只覆盖 1 个文件、且是冗余副本、且从未进历史；
+真问题是「**仓里为什么躺着一个凭据备份**」。② 加 ignore **挡不住本案成因** —— `.tmp-revert/.env.c1bak` 是 `cp -r` 派生品，
+ignore 是**按名枚举的列举法**，而派生目录会不断造新路径；本案即「`.env` 被挡住、`.env.c1bak` 没挡住」的活证。
+③ 口径订正见上。
+
+**处置（方案 A 已施行）**：
+
+1. **删副本**：`contract-check/backend/.env.c1bak` 已删除（与 `.env` 逐字节相同 ⇒ **零信息损失**；`.env` 611 B 仍在）。
+   `.tmp-revert/.env.c1bak` 随用户已授权的 `rm -rf .tmp-revert` 一并消失。
+2. **防复发**：`contract-check/.gitignore` 第 5~10 行新增
+   `​.env.*` + `!.env.example` —— **刻意不写 `*.c1bak`**（那又是枚举名字）。
+   复核四种命中（用假想路径验证，未实际建文件）：
+
+   | 路径 | 结果 |
+   |---|---|
+   | `backend/.env.c1bak` / `backend/.env.bak` | 被 `.gitignore:7` 的 `.env.*` 挡住 ✓ |
+   | `backend/.env.example` | **不被忽略** ✓（`!.env.example` 必需 —— 它是**已跟踪**文件） |
+   | `backend/.env` / `.env` | 仍被 `.gitignore:3` 挡住 ✓ |
+
+**已提交（未 push）**：`contract-check` **`1e4fae4`** `chore(gitignore): 挡住 .env 派生名，堵住明文凭据入库路径`（1 file changed, +5）。
+⚠️ **提交信息里刻意不含那个 md5** —— 它是凭据文件的摘要，写进仓库等于把摘要留在历史里（比对只在会话内用哈希前缀，落库不落）。
 
 **⚠️ 一条不得连坐的耦合**：`online/.tmp-probe/cs-reset-backup-20260918.sql` 是「重置测试数据」执行前 18 行的**唯一备份**
 （16 工单 + 1 退款 + 1 退货）⇒ **清 `.tmp-probe` 时必须先单独救出它**，否则那三张表永久不可恢复。
