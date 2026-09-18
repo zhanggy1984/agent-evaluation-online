@@ -12,7 +12,13 @@ import type { TraceListItem } from '../api/types'
 import TracesView from './TracesView.vue'
 
 const push = vi.fn()
-vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
+// P1-11：本页现在也读 useRoute().query（「从接口页带筛选跳过来」的落点）——
+// 不 mock useRoute 会让本文件**全部**用例红（useRoute() 得 undefined ⇒ route.query 抛错）。
+const routeQuery = vi.hoisted(() => ({ value: {} as Record<string, string> }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push }),
+  useRoute: () => ({ query: routeQuery.value }),
+}))
 
 const apiMock = vi.hoisted(() => ({ listTraces: vi.fn() }))
 vi.mock('../api/traces', () => apiMock)
@@ -48,7 +54,7 @@ const nextBtn = (w: ReturnType<typeof mount>) =>
   w.findAll('button').find(b => b.text().includes('下一页'))
 
 describe('P1-10 分页分母', () => {
-  beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset() })
+  beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset(); routeQuery.value = {} })
 
   it('total=30 → 分母 2（改前写死 10，是本条唯一的判别窗口）', async () => {
     const w = await mountView({ items: [], total: 30 })
@@ -95,7 +101,7 @@ describe('P1-10 分页分母', () => {
 })
 
 describe('P1-10 翻页边界', () => {
-  beforeEach(() => { apiMock.listTraces.mockReset() })
+  beforeEach(() => { apiMock.listTraces.mockReset(); routeQuery.value = {} })
 
   it('翻到末页 → 分母 2/2 且「下一页」禁用', async () => {
     // 第 1 页满页（20 条）⇒ 启用下一页；第 2 页只回 10 条 ⇒ 到末页
@@ -120,5 +126,63 @@ describe('P1-10 翻页边界', () => {
     // 把同形面伪装成判别面。真机取证时我正是差点据此误判，故在此钉死。
     const w = await mountView({ items: Array.from({ length: 10 }, (_, i) => row(i)), total: 30 })
     expect((nextBtn(w)!.element as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+// P1-11：接口页的错误数跳进来时带 interface + status —— 本组钉「URL 真被消费」与
+// 「隐形筛选被显式告知」。⚠️ 本组**不证明**条数等于接口页那个数字（口径不同，见 es.py 内警告）。
+describe('P1-11 URL 带筛选落地', () => {
+  beforeEach(() => { apiMock.listTraces.mockReset(); routeQuery.value = {} })
+
+  it('URL 带 interface + status → 首屏查询即带上这两个参数', async () => {
+    routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
+    await mountView({ items: [], total: 29 })
+    expect(apiMock.listTraces).toHaveBeenCalledWith(
+      expect.objectContaining({ interface: 'POST /api/chat/{id}', status: 'error' }),
+    )
+  })
+
+  it('有隐形筛选 → 渲染提示条（否则条数少得像 bug）', async () => {
+    routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
+    const w = await mountView({ items: [], total: 29 })
+    const hint = w.find('.filter-hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('当前筛选')
+    expect(hint.text()).toContain('POST /api/chat/{id}')
+    expect(hint.text()).toContain('error')
+  })
+
+  it('提示条必须认领**三个**口径成因（窗口 / 去重 / 节点，缺一即是误导）', async () => {
+    // 回归护栏：口径差异有三个独立成因，只写其中一两个会让用户觉得提示条在胡说。
+    // ⚠️ 本条**只钉文案覆盖了三个维度**，不声称任何一维的量级 ——
+    // 2026-09-18 曾据一个错误读数（status 未进 URL）写下「窗口是主因、差 60 倍」，已作废。
+    routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
+    const w = await mountView({ items: [], total: 29 })
+    const t = w.find('.filter-hint').text()
+    expect(t).toContain('7 天')   // ① 时间窗（主因）
+    expect(t).toContain('去重')    // ② 折叠
+    expect(t).toContain('节点')    // ③ node=request 限定
+    // 不许写死接口页的窗口值——用户可在接口页切 7d，写死必腐
+    expect(t).not.toContain('接口页 24 小时')
+  })
+
+  it('URL 无筛选 → 不渲染提示条，也不传 interface/status（旧行为不变）', async () => {
+    const w = await mountView({ items: [], total: 9 })
+    expect(w.find('.filter-hint').exists()).toBe(false)
+    const q = apiMock.listTraces.mock.calls[0][0]
+    expect(q.status).toBeUndefined()
+    expect(q.interface).toBeUndefined()
+  })
+
+  it('点「清除筛选」→ 清掉两者并重查（无表单控件可改，只能整块清）', async () => {
+    routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
+    const w = await mountView({ items: [], total: 29 })
+    await w.find('.filter-hint button').trigger('click')
+    await Promise.resolve(); await Promise.resolve()
+    // 用 mock.lastCall（vitest 标准 API）而非 calls.at(-1)：本仓 tsconfig 的 lib 不含 es2022，
+    // `.at()` 过不了 vue-tsc（曾把 npm run build 卡在类型检查这一步）。
+    const last = apiMock.listTraces.mock.lastCall![0]
+    expect(last.status).toBeUndefined()
+    expect(last.interface).toBeUndefined()
   })
 })

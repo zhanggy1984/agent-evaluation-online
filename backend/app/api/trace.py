@@ -104,6 +104,10 @@ async def list_traces(
     keyword: str | None = Query(default=None, max_length=200, description="错误信息关键字"),
     agent: str | None = Query(default=None, max_length=64),
     interface: str | None = Query(default=None, max_length=256),
+    status: str | None = Query(
+        default=None, max_length=16,
+        description="按状态过滤（ok / error / timeout）；判的是该 trace 最新命中行的状态",
+    ),
     start_ts: int | None = Query(
         default=None, description="epoch ms；缺省 = now - keyword_search_days"
     ),
@@ -136,6 +140,7 @@ async def list_traces(
             keyword=keyword,
             agent=agent,
             interface=interface,
+            status=status,
             start_ts=start_ts,
             end_ts=end_ts,
             body_search=body_search,

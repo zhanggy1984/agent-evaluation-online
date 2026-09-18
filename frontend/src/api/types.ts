@@ -68,6 +68,9 @@ export interface TraceQuery {
   keyword?: string
   agent?: string
   interface?: string
+  // P1-11：状态过滤（ok / error / timeout）。判的是该 trace 最新命中行的状态，
+  // 与 /metrics/interfaces 的 error（按事件计数、只看 request 节点）**口径不同**。
+  status?: string
   page?: number
   page_size?: number
 }

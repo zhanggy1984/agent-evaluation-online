@@ -65,7 +65,20 @@ function fmtTok(v: number): string {
           <tr v-for="r in reqRows" :key="r.interface" :class="{ red: redReq(r) }">
             <td>{{ r.interface }}</td>
             <td class="num">{{ fmtInt(r.total) }}</td>
-            <td class="num">{{ r.error }}</td>
+            <td class="num" :class="{ red: r.error > 0 }">
+              <!-- P1-11（2026-09-18）：错误数可点下钻到链路查询。
+                   ⚠️ 落点条数**不保证**等于本页这个数字 —— 两者口径有两个独立差异：
+                   ① 本页按**事件**计数（filter agg doc_count），链路列表按 **trace 去重**（折叠）；
+                   ② 本页 error 只看 `node=request`（es.py:326），列表的 status 过滤不限节点。
+                   实测 POST /api/chat/{id} 本页 7、列表 29（真机 2026-09-18，7d 窗）。
+                   落点页顶部已有对应提示文案，不要删。error=0 时不给链接（点过去必然空）。 -->
+              <router-link
+                v-if="r.error > 0"
+                class="err-link"
+                :to="{ path: '/traces', query: { interface: r.interface, status: 'error' } }"
+              >{{ r.error }}</router-link>
+              <span v-else>0</span>
+            </td>
             <td class="num">{{ r.timeout }}</td>
             <td class="num">{{ fmtMs(r.p50) }}</td>
             <td class="num">{{ fmtMs(r.p95) }}</td>
@@ -204,6 +217,12 @@ tr.iface:hover {
 
 tr.red td:first-child {
   box-shadow: inset 3px 0 0 var(--error);
+}
+
+/* P1-11：错误数下钻链接（仅 error>0 渲染；0 不留不可点的死样式） */
+.err-link {
+  color: var(--brand);
+  text-decoration: underline;
 }
 
 td.red {

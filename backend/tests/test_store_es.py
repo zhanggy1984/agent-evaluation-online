@@ -75,6 +75,31 @@ def test_keyword_body_search_false_excludes_body_fields():
     assert set(_KEYWORD_FIELDS_BODY) <= set(fields_on)
 
 
+def test_list_body_status_filter_and_default_absent():
+    """P1-11：status 过滤落 filter、与既有筛选并列，缺省时不产生任何条件。
+
+    ⚠️ 本测**只钉「条件被构造出来」**，不证明它与 /metrics/interfaces 的 error 数一致 ——
+    两者口径根本不同（这里是 trace_key 折叠后的**代表行**状态，那边是**文档计数**不折叠），
+    见 es.py::build_trace_list_body 内的口径警告。真机实测差异记在台账。
+    """
+    off = build_trace_list_body(
+        trace_id=None, keyword=None, agent=None, interface=None,
+        start_ts=None, end_ts=None, body_search=False, from_=0, size=20,
+    )
+    assert off["query"]["bool"]["filter"] == []
+
+    on = build_trace_list_body(
+        trace_id=None, keyword=None, agent="cc", interface="POST /api/chat",
+        start_ts=None, end_ts=None, body_search=False, from_=0, size=20,
+        status="error",
+    )
+    filt = on["query"]["bool"]["filter"]
+    assert {"term": {"status": "error"}} in filt
+    # 与既有筛选**并列**（不互相顶替）：加了 status 不能把 agent/interface 挤掉
+    assert {"term": {"agent": "cc"}} in filt
+    assert {"term": {"interface": "POST /api/chat"}} in filt
+
+
 def test_trace_events_body_filters_log_and_sort_tree_order():
     # 详情只取 event_kind=event（日志行走 /logs 懒加载）；树序 = seq asc（§11.1 创建序单调，
     # 根锚点 seq=0 恒首位；ts asc 会让 finally 才发出的 request 沉底，S-1 实测修正）

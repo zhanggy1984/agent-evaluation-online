@@ -4,7 +4,7 @@
 // 与 ≤200 上限；红显 = status∈{error,timeout}。
 // Q6 决策：agent 过滤由自由文本框改为共享动态下拉（全站 + /metrics/agents 实测列表）。
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
 import { listTraces } from '../api/traces'
@@ -12,8 +12,17 @@ import { useAgents } from '../composables/useAgents'
 import type { TraceListItem } from '../api/types'
 
 const router = useRouter()
+const route = useRoute()
 
-const queryForm = ref({ trace_id: '', keyword: '', agent: '' })
+// P1-11（2026-09-18）：本页原**完全不读 URL** ⇒ 「从别处带着筛选跳过来」做不到。
+// 现从 route.query 初始化 —— 接口页的错误数就是这么跳进来的（带 interface + status）。
+// ⚠️ 这两个筛选**没有对应的表单控件**，故模板里渲染了「当前筛选」提示条：否则用户会
+// 看到一个说不清为什么这么少的条数，这是本页最容易被误判成 bug 的形态。
+const qs = (k: string): string => String(route.query[k] ?? '')
+const queryForm = ref({
+  trace_id: qs('trace_id'), keyword: qs('keyword'), agent: qs('agent'), interface: qs('interface'),
+})
+const statusFilter = ref(qs('status'))
 const loading = ref(false)
 const errorMsg = ref('')
 const items = ref<TraceListItem[]>([])
@@ -52,6 +61,8 @@ async function doSearch(p = 1): Promise<void> {
       trace_id: queryForm.value.trace_id.trim() || undefined,
       keyword: queryForm.value.keyword.trim() || undefined,
       agent: queryForm.value.agent.trim() || undefined,
+      interface: queryForm.value.interface.trim() || undefined,
+      status: statusFilter.value.trim() || undefined,
       page: p,
       page_size: pageSize,
     }
@@ -72,6 +83,13 @@ async function doSearch(p = 1): Promise<void> {
 }
 
 function resetAndSearch(): void {
+  void doSearch(1)
+}
+
+/** 清掉「从别处带过来」的隐形筛选（interface / status）—— 它们没有表单控件可改，只能整块清 */
+function clearInheritedFilters(): void {
+  queryForm.value.interface = ''
+  statusFilter.value = ''
   void doSearch(1)
 }
 
@@ -118,6 +136,33 @@ onMounted(() => {
         {{ loading ? '查询中…' : '查询' }}
       </button>
     </form>
+
+    <!-- P1-11：status / interface 没有表单控件 ⇒ 必须显式告诉用户「你正被什么筛着」，
+         否则条数少得像 bug。散文里的口径提示是**认领**，不是装饰。
+         ⚠️ 口径差异有**三个**独立成因，缺一个都会让用户认定提示条在胡说：
+           ① 时间窗：接口页的窗由该页筛选条决定（进页默认 24h），本页固定近 7 天。
+           ② 折叠去重：本页 trace_key 折叠 ⇒ 倾向于**更少**
+           ③ 节点范围：接口页只看 node=request，本页不限 ⇒ 倾向于**更多**
+         ⚠️ 2026-09-18 此处曾写「24h 显示 2 → 本页 120，60 倍」——**该论据已作废**：
+           当时 listTraces 没把 status 发进 URL（见 api/traces.ts），120 是「不限 status」的
+           条数，与窗口无关。修复后的正确量级（API 直连控制变量，同一时刻同一库）：
+             同窗 24h：接口页 2  | 本页 2   ← **逐字相等**
+             同窗 7d ：接口页 7  | 本页 29
+             跨窗    ：接口页 24h 2 → 本页 7d 29 = 14.5×
+           ⇒ 窗口确实是最大的一维（同窗时另两维在 24h 内不显著），但**依据是同窗对照，
+           不是那个 60 倍**；「同窗对照」是拆这类差异的唯一手法，别拿跨窗读数直接归因。
+           数字会随时间腐，改文案时不要把它们抄进 UI。
+         文案里**不许写死「接口页 = 24h」**：用户在接口页可以切 7d，写死就会腐。 -->
+    <p v-if="statusFilter || queryForm.interface" class="filter-hint">
+      <span>当前筛选：</span>
+      <span v-if="queryForm.interface">接口 <code>{{ queryForm.interface }}</code></span>
+      <span v-if="statusFilter">状态 <code>{{ statusFilter }}</code></span>
+      <span class="muted">
+        （本页固定近 7 天、按 trace 去重、不限节点；接口页按它自己的时间窗、按事件计数
+        ⇒ 条数通常不相等）
+      </span>
+      <button class="link-like" type="button" @click="clearInheritedFilters">清除筛选</button>
+    </p>
 
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
 
@@ -200,6 +245,25 @@ onMounted(() => {
 
 .hint {
   font-size: 12px;
+}
+
+/* P1-11：隐形筛选提示条（interface / status 无表单控件可改，只能整块清） */
+.filter-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.filter-hint code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--brand);
 }
 
 .link-like {

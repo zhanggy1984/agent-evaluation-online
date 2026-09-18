@@ -50,6 +50,7 @@ def build_trace_list_body(
     body_search: bool,
     from_: int,
     size: int,
+    status: str | None = None,
 ) -> dict:
     """GET /traces query body：按 (agent, trace_id) 折叠去重，每 trace 取 ts desc 最新命中行。
 
@@ -75,6 +76,14 @@ def build_trace_list_body(
         filter_.append({"term": {"agent": agent}})
     if interface:
         filter_.append({"term": {"interface": interface}})
+    if status:
+        # P1-11：状态过滤（值域 ok / error / timeout）。
+        # ⚠️ **口径警告（使用时必须知道）**：本列表按 trace_key **折叠去重**（一 trace 一行，见上文
+        # 「折叠键」），故这里的 status 判的是**该 trace 最新命中行**的状态 —— **不是**「trace 内存在
+        # error 事件」。与 /metrics/interfaces 的 error（filter agg 的 doc_count、**不折叠**）必然不等：
+        # 一个 trace 内 3 个 error 事件在接口页计 3、在这里最多出 1 行；若最新行是 ok 则根本不出。
+        # ⇒ 调用方（前端）**必须**把这条差异显式告诉用户，不许把两个数字说成一一对应。
+        filter_.append({"term": {"status": status}})
     ts_range: dict[str, Any] = {}
     if start_ts is not None:
         ts_range["gte"] = start_ts
