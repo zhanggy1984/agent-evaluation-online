@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
 import { traceDetail, traceLogs } from '../api/traces'
 import type { TraceEventRow, TraceLogRow } from '../api/types'
+import { errorDetail } from '../traceLabels'
 
 const route = useRoute()
 const router = useRouter()
@@ -188,7 +189,7 @@ onMounted(() => void loadDetail())
         </span>
 
         <div v-if="isRed(row)" class="err-detail">
-          {{ row.error_type || '' }}{{ row.error_type && row.error_msg ? '：' : '' }}{{ row.error_msg || '' }}
+          {{ errorDetail(row) }}
         </div>
       </div>
     </div>
@@ -216,7 +217,7 @@ onMounted(() => void loadDetail())
           <span class="mono muted log-seq">{{ lg.seq }}</span>
           <span class="log-lv muted">{{ lg.log_level || '' }}</span>
           <span class="muted">{{ fmtTs(lg.ts) }}</span>
-          <span class="log-body">{{ lg.log_message ?? '（正文按 body_search 策略不返回）' }}</span>
+          <span class="log-body">{{ lg.log_message ?? '（日志正文默认不返回：可能含敏感内容）' }}</span>
         </div>
       </div>
       <p v-else-if="logsLoaded" class="muted">无日志</p>
