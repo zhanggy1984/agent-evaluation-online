@@ -2516,7 +2516,91 @@ grep -n 'APIRouter(\|include_router' /d/study/aiprojcet/customer-service/backend
 #### ⑤ 本批边界（不夸大）
 
 - **代码改动：0 行** —— 按「一个批次 = 一份方案 + 一次独立验证」，本批产出物 = 定级本身。
-- **未做**：条目 2/3 的修复（有意不做，撞「不碰无关代码」）；条目 5 的守卫补齐（不可达，无验证面）；
-  条目 4 的删除（`rm` 按规约由用户执行）。
+- **未做**：条目 2/3 的修复（有意不做，撞「不碰无关代码」）**【⚠️ 本判断已于 §14 推翻并落实：范围不是我当场以为的 2 行，实测 11 处，用户重新拍板全改】**；
+  条目 5 的守卫补齐（不可达，无验证面）；
+  条目 4 的删除（已于 §14⑥ 连同甲类残留一并删除）。
 - **不能证明**：条目 5「当前不可达」只对**当刻数据**成立；若日后导入重名供应商，该缺口即变可达 ——
   它是**潜伏**而非**不存在**。
+
+---
+
+### 14. cs 认证路径陈旧面全仓对齐（2026-09-18）—— 兼推翻 §13 的一处范围判断
+
+**由来**：清完甲类残留后，我按 §13 表里「条目 2/3 有意不修」去复核 cs 的认证路径，**先报给用户的数字是「2 行」**；
+grep 全仓定死后实测 **11 处** —— 我给用户的选项里带了一个错数字（`multi-site-doc-edit-enumerate-first` 记的「数字出现在给用户的选项里同罪」，这算又一次触发）。
+**用户重新拍板：11 处全改（含 nginx）。** §13 那句「范围 = 仅认证一节」方向对、**边界错**：认证一节确实错，
+但同一病根还散在 docstring 与 nginx 配置里。
+
+**根因**：T15 把认证从 `/api/v1/auth/*` 统一为 `/api/auth/*`（`main.py:188` 挂 `prefix="/api"`），
+代码与前端跟上了，**文档、docstring、nginx 三处没跟**。
+
+#### ① 站点全集（`grep -rIn '/api/v1/auth'` 定死，非凭印象）
+
+| # | 位置 | 类型 | 后果 |
+|---|---|---|---|
+| 1 | `docker/nginx.conf:61` | 活注释「独立 5r/m 防暴力破解」 | **过期** —— 该文件零 `limit_req`，头注 :2 自陈「限流已收敛到网关 api-gateway」 |
+| 2 | `docker/nginx.conf:62-66` | 活配置 `location /api/v1/auth/` | **死块**，零运行影响（见 ②） |
+| 3–4 | `backend/app/api/auth.py:3,4` | docstring | 零 |
+| 5 | `backend/app/main.py:4` | 模块 docstring「路由挂载: /api/v1/auth/*」 | 零 |
+| 6–7 | `docs/API.md:9,17` | curl 示例 | **照抄 404** |
+| 8–9 | `solution.md:391,392` | 接口表 | 误导 |
+| 10 | `solution.md:451` | 「`/api/v1/auth/` 单独 5r/m」 | **双重过期**（路径 + 限流归属都已迁走） |
+| 11 | `solution.md:624` | 路由前缀对照表 | 误导 |
+
+**对照面（本来就对，勿误改）**：`contracts.py:20,34`（运行时对外契约表）、`main.py:188`、`frontend/src/api/authApi.ts:5`、
+`backend/verify_cs_e2e.py:17`、`README.md:198`（该处正是在**描述这个历史 bug**）。
+
+#### ② 死块为什么可以整块删（不是「顺手删配置」，是行为保持）
+
+块内三条指令 `proxy_pass` / `proxy_buffering off` / `proxy_cache off` 与下方 `location /api/` **逐字相同**；
+`proxy_read_timeout 3600s` 只在 `location /api/` 里 —— 而 T15 之后 `/api/auth/*` **本来就是落到 `location /api/` 的**
+（`/api/v1/auth/` 这个前缀早已无真实请求命中）。
+⇒ 删除后：既无新增行为，也无丢失行为。**若当初图省事「把路径改对」，反而会让认证请求丢掉 3600s 读超时**（那才是改动行为）。
+
+#### ③ 验证（判别性，非「有没有报错」）
+
+`nginx -t` 通过 → `nginx -s reload` → 容器内配置确已生效（`location /api/` 由 :69 前移至 :62）→ 三条真机探针：
+
+| 探针 | 结果 | 证明 |
+|---|---|---|
+| `POST https://localhost:8443/api/auth/login`（错口令） | **401** | 路由可达、认证正常拒绝 |
+| `POST .../api/v1/auth/login` | **404** | 旧路径确不存在（死块删对了） |
+| `POST .../api/v1/sessions` | **401** | 删块后 `location /api/` 反代健康 |
+
+`py_compile` 两个 .py 通过。
+
+#### ④ 有意保留的残留（grep 已定死只有这两处）
+
+- `README.md:198` —— 在描述这个历史 bug 本身，写法正确
+- `task.md:14` —— 历史任务记录，**台账是历史**，不追改
+
+#### ⑤ 边界（不夸大）
+
+- **未跑单测**：改动全为 docstring 与 nginx 配置，**无单测覆盖面**，跑了也证不了本轮改动。有效验证只有 ③ 的三条探针。
+- **不能证明**：`nginx.conf` 头注「限流已收敛到网关」是**该文件自陈**，本轮**未去 `infra/api-gateway` 侧核**网关是否真配了限流 —— 若网关也没有，那是另一个独立的缺口。
+
+#### ⑥ 甲类残留清理（本轮同办，此前只在对话里、从未落台账）
+
+| 对象 | 处置 | 落盘 |
+|---|---|---|
+| offline `前端UI验收记录.md` + `评测平台分析-硬伤与优化清单.md` | `git rm` | offline **`32594b3`**，已推 `698a05f..32594b3` |
+| `contract-check/.tmp-revert/`（1.2 G / 39,540 项） | 删除 | 未跟踪，无需提交 |
+| `contract-check/backend;D`（0 文件空目录） | 删除 | 未跟踪；cc 仓 `git status --porcelain` 现为空 |
+
+跨 5 仓 grep 这两份文件名 ⇒ **引用零命中**（含本仓 `task.md`），无悬空指针。
+
+#### ⑦ 提交指纹与复核命令
+
+- cs：**`5248539`**（`9fc6cc5..5248539`，5 文件 +12/−17，已推）。
+- offline：**`32594b3`**（`698a05f..32594b3`，2 文件 −330，已推）。
+
+```bash
+# 残留应为 2 处：README.md:198（描述历史 bug）+ task.md:14（历史记录）
+grep -rIn '/api/v1/auth' /d/study/aiprojcet/customer-service \
+  --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv --exclude-dir=dist --exclude-dir=.tmp-probe
+
+# 配置与真机（判别式 401/404/401）
+docker exec customer-service-nginx nginx -t
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST https://localhost:8443/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"__probe__","password":"__probe__"}'
+```
