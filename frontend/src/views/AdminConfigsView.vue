@@ -9,6 +9,8 @@ import { onMounted, ref } from 'vue'
 import { adminConfigs, adminPutConfig } from '../api/admin'
 import { ApiError } from '../api/client'
 import type { AdminConfigItem } from '../api/types'
+// 键说明（P0-3）：语义逐个回查后端读取点，非按键名猜；零读取点的键标「改动不生效」。
+import { configKeyDesc, configKeyIsDead } from '../configLabels'
 
 const items = ref<AdminConfigItem[]>([])
 const loading = ref(false)
@@ -91,7 +93,12 @@ onMounted(() => void load())
       </thead>
       <tbody>
         <tr v-for="i in items" :key="i.key">
-          <td><code>{{ i.key }}</code></td>
+          <td>
+            <code>{{ i.key }}</code>
+            <div v-if="configKeyDesc(i.key)" class="key-desc" :class="{ dead: configKeyIsDead(i.key) }">
+              {{ configKeyDesc(i.key) }}
+            </div>
+          </td>
           <td><input v-model="drafts[i.key]" :aria-label="i.key" /></td>
           <td>
             {{ i.version }}
@@ -109,3 +116,19 @@ onMounted(() => void load())
     </p>
   </div>
 </template>
+
+<style scoped>
+/* 键说明（P0-3）：键名是英文串，新手读不懂；说明按「能用到这个键时」写在键下方。
+   .dead = 后端当前无读取点，改了不生效——用警示色，与普通说明区分开。 */
+.key-desc {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  max-width: 320px;
+  line-height: 1.4;
+}
+
+.key-desc.dead {
+  color: var(--timeout);
+}
+</style>
