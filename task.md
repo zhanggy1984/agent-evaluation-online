@@ -2520,10 +2520,11 @@ grep -n 'APIRouter(\|include_router' /d/study/aiprojcet/customer-service/backend
 
 - **代码改动：0 行** —— 按「一个批次 = 一份方案 + 一次独立验证」，本批产出物 = 定级本身。
 - **未做**：条目 2/3 的修复（有意不做，撞「不碰无关代码」）**【⚠️ 本判断已于 §14 推翻并落实：范围不是我当场以为的 2 行，实测 11 处，用户重新拍板全改】**；
-  条目 5 的守卫补齐（不可达，无验证面）；
+  条目 5 的守卫补齐（不可达，无验证面）**【⚠️ 本条已于 §15 走完全仓走查并按用户拍板定稿「只登记、不动代码」；
+  且 §13 表第 5 行「有 role 限定故更安全」这个理由已订正为**不成立**（重名可同角色）—— 见 §15②】**；
   条目 4 的删除（已于 §14⑥ 连同甲类残留一并删除）。
 - **不能证明**：条目 5「当前不可达」只对**当刻数据**成立；若日后导入重名供应商，该缺口即变可达 ——
-  它是**潜伏**而非**不存在**。
+  它是**潜伏**而非**不存在**。**【⚠️ §15③ 已把触发条件从「假想」降为「本仓自带」：`scripts/verify_sp_e2e.py` 跑一次即留一条同名账号】**
 
 ---
 
@@ -2694,3 +2695,103 @@ docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-
 
 **取证方式说明**：登录凭据全程未进对话记录 —— 起了一个只监听 `127.0.0.1` 的临时取 token 服务，
 由**页面自己去取**并写入 `localStorage['cc_token']`，脚本只回传布尔值；取完即 kill（复核时它已不存在）。
+
+---
+
+### 15. sp `display_name` 反查面全仓走查（2026-09-18）—— 收口 §13③(a) + 一处判据订正
+
+**由来**：§13③(a) 只描述未处置（「论据过期但守卫仍在」），未给处置。追它时按「穷尽性 grep」把
+`display_name` 反查的**站点全集**先定死，结果撞出三件事，其中两件推翻了我此前写下的判断。
+
+#### ① 站点全集（**两个方向**），按「多值时处置等级」排
+
+| 方向 | 站点 | 多值处置 |
+|---|---|---|
+| `User.display_name` → 业务实体 | `bids.py:78`（`scalars` + 422） | **抛** |
+| | `suppliers.py:134` → `supplier_service.resolve_me:423`（`len(candidates) != 1` ⇒ 抛） | **抛（唯一严格守卫）** |
+| | `declarations.py:47` | **抛** |
+| | `reviews.py:113-118`（多值只 `logger.warning("review.expert_name_dup")` 后取 `experts[0]`） | **warn + 取第一** |
+| 实体 `name` → `User.display_name` | `supplier_service.py:384`（**裸 `scalar`**，有 role 限定） | **静默取第一** |
+| | `notification_service.py:54`（**裸 `scalar`**，**无 role 限定**） | **静默取第一** |
+| `name` → id 字典 | `conflict_service.py:106`（`setdefault`） | warn + 取第一 |
+
+⚠️ **该表不是「一次 grep 的产物」** —— `display_name ==` 这个模式**漏掉了末行**（它用 `e.name` 建字典、
+不出现 `display_name ==`），是换模式后才补出来的。⇒ **模式要按「主张的概念词」构造，不能按字面**
+（`multi-site-doc-edit-enumerate-first` 又一次触发；本批**同类偏小共 3 次**：cs「以为 2 行」实为 11 处、
+§13③(a)「1 处」实为 2 处、本条「6 处」实为 7 处 —— **范围断言在我这里系统性偏小**，已可当规律用）。
+
+#### ② 判据订正：**role 限定不是这族问题的守卫**
+
+§13 表第 5 行把「`supplier_service.py:384` **有** role 限定」写成了它相对 `notification_service.py:54`
+更安全的理由。**该理由不成立**：真机实测 `display_name='梁柳'` 的 **2 行同为 `REVIEW_EXPERT`**
+⇒ **重名可以同角色，role 限定挡不住**。
+该条真正安全的原因只有一个：**SUPPLIER 角色下实测无重名**（§13 已测）。
+⇒ **有效守卫只有唯一性检查**（`resolve_me:425` 那种）；写得像守卫的条件不一定是守卫。
+
+#### ③ 让「不可达」失效的东西，**已经在仓内**（不是假想的「日后导入」）
+
+§13⑤ 写「条目 5『当前不可达』只对当刻数据成立；**若日后导入重名供应商**，该缺口即变可达」——
+本轮实测把触发条件从「假想」降为「**本仓自带**」：
+
+- `scripts/verify_sp_e2e.py:75` 用 `user_id=f"VFY-{expert_name[:8]}"` 建 `sp_verify`；
+- `:90-94` 在 `display_name != expert_name` 时**每次跑都覆写** display_name；
+- 且该写法**是脚本的工作前提**（`:21` 注释：脚本自身按 `display_name=专家名` 反查 `expert_id`）⇒ 不是笔误。
+
+⇒ **跑一次本仓的验收脚本，就在 `users` 里留下一条与当代专家同名的 `REVIEW_EXPERT` 账号。**
+本机现在库里那条 `梁柳`（`username=sp_verify`、`user_id=VFY-石秀云`）**就是它的残留**，不是合成数据重名。
+
+#### ④ 真机取证（容器内实跑，非读码外推）
+
+| 事实 | 结果 |
+|---|---|
+| `users.display_name='梁柳'` 匹配行数 | **2** |
+| `session.scalar(select(User).where(...))` 命中 2 行时 | **静默取第一行（`U-102`），不抛多行异常** |
+| 命中集顺序 | `[U-102, VFY-石秀云]`，**无 `order_by` ⇒ 顺序未定义** |
+| 该残留账号的通知数 | **0 条** ⇒ 该路径**至今未真的发错**（不是「有守卫」，是「恰好没触发」） |
+| 合成数据是否双射 | **是**：30 专家名 ↔ 30 个 `REVIEW_EXPERT` 账号，两侧各自零重名、两个差集皆空、**全角色 53 用户零重名** ⇒ **交付态不可达** |
+
+#### ⑤ 处置（用户 2026-09-18 拍板）—— **只登记台账，不动代码、不动脚本**
+
+理由三条，按「不做会出什么**具体**故障」逐条答：
+1. **交付态答不出具体故障** —— 合成数据严格双射，反查恒单值；
+2. **让它可达的是本仓验收脚本** —— 修产品代码去防自己测试工具的副作用，**边界划反了**；
+3. **清残留也不持久** —— `verify_sp_e2e.py` 再跑一次即复现（②③ 已证）。
+
+#### ⑥ 顺带订正 §13③(a) 的**范围**（同款偏小）
+
+带具体编号的过期论据「合成数据存在同名供应商（如 **SUP-009/SUP-013**）」实为 **2 处**，
+§13③(a) 只登记了第 1 处：
+
+- `bids.py:13-14`
+- `supplier_service.py:426-427`（**漏登记**）
+
+同族措辞但**无编号**、且**不算过期**的 2 处：`bids.py:66`（「合成数据重名」）、
+`supplier_service.py:437`（运行时错误消息，描述的是**可能情形**、不指向具体数据 ⇒ **不作订正**）。
+
+#### ⑦ 本批边界（不夸大）
+
+- **代码改动 0 行、数据 0 行**（未清 `VFY-石秀云` 残留 —— 拍板选项已明示此代价）。
+- **不能证明**：`notification_service.py:54` 的静默取第一**只在当前数据下无害**；顺序未定义
+  ⇒ 一旦重名重现，**发错与否不可预测**（本次恰好命中真实账号，是运气不是保证）。
+- **未做**：`conflict_service.py:106` 仅被 grep 命中、**未读其实现分支** ⇒ 该行的处置等级是**推断**，
+  不是实证（列入本批**未验收**，不许被 ①~⑥ 的完成度盖过）。
+
+#### ⑧ 复核命令（本批全部结论可复现）
+
+```bash
+# 站点全集（两个模式都要跑 —— 单跑第 1 个会漏 conflict_service.py:106）
+grep -rn "display_name ==" --include=*.py /d/study/aiprojcet/smart-procurement
+grep -rn "合成数据存在同名\|合成数据重名\|重名取第一个" --include=*.py /d/study/aiprojcet/smart-procurement
+
+# 合成数据双射（两侧零重名、差集皆空）
+cd /d/study/aiprojcet/smart-procurement && PYTHONUTF8=1 python -c "
+import json;from collections import Counter
+u=json.load(open('data/synthetic/users.json',encoding='utf-8'))
+e=json.load(open('data/synthetic/experts.json',encoding='utf-8'))
+dn=[r['display_name'] for r in u if r['role']=='REVIEW_EXPERT'];en=[r['name'] for r in e]
+print(len(dn),len(set(dn)),len(en),len(set(en)),set(en)-set(dn),set(dn)-set(en),
+      [k for k,v in Counter([r['display_name'] for r in u]).items() if v>1])"
+
+# 真机：2 行 + 静默取第一 + 命中顺序（脚本内容见批 3 报告，容器内实跑）
+docker cp <探针> sp-app:/tmp/p2.py && docker exec sp-app sh -c 'PYTHONUTF8=1 python /tmp/p2.py'
+```
