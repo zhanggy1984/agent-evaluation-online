@@ -1817,3 +1817,556 @@ SQL
    **这是既定变更**（`backend/tests/integration/backflow_allow_probe.py:10` 自述
    「cc 七环开通后该值已 0→1」），**是代码注释未跟改，不是闸门失效**。
 2. 同探针自述「探针**结构性恒红**」—— 属已知长期红，处置口径见 chronic-noise（长期固定红 ⇒ 疲劳化）。
+
+---
+
+## 批 2｜gq（good-question）家浏览器 UI 验收（2026-09-18）
+
+> 承接「## 浏览器端 UI 验收（2026-09-17）」的批 2。用户指令：**一家一家做，把每家做扎实，再推进下一家**。
+> 本批为**第一家 gq**（`native_rag` schema，前端 `http://localhost:8089/`，ES agent 名 `good-question`）。
+
+### 1. 页面功能操作（真实鼠标/键盘）
+
+| 步 | 操作 | 结果 |
+|---|---|---|
+| 1 | 仪表盘 | 显示「7 文档库 / 17 文档 / 490 片段」，与 DB 逐字相符 |
+| 2 | 文档库页 | 7 个库列表 |
+| 3 | 聊天问答 → 选「演示知识库」→ ＋新会话 | 新建会话 **#1342**（`library_id=9`） |
+| 4 | 提问「请事假需要提前几个工作日提交申请？由谁审批？」 | 流式答案 + 引用来源 **3** 条 |
+
+答案内容可判：答「**事假：须提前 3 个工作日提出申请**」，与库内文档一致；并主动声明「文档中未明确指定事假的具体审批人」，**未编造**。
+
+### 2. online 侧三方对账（UI ↔ DB ↔ ES），逐字段
+
+| 面 | 值 |
+|---|---|
+| UI | `/chat/1342` 列表项 title = 我的问题；聊天区「2 条消息」 |
+| DB | `chat_sessions` 1342：`title`=问题原文、`library_id=9`、`message_count=2`；`chat_messages` 2811(user)/2812(assistant)，assistant 220 字，`sources_json` 长度 **3** |
+| ES | `trace_key=good-question#2c960568e4f6878ee29a21a0b4e2319b`，**total=4** |
+| UI trace 页 | `/traces/good-question/2c960568…` 显示 **`4 / 4 事件`** |
+
+**逐条相等**：UI 4 条 seq = {0, 2, 9, 13} = ES 4 条 seq，**集合全等**。逐字段：`node`(request/llm_call)、`model`(deepseek-chat)、`status`(全 ok)、`duration_ms`(17928 / 1311 / 1456 / 2197)、`usage`(`{1020,79,1099}` / `{1604,154,1758}` / `{2270,238,2508}`)、`ts` 毫秒尾(`.074`)。
+
+### 3. 写操作面（本轮补做）—— 4 次写操作 = 4 条写事件
+
+| UI 操作 | DB 核验 | ES 事件 |
+|---|---|---|
+| 删除会话 #1342（含二次确认框） | `sess_total 1171→1170`、`lib9 23→22`、`s1342=0`、`m1342=0`（**2 条消息级联删除**） | `DELETE /api/sessions/{id}` ×1 ok |
+| 新建文档库 `wop-verify-20260918` | 新增 `id=15`，name/description/`created_at` 全对，`libs 7→8` | `POST /api/libraries` ×1 ok |
+| 删除文档库 `id=15` | `libs 8→7`、`l15=0`、`max_id` 回 14 | `DELETE /api/libraries/{id}` ×1 ok（740ms） |
+| （提问） | — | `POST /api/chat/{id}` ×4 |
+
+近 25 分钟 ES 聚合：**25 条事件全 `ok`**，写事件次数与操作次数**精确相等**。
+
+### 4. offline 侧
+
+- **已注册**：`ai_evaluation.agent` id=**2300** `good-question`，`enabled=1`（四家 2297–2300 齐）
+- **闭环史**：**27 条 `eval_run`**，模式规整 —— `manual`（suite 2161，22 用例）→ `error_regression`（suite 2593，6 用例），后者 `trigger_signal_id` **精确指向前一条 manual run**（3711→3712、3709→3710、3660→3661）
+- **今日零新增**：`error_backflow_inbox` 最后一条停在 2026-09-17 05:35 —— **预期行为，不是缺陷**。本轮 4 条事件全 `ok`，而回流值域 11 词全是 agent 侧故障（详见「二、批 2a–2d 造错」），客户端正常流量结构性不产生回流。
+
+### 5. 跨端对账（历史链，焊点已锁定）
+
+online `error_cluster` **id=3880** ⇄ offline `test_case` **id=4083**，其 `backflow_envelope` 逐字含：
+
+```
+"agent": "good-question", "cluster_id": 3880,
+"trace_id": "gqaccept2-ec9de3b906aa", "interface": "POST /api/chat/{id}",
+"trigger_version": "0.1.0"
+```
+
+五项与 online 侧**逐字相等**；`payload_id`(`d0e4e3c8-…`) 两端一致；时延链：cluster `first_ts` 2026-09-17 00:49:58 → inbox `received_at` 00:50:59（**61 秒**回流）→ `test_case.created_at` 00:50:59。
+
+### 6. 两处观察项（**未判为缺陷**，勿当已定性）
+
+1. **会话列表项不实时刷新**：发问后列表项仍显示「新会话 / 0 条消息」，手动刷新后才显示正确 title 与条数。数据本身正确（刷新后 UI↔DB 全等）⇒ 是呈现层刷新时机问题。
+2. **文档库删除无二次确认**：删除会话有确认框（且提示「所有聊天记录将被删除」），删除文档库**直接生效**。二者同为不可逆操作，口径不一致 —— 是否有意设计**未核规格**，故只记观察。
+
+### 7. 本批证不了什么（显式声明，勿外推）
+
+1. **第 5 节的跨端链起点是注入的** —— envelope 内 `"content": "注入验收 278b4ae0：请回答一个全新问题以避开缓存？"`。它证「**跨端管道打通**」，**不证「有真实用户流量走完七环」**。
+2. **今日 gq 真实操作流量无 offline 对账面** —— 正常问答全 `ok`，不产生回流。第 3 节的跨端对账是 **online 侧**（UI↔DB↔ES），**offline 侧今日零参与**。
+3. 文档库页的**文档上传/删除**未点；仪表盘仅看未操作。
+4. 本节所有数字**未跨机器复现**，仅在本机当日环境成立。
+
+### 8. 复核命令
+
+```bash
+# online 侧：该 trace 的 ES 全量（应 total=4）
+curl -s "http://localhost:39200/dev.obs-event-*/_search" -H "Content-Type: application/json" -d '{"size":0,"query":{"term":{"trace_key":"good-question#2c960568e4f6878ee29a21a0b4e2319b"}},"aggs":{"by_seq":{"terms":{"field":"seq","size":10}}}}'
+
+# online 侧：近 25 分钟 gq 事件按 interface 聚合（写事件应各 ×1）
+T=$(( ($(date +%s) - 1500) * 1000 )); curl -s "http://localhost:39200/dev.obs-event-*/_search" -H "Content-Type: application/json" -d "{\"size\":0,\"query\":{\"bool\":{\"must\":[{\"term\":{\"agent\":\"good-question\"}},{\"range\":{\"ts\":{\"gte\":$T}}}]}},\"aggs\":{\"by_iface\":{\"terms\":{\"field\":\"interface\",\"size\":20}}}}"
+
+# offline 侧：gq 注册与闭环史
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id,name,enabled from ai_evaluation.agent where id=2300; select id,trigger_type,trigger_signal_id,total_case,pass_case,fail_case,finished_at from ai_evaluation.eval_run where agent_id=2300 order by id desc limit 6"'
+
+# 跨端焊点：test_case 4083 的回流载荷（应含 cluster_id=3880 与 trace_id=gqaccept2-ec9de3b906aa）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -N -e "select left(backflow_envelope,600) from ai_evaluation.test_case where id=4083"'
+```
+
+> **复核注意（防腐）**：会话 #1342 与文档库 `id=15` 已在第 3 节**删除**，故 DB 侧复现需重走第 1 节操作；**ES 事件不随业务删除而消失**，故 trace 查询与写事件聚合仍可复现（受 ES 保留期约束）。
+> 「今日零新增」这类断言**只在本机当日成立**，引用时须连日期一起带。
+
+---
+
+## 批 2｜sp（smart-procurement）家浏览器 UI 验收（2026-09-18，**上篇**）
+
+> 前端 `http://localhost:18082/`（**根路径自动跳 `/admin`**）；schema `smart_procurement`；ES agent 名 `smart-procurement`。
+
+### 1. 🔴 结构性发现：sp 前端是**管理员后台**，**无评标业务页**
+
+菜单 = 工作台 / 用户管理 / 专家管理 / 供应商管理 / 工商信息 / 系统配置。而 sp 七环的流量出口是 **`POST /api/v1/reviews/{id}/chat`** —— **该链路在 UI 上无入口**。
+⇒ **「用 sp 的页面操作造出走七环的流量」这条路结构性不存在**，与 gq（问答页即业务页）不同。
+
+### 2. 登录与一条**真实**的 error
+
+- 登录页明示演示账号：`admin` / `123456`（另 `pm1` 项目经理、`expert_01` 评审专家、`supplier_01` 供应商）。
+- **实测异常**：以 admin 登录后能看工作台，但点「用户管理」**直接跳 `/login`** ⇒ 页面重渲染后鉴权失效。ES 侧留下一条**真实**（非注入）error：
+
+| 字段 | 值 |
+|---|---|
+| `trace_key` | `smart-procurement#0c7e7d61e8b7e5f4924c5440ef32b9c4` |
+| `node` / `interface` | `request` / `GET /api/v1/users` |
+| `error_type` | **`HTTP_401`** |
+| `status` / `duration_ms` | `error` / 16 |
+
+### 3. 写操作：新建用户（走通 + 三方对账）
+
+| 面 | 值 |
+|---|---|
+| UI 行（首行） | `wop_probe_20260918` / `写面验证` / `评审专家` / `wop@example.com` / `13800000000` / `启用` / `2026-09-18 01:32:34` |
+| DB `users` | `user_id=U-1053F56F9FA3`、`username`、`display_name`、`role=REVIEW_EXPERT`、`email`、`phone`、`is_active=1`、`created_at` —— **七项逐字相等** |
+| ES | `POST /api/v1/users` ×1 **ok** |
+
+**⚠️ `user_id` 是字符串业务主键**（`U-<hex>` / `VFY-<姓名>`），`max(user_id)` 返回 `VFY-石秀云` 是**字典序**、无意义 —— 排序/取最新必须用 `created_at`。
+
+### 4. 🔴 本批最有价值的实测：**真实 4xx error 不回流**（首次有实测证据）
+
+近 15 分钟 sp 的 ES：`request` ×4（`GET /api/v1/users` 2 ok + **1 error=HTTP_401**、`POST /api/v1/users` 1 ok）+ `heartbeat` ×15（无 `interface`/`status`，故 `terms` 聚合不含）。
+
+**online `error_cluster` 里 sp 仍只有 1 行**（id=3881，`first_ts` 2026-09-17 05:34:02，即昨日那条注入的），**今日零新增**。
+
+⇒ 「客户端 4xx 客户端错误永不回流」此前是**从回流值域 11 词推导**的结论，**本轮首次由真实操作产生的真实 401 实测印证**：它出现在 ES（`status=error`），但不建簇、不回流。
+
+### 5. 本批**未做**（勿读成已验）
+
+- 用户管理页：**改角色**未点；**切换启用/禁用**尝试 2 次均失败（`switch` 报 `did not become interactive`，两次超时后**不再重试**，原因未查）；**「删除用户」在 UI 上不存在** —— 操作列只有 `switch` + 角色 `combobox`，**无删除按钮** ⇒ 探针用户 `wop_probe_20260918` **无法从 UI 清除**（**未擅自改库**，留待处置）。
+- **专家管理 / 供应商管理 / 工商信息 / 系统配置** 四页**一次都没打开**。
+- 未取 **offline 侧** sp 的对账面（`agent` id=2297 已注册为已知事实，但本批未查其 `eval_run` / 回流）。
+- 「点用户管理跳登录」**未定性**：是 token 过期还是路由鉴权不一致，**未查规格**，只记现象。
+
+### 6. 复核命令
+
+```bash
+# ES：sp 近 15 分钟按 node 聚合（应见 request ×4 含 1 条 HTTP_401 + heartbeat ×15）
+T=$(( ($(date +%s) - 900) * 1000 )); curl -s "http://localhost:39200/dev.obs-event-*/_search" -H "Content-Type: application/json" -d "{\"size\":0,\"query\":{\"bool\":{\"must\":[{\"term\":{\"agent\":\"smart-procurement\"}},{\"range\":{\"ts\":{\"gte\":$T}}}]}},\"aggs\":{\"by_node\":{\"terms\":{\"field\":\"node\",\"size\":20},\"aggs\":{\"st\":{\"terms\":{\"field\":\"status\"}}}}}}"
+
+# online：sp 的簇（今日应零新增，仍只有 3881）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id,interface,error_type,status,first_ts from \`dev.obs\`.error_cluster where agent=\"smart-procurement\" order by id desc limit 5"'
+
+# DB：新建用户落库
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select user_id,username,role,display_name,email,phone,is_active,created_at from smart_procurement.users where username=\"wop_probe_20260918\""'
+```
+
+> **清理待办**：`wop_probe_20260918`（`user_id=U-1053F56F9FA3`）**仍留在库中未删** —— 写操作面还没走到「删除用户」。
+> **防腐**：「今日零新增」类断言只在本机当日成立，引用须连日期一起带。
+
+---
+
+## 批 2｜sp 续做：六页走完 + 撞出并修复一个真缺陷（2026-09-18）
+
+> 承上篇。上篇的「未做」清单（专家/供应商/工商/系统配置四页未打开）**本篇已补完**；
+> 「点用户管理跳登录」**本篇给出归因**（见 §3）。
+
+### 1. 页面面 6/6 与三方对账
+
+| 页面 | 路由 | 写操作 | UI ↔ DB ↔ ES |
+|---|---|---|---|
+| 用户管理 | `/admin/users` | 新建用户（上篇） | 七项逐字；`POST /api/v1/users` ok |
+| 专家管理 | `/admin/experts` | **Excel 批量导入 2 条** | `expert 30→32`、`users 55→57`、`expert_specialization 65→67`；**1 写 ↔ 1 条 `POST /api/v1/experts/import`**（ok 1476ms，`trace_key=smart-procurement#715e496d…`）；UI 刷新后「专家管理（32）」 |
+| 供应商管理 | `/admin/suppliers` | **拉黑 → 解除 往返 ×2 轮** | `blacklisted 1→0`（黑名单总数回基线 1）；**4 写 ↔ 4 条 `PUT /api/v1/suppliers/SUP-011/status`**（当日实测口径，见 §8 订正） |
+| 工商信息 | **`/admin/conflicts`** | **CSV 导入 ×2 次** | `pending_conflict` 落 1 行；UI 刷新后「冷数据(1) / 待处理」↔ DB `PENDING` 逐字；**2 次导入 ↔ 2 条 `POST /api/v1/conflicts/import`**（第 1 次 0 命中未落库，但 HTTP 仍是 ok —— 见 §8） |
+| 系统配置 | `/admin/config` | **只读**（写面经用户拍板跳过） | **UI 显示 11 项但 DB 只 1 行**（`llm.temperature`），其余 10 项走代码默认值 |
+
+专家导入的**跨表焊点**：`expert.user_id` 与 `users.user_id` 逐字相等（`EXP-A60986913112 ↔ U-64310996705E`）；
+自动建号规则 `expert_31` / `expert_32`、`role=REVIEW_EXPERT`、`must_change_password` 由导入路径置位。
+
+### 2. 🔴 真缺陷：解除拉黑不恢复登录账号（已修复 + 三层验证）
+
+**症状**：拉黑供应商后其登录账号被禁用；**解除拉黑后账号仍是禁用**（`supplier` 表已回 ACTIVE ⇒ 两表不一致）。
+
+**根因**（`app/services/supplier_service.py` 的 `update_status`）—— 只实现了禁用，未实现启用：
+
+```python
+# 旧（缺陷）：单向
+if new_status == SupplierStatus.INACTIVE:
+    ...
+    user.is_active = False
+```
+
+`SupplierStatus` 只有 ACTIVE / INACTIVE 二元；解除拉黑时 `new_status = ACTIVE` ⇒ **进不了该 if**。
+
+**判为缺陷（非有意设计）的依据**：同仓 `expert_service.py:242-246` 做同一件事是**双向**的 ——
+`user.is_active = new_status == ExpertStatus.ACTIVE`；且旧注释写着「同步禁用/**启用**」（**注释承诺了启用，实现没做**）。
+
+**真机取证（修复前）**：20 个供应商账号全表 —— `supplier.status=ACTIVE` 却 `is_active=0` 的**只有 `supplier_11`**
+（本次拉黑又解除的那个），其 `updated_at` 精确等于**拉黑**时刻 ⇒ 解除那一步在 `users` 表**零痕迹**；
+对照 `supplier_05`（真 INACTIVE，`updated_at=NULL`）、其余 18 个 ACTIVE 账号 `is_active` 全为 1 ⇒ **排除「本来就是 0」**。
+
+**修复**：`user.is_active = new_status == SupplierStatus.ACTIVE`（代价 = 每次状态变更多查一次 user）。
+
+**验证三层**：
+1. sp 全量单测 **380 passed**；
+2. **判别性验证**：回退该行后 **1 failed / 14 passed** —— ⚠️ 新增 2 条里**只有 1 条判别**
+   （`test_update_status_unblacklist_enables_login_account` 变红；`..._blacklist_disables_login_account` 回退后**仍绿 ⇒ 它不判别**）；
+3. **真机复验**（`docker restart sp-app` 后 —— `./app` 是 bind mount 但**无 `--reload`**，不重启进程仍是旧模块）：
+   拉黑 → `is_active=0`；解除 → **`is_active=1`**（修复前会停在 0）。
+
+**我造成的副作用已撤销**：`supplier_11` 的 `is_active` 已恢复为 1。
+
+**未处置、仅登记的隐患**：供应商账号靠 `User.display_name == supplier.name` 关联（**无外键**），
+**同名供应商会互相误伤**；原注释误写成「按 username 前缀约定关联」。本篇**只修单向→双向，未动关联方式**。
+
+### 3. 订正：sp 前端无 404 兜底 —— 「跳登录」有两种机制
+
+- 菜单「工商信息」的实际路由是 **`/admin/conflicts`**（不是 `/admin/business`）；「系统配置」是 `/admin/config`。
+- **未匹配路由 → 静默跳 `/login`，且零请求、零 ES 事件**（实测 `/admin/zzz-not-exist`、`/admin/business` 均如此）。
+- 而上篇那条「点用户管理跳登录」时，ES 里有**真实**的 `GET /api/v1/users → HTTP_401`
+  ⇒ **两次跳登录机制不同**：前者是纯前端路由兜底（无 404 页），后者是真实鉴权失败。
+  **归因必须区分**，否则会把「路由写错」误判成「鉴权坏了」。
+
+### 4. 工商信息页的隐含前提（文案没写）
+
+文案只说「未匹配到**系统的企业**计入待办（冷数据）」。实测：
+**人和企业都不匹配 → 「命中 0 条，待确认 0 条」、DB 零写入**；
+改成**人匹配（`高伟` → 自动解析 `expert_id=EXP-016`）、企业不匹配 → 「待确认 1 条」**并落 `pending_conflict`
+⇒ **人必须先匹配到系统内专家**，否则整行被静默丢弃。
+
+### 5. 观察项（**未判为缺陷**）
+
+- 工商信息页**写成功后列表不刷新**（仍显「冷数据(0)」，reload 后正确）—— 与 gq 会话列表同族，**第 2 次**出现。
+- 用户页**搜索框**输入后仍显全量 57 条（大概率防抖未生效，**未复验 ⇒ 标为未验**）。
+
+### 6. 未处置残留（A 级，未擅自动库）
+
+`wop_probe_20260918`（UI 无删除入口）、导入专家 ×2（`EXP-A60986913112` / `EXP-17717E7DCC68` + 账号 `expert_31/32` + 标签 2 条）、
+冷数据 `pending_conflict` id=1。
+
+### 7. 复核命令
+
+```bash
+# 1) 专家导入落库（应 2 行；user_id 与 expert.user_id 逐字相等）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select expert_id,user_id,name,organization,region,experience,status from smart_procurement.expert where name like \"导入探针%\""'
+
+# 2) 三表行数（导入后应 32 / 57 / 67）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select (select count(*) from smart_procurement.expert) expert,(select count(*) from smart_procurement.users) users,(select count(*) from smart_procurement.expert_specialization) spec"'
+
+# 3) 缺陷判据：status=ACTIVE 却 is_active=0 的供应商账号，应为 0 行
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select u.username,u.is_active,s.status,s.blacklisted from smart_procurement.users u join smart_procurement.supplier s on s.name=u.display_name where u.role=\"SUPPLIER\" and s.status=\"ACTIVE\" and u.is_active=0"'
+
+# 4) 冷数据
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id,person_name,company_name,credit_code,expert_id,status,created_at from smart_procurement.pending_conflict"'
+
+# 5) ES：sp 近 10 分钟的写事件
+curl -s 'http://localhost:39200/dev.obs-event-*/_search' -H 'Content-Type: application/json' -d '{"size":20,"_source":["interface","status","duration_ms","ts"],"query":{"bool":{"filter":[{"term":{"agent":"smart-procurement"}},{"range":{"ts":{"gte":"now-10m"}}},{"exists":{"field":"interface"}}]}},"sort":[{"ts":"asc"}]}'
+```
+
+> **防腐**：「三表行数 32/57/67」只在本机当日成立（此后任何写入都会改它），引用须连**当日**与**产出命令**一起带。
+
+### 8. offline 侧两端对账 —— 并订正本篇两处数字
+
+判据（用户原话）：「**同一份 agent 产生的数据，在 online 和 offline 两端必须对得上**」。
+**切分口径 = 按当日 00:00 起，不是 24h 滚动窗口**（滚动窗口会把 09-17 的流量混进来，正是它让本篇两处数字失真）。
+
+| 观测面 | **09-17 基线** | **09-18 新增** |
+|---|---|---|
+| online ES `dev.obs-event-*`（agent=`smart-procurement`） | 635 条 | **23 条**（截至 10:15 已增至 **25** —— 见 §10） |
+| online 簇 `` `dev.obs`.error_cluster `` | **1 个**（id=3881，`llm_connection`，`fixed`，05:34:02） | **0** |
+| offline `error_backflow_inbox`（envelope 含 sp） | **1 条**（`payload_id=7345301f…`，case_id=**4084**，05:35:09） | **0** |
+| offline `eval_run`（`agent_id=2297`） | **19 条**（manual 14 + error_regression 5，max id=3717，05:39:11） | **0** |
+
+**09-18 那 23 条的构成**（9 类 interface，**逐条可归因到我的浏览器操作**）：
+`GET /api/v1/suppliers` 6 ok ｜ `GET /api/v1/users` **3 ok + 1 error** ｜
+`PUT /api/v1/suppliers/SUP-011/status` 4 ok ｜ `GET /api/v1/experts` 2 ok ｜ `GET /api/v1/{id}` 2 ok ｜
+`POST /api/v1/conflicts/import` 2 ok ｜ `GET /api/v1/config` 1 ok ｜ `POST /api/v1/experts/import` 1 ok ｜
+`POST /api/v1/users` 1 ok。**唯一那条 error = 上篇那条真实 `HTTP_401`。**
+
+**这不是空绿**（防 [[shape-mismatch-yields-silent-zero]]）：先证「今天 sp 确实有流量进了 online」= **23 条非空**，
+才能把「offline 两侧零新增」读成**结构性的零**，而不是**没流量的零**。
+
+**归因**：今天我做的全是**管理后台 CRUD**（`/admin/*`：用户 / 专家 / 供应商 / 工商 / 配置）。
+offline 的两条入口 —— `error_backflow_inbox` 收的是**回流**、`eval_run` 由 `error_regression` 触发 ——
+**都不吃 CRUD 流量**。故「零新增」是**符合设计**，不是缺陷。
+那条 401 不回流同属设计：回流值域 11 词全是 agent 侧 LLM/依赖故障，**客户端 4xx 永不回流**
+（见 memory `browser-ops-cannot-produce-backflow-errors`）。
+
+**09-17 那条链在时间上严丝合缝**（昨天的七环是活的，但是**注入**的 —— 见第四十二笔）：
+簇 3881 建于 05:34:02 → inbox 05:35:09 收下 case_id=**4084** → `error_regression` eval_run 3713–3717 于 **05:35:11–05:39:11** 逐条产出。
+`trigger_signal_id` = {2480, 2487, 2506, 3027, 3666}，**逐个非空**。
+
+**🔧 两处数字订正（本篇 §1 表格已同步改）** —— 两处都是**「当时正确、被我后续动作改掉」**，
+正是 [[memory-status-markers-rot]] 说的「**验收数字不随存产出命令即不可复核**」：
+
+| 断言 | 当时的数 | **当日实测** | 差异来源 |
+|---|---|---|---|
+| `PUT /api/v1/suppliers/SUP-011/status` | 2 条 | **4 条** | 我做了**两轮往返**：修复前 1 轮 + **修复后真机复验 1 轮**；「2 条」是第一轮当时快照 |
+| `POST /api/v1/conflicts/import` | 1 条 | **2 条** | 我导了**两次** CSV；第 1 次「命中 0 条」业务上零落库，**但 HTTP 仍是 `ok`** ⇒ ES 照记 |
+
+### 9. 复核命令（两端对账）
+
+```bash
+# A) offline：sp 基线 + 当日新增（两值都必须是 0 才算「今日零新增」）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select count(*) sp_runs,max(id) max_run_id,max(started_at) last_run_at from ai_evaluation.eval_run where agent_id=2297; select count(*) sp_inbox,max(received_at) last_inbox_at from ai_evaluation.error_backflow_inbox where envelope_json like \"%smart-procurement%\"; select count(*) run_0918 from ai_evaluation.eval_run where started_at>=\"2026-09-18 00:00:00\"; select count(*) inbox_0918 from ai_evaluation.error_backflow_inbox where received_at>=\"2026-09-18 00:00:00\";"'
+
+# B) online：sp 的簇基线 + 当日新增（当日应为 0）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select count(*) sp_clusters,max(id) max_id,max(created_at) last_at from \`dev.obs\`.error_cluster where agent=\"smart-procurement\"; select count(*) clusters_0918 from \`dev.obs\`.error_cluster where agent=\"smart-procurement\" and created_at>=\"2026-09-18 00:00:00\";"'
+
+# C) ES：按【当日】切分（改 T0 可换日；勿用 now-1d —— 滚动窗口会混入前一日，本篇两处数字就是这么错的）
+T0=$(( $(date -d "2026-09-18 00:00:00" +%s) * 1000 ))
+curl -s 'http://localhost:39200/dev.obs-event-*/_search' -H 'Content-Type: application/json' -d "{\"size\":0,\"query\":{\"bool\":{\"filter\":[{\"term\":{\"agent\":\"smart-procurement\"}},{\"range\":{\"ts\":{\"gte\":$T0}}}]}},\"aggs\":{\"by_iface\":{\"terms\":{\"field\":\"interface\",\"size\":30},\"aggs\":{\"st\":{\"terms\":{\"field\":\"status\",\"size\":5}}}}}}"
+```
+
+> **防腐**：「09-18 新增 23 条 / 基线 635 条」只在本机当日成立，引用须连**当日**与**产出命令**一起带。
+> **口径警告**：同一批数据用「近 24h」和「当日 00:00 起」会得出**不同**的桶计数 —— 本篇 §1 的 2 条 vs 4 条即此。
+
+### 10. 用户页「改角色」往返 —— 判为**规格空白**，非缺陷
+
+**操作对象**：`expert_31`（`导入探针甲`）—— **特意选它**，因为它在 `expert` 表**有实体** `EXP-A60986913112`，
+而另一个探针 `wop_probe_20260918` 只存在于 `users` 表（新建用户页不建实体）。**只有前者能暴露「改角色是否联动实体」**。
+操作：评审专家 → 供应商 → 评审专家（往返）。
+
+| 观测面 | 结果 |
+|---|---|
+| **UI** | 角色列与操作列下拉同步变；**无二次确认弹窗**（容器/弹窗均为空） |
+| **DB** | `users.role` 同步变 + `updated_at` 跟变；角色分布往返回到 `ADMIN 1 / PM 2 / REVIEW_EXPERT 34 / SUPPLIER 20` |
+| **ES** | **2 次写 ↔ 2 条** `PUT /api/v1/users/U-64310996705E/status`（ok **51ms** / **9ms**） |
+| **`expert` 表** | 🔴 **纹丝不动** —— 全程 `ACTIVE`，`updated_at` **停在导入时刻**（01:38:55），`expert_specialization`「软件开发」也在 |
+
+⇒ 账号已非专家角色，**专家档案仍 ACTIVE** ⇒ **悬空专家**。
+
+**判为「规格空白」而非缺陷**（**与 §2 那个真缺陷的判法形成对照**）：
+- 回读规格 `solution.md:2216`：「创建、编辑、启停用、**分配角色**」—— 只说分配角色，**没有一句承诺级联实体**；
+- **找不到兄弟实现**：`expert_service` / `supplier_service` **都没有**「改角色时联动实体」的代码；
+- 而 §2 那个缺陷之所以成立，是因为**有背书**：同仓 `expert_service:242-246` 是**双向**的 + 旧注释写着「同步禁用/**启用**」。
+⇒ **找不到兄弟实现 + 规格没写 = 不判缺陷**（[[implementation-odd-is-not-defect]] 的正面用法）。
+
+**但它是真实的功能断点，须登记**：`expert.status=ACTIVE` 的专家会进评标抽取池，
+若其登录账号已被改成非专家角色，**该专家会被抽中却登不进去**。
+本篇**不擅自改代码** —— 规格未要求，加了就是「无消费方的实现」（[[no-over-engineering]]）。
+
+**⚠️ 数字再次被后续动作改掉 —— §8 那个口径警告**当场**应验**：
+本条操作又给当日加了 **3 条**（`GET /api/v1/users` 新增 **1 条真实 401**（会话过期所致）+ `PUT /api/v1/users/{id}/status` ×2）
+⇒ **09-18 当日总数从 23 变 25**。**当日数字天然是滚动值**，引用必须连**时点**一起带（本条截止 **10:15**）。
+
+---
+
+## 批 3｜cs（customer-service）家浏览器 UI 验收（2026-09-18，**进行中**）
+
+### 0. 环境
+
+| 项 | 值 |
+|---|---|
+| 入口 | **`https://localhost:8443`**（自签证书，浏览器未拦）；HTTP 8081 全量 301 到 HTTPS |
+| 容器 | `customer-service-nginx`（8081/8443）、`customer-service-backend-1`（8000） |
+| 登录 | `admin` / `123456` —— `.env` 的 `ADMIN_DEFAULT_PASSWORD` 经 **sha256 前缀比对**确认就是公开演示口令（`8d969eef…`，len=6），**非秘密** |
+| 前端路由 | **只有 4 条**：`/login` `/register` `/chat` `/admin`（`/admin` 需 `requiresAdmin`） |
+| 标识 | ES `agent=customer-service`；offline `ai_evaluation.agent` id=**2298** |
+
+### 1. 🔴 cs 上首次实到「真实用户流量走完七环」（**推翻第四十二笔的既有结论**）
+
+此前结论：「**两家七环的红全是我注入的，无一条真实用户流量走完七环**」（第四十二笔）。**cs 上不成立** ——
+存在完整、逐字可核、**非注入**的真实流量链。
+
+| 环 | 载体 | 逐字证据 |
+|---|---|---|
+| ① 观测 | ES 事件 | 真实 uuid trace `fd75aa346d004723b0053b940df88eac`；`trigger_version=**0.1.0**`（注入簇 3842 是 `2026.09.09-r1`）；node=`request`/`llm_call` **成对**出现 |
+| ② 聚类 | 簇 **3861**（`llm_timeout`，`POST /api/v1/sessions/{id}/messages`） | `first_trace_id` = **同一 uuid**；`input_snapshot` = `{"content":"我不太确定你们的售后流程具体是怎么走的？"}`；**`count=6` 恰等于 request 层事件数 6**（09:53:08 / 10:10:57 / 10:23:04 / 10:24:04 / 10:25:04 / 10:26:04） |
+| ③ 组装→回流 | inbox **id=12** | `source.cluster_id=**3861**` + `source.trace_id`=**同一 uuid** + `evidence.input.content`=**同一文本** —— **三重逐字相等** |
+| ④ 判定 | case **4075** | 由该回流建立 |
+| ⑤ 回归回推 | eval_run **3662–3665** | `error_regression`，02:23–02:26（inbox +22 分钟） |
+
+**对照组**：inbox **id=16** ⇄ 簇 **3865**（`llm_connection`，trace `d1994368f80044b89ce1fd0c69206a93`，
+输入 `"你好，请介绍一下你自己"`）同样**三重逐字**。
+
+**🔻 必须同时标注的边界（不夸大）**：
+- 只走到「**回归回推**」，**第七环「收口」未观测到** —— 簇 3861 `status` 至今仍是 **`open`**（自 09-16 已两天）；
+- 三簇三态：3842 `claim`（**注入**）/ 3861 `open`（真实）/ 3865 `fixed`（真实）；
+- 这是 **09-16 的历史流量**，**不是**本次浏览器操作造出来的。
+
+**结构性差异（为什么 cs 行、gq/sp 不行）**：gq/sp 前端是管理后台、无评标/问答业务页 ⇒ 页面操作造不出 agent 流量；
+**cs 的 `/chat` 本身就是 agent 主链路** —— 真实用户在页面上提问即生产 agent 事件。
+
+### 2. 一条 `rejected` 回流：`content_gap`
+
+inbox **id=3**（属**注入**的簇 3842）：`status=rejected`、`reject_code=**content_gap**`、
+`reject_detail=no_fallback_config.words 为空或非数组（fail-closed：空词表不判 pass）`、**`case_id=NULL`**
+⇒ 该 error **永远拿不到 case**。**fail-closed 是有意设计**，本批**只登记不处置**（与 `backflow-fallback-absorption-gap` 同族）。
+
+### 3. 一次自我纠错（口径）
+
+中途我怀疑「ES 与 MySQL 差 8 小时 = 时区偏移」。**实测证伪**：Git Bash `date -d` 与 python `fromtimestamp`
+**同为 +0800、一致**。真因是**我的查询没过滤 interface 且 `size:20` 按 ts 升序**，被 `HTTP_404` 挤满 ⇒ 只返回最早 20 条。
+簇比首条事件晚 **6 分 47 秒**（两次恒等）= **真实处理延迟**，不是口径错。
+⇒ `error_cluster` / `error_backflow_inbox` 的时间列存 **UTC**，ES `ts` 是 **epoch ms**，**比较前一律统一到 epoch**。
+
+### 4. cs 观测面基线（ES，7 天）
+
+`POST /api/v1/sessions/{id}/messages` **161**（145 ok / **16 error** —— error 全是 `llm_timeout`×14 + `llm_connection`×2，
+**全部 node 成对且全在回流值域内**）｜`POST /api/v1/sessions` 58 ok ｜`POST /api/auth/login` 70（67 ok / 3 error）｜
+`GET /healthz` 26 ok ｜`POST /api/v1/auth/login` **21 全 error**（**已查清，见 §6**）｜其余零星。
+
+> ⚠️ **本表的计数口径**：以上是**按 interface 分组**的桶，**不含 SDK 心跳**。
+> cs 每 **60 秒**落一条 `{"node":"heartbeat","source":"sdk"}`（**无 `interface` / 无 `status`**），
+> 当日实测 **156/162 条是心跳**。**任何「今日 cs 有多少事件」的统计不排除 heartbeat 都是错的**
+> （另：`hits.total` 是**总事件数**，**不是 error 数** —— 本批我一度把它读成 error 计数，见 §7）。
+
+### 5. 复核命令
+
+```bash
+# cs 三簇（3861 open / 3865 fixed = 真实；3842 claim = 注入）
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id,interface,error_type,status,count,first_ts,latest_ts,first_trace_id from \`dev.obs\`.error_cluster where agent=\"customer-service\" order by id"'
+
+# 三重逐字：inbox.source.cluster_id ←→ 簇 id；inbox.source.trace_id ←→ 簇 first_trace_id
+docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id, json_extract(envelope_json,\"\$.source\") src, json_extract(envelope_json,\"\$.evidence.input\") inp from ai_evaluation.error_backflow_inbox where id in (12,16)"'
+
+# cs 的 agent 侧错误事件（**必须先排除 HTTP_\*，否则被客户端 4xx 挤满 —— 本批踩过**）
+T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-event-*/_search' -H 'Content-Type: application/json' -d "{\"size\":40,\"_source\":[\"interface\",\"node\",\"error_type\",\"trace_id\",\"ts\"],\"query\":{\"bool\":{\"must_not\":[{\"prefix\":{\"error_type\":\"HTTP_\"}}],\"filter\":[{\"term\":{\"agent\":\"customer-service\"}},{\"term\":{\"status\":\"error\"}},{\"range\":{\"ts\":{\"gte\":$T}}}]}},\"sort\":[{\"ts\":\"asc\"}]}"
+```
+
+> **防腐**：「3861 count=6」「161/16」等只在本机当日成立，引用须连**当日**与**产出命令**一起带。
+> **口径**：本批时间一律**统一到 epoch** 再比（DB 存 UTC、ES 存 epoch，**直接对字符串必错**）。
+
+### 6. 「`POST /api/v1/auth/login` 21 条全 error」的结论：**旧 dist 残留，非缺陷**
+
+- 现象：21 条**全 `HTTP_404`**、`duration_ms` **0~1ms** ⇒ **路由层直接拒**，未进业务
+- 真实路径：`backend/app/api/auth.py:17` = `APIRouter(prefix="/auth")` ⇒ 实际是 **`/api/auth/login`**
+- 前端调的是**正确**路径：`frontend/src/api/authApi.ts:9` → `authClient.post('/auth/login', …)`
+- **决定性证据 = 仓内已归档同一现象**（`README.md:196`）：
+  > 改过 `frontend/src/` 后必须重新 `npm run build` —— dist 挂载 nginx volume，旧构建不生效
+  > （**T15 实测：`/api/auth/login` 路由统一后旧 dist 仍请求 `/api/v1/auth/login` → 登录 404**）
+- **当日实证**：09-18 当日 cs 的 `HTTP_404` 命中 **0 条** ⇒ 已随 dist 重建修复
+- 21 条时间形态 = **每组 3 条、间隔 60~90ms**（09:05:35×3 / 09:06:50×3 / 09:06:53×3 / 09:07:09×3 / 09:07:13×4 / 09:51:13×3 / 10:20:33 / 10:20:41）
+- **顺带发现两处陈旧文档**（与旧 dist 同源、均不影响运行，按「不碰无关代码」**只登记**）：
+  - `customer-service/backend/app/api/auth.py:4` 的 docstring 写 `POST /api/v1/auth/login`
+  - `customer-service/docs/API.md:17` 的 curl 示例写 `http://localhost:8000/api/v1/auth/login`
+
+⇒ 判为**非新缺陷、已归档**。
+
+### 7. admin 写操作面走查（8 个写操作 ↔ 8 条写事件）
+
+**先声明这批能证明什么**：offline `agent_interface`（agent_id=2298）**只有 1 行** `POST /api/v1/sessions/{sid}/messages`
+⇒ **admin 页面的全部 CRUD 都不在 offline 观测面上**。故本批的绿只证明 **UI ↔ DB ↔ ES 三侧在 online 内自洽**，
+**证不了「两端对账」**（这条面 offline 根本不认，**不是「没数据」**）。
+
+基线（走查前）：`knowledge_docs` 4 行（id 1-4、`sync_status=ok`、`updated_by=system`）；
+`orders` 5 行（`max_id=117`；DELIVERED 2 / SHIPPED 1 / PAID 1 / CANCELLED 1）；`order_items` 8 行。
+
+| # | 操作 | UI | DB | ES |
+|---|---|---|---|---|
+| 1 | 上传知识库 | 新行插首位 | `id=16`、`updated_by=admin`、`updated_at=02:36:42` | `POST /api/v1/admin/knowledge` ×1 |
+| 2 | 编辑知识库 | 更新时间逐字更新 | `content` len 80→**92**、md5 前 8 位 `7d65fc45`→**`9208b205`** | `PUT …/knowledge/probe_cs_20260918` ×1 |
+| 3 | 同步知识库 | 全「已同步」 | `sync_status` 全 ok、`updated_at` **不变** | `POST …/knowledge/sync` ×1 |
+| 4 | 删除知识库 | 行消失 | 行消失、**回基线 4 行** | `DELETE …/knowledge/probe_cs_20260918` ×1 |
+| 5 | 新建订单 | 首行 `PROBE-20260918-0001｜1｜已付款｜12.34｜02:42:27｜探针商品×1(正常)` | `orders id=485` PAID/12.34；`order_items id=189` returnable=1 | `POST /api/v1/admin/orders` ×1 |
+| 6 | 改状态 | 「已付款」→「已发货」 | `status` PAID→**SHIPPED** | `PUT /api/v1/admin/orders/{id}` ×1 |
+| 7 | 删除订单 | 行消失 | `orders 485` 消失 **且 `order_items order_id=485` 一并消失（级联 ✓）**；总数回 5/8 | `DELETE /api/v1/admin/orders/{id}` ×1 |
+| 8 | 重置测试数据 | 二次确认弹窗文案与后端实现逐字一致 → 回 5 条种子订单 | 见下 | `POST /api/v1/admin/reset-demo` ×1 |
+
+**决定性核对**：当日 cs **非 GET** 事件按 interface 聚合 = 上表 **8 条，每条恰好 ×1**
+（另有 `POST /api/auth/login` ×1 = 我登录，**非走查操作**）⇒ **8 写 ↔ 8 条写事件，精确相等且一一对应**。
+
+**第 8 项「重置测试数据」的精确影响**（读 `customer-service/backend/app/api/routes.py:515-545` + 实测）：
+
+- 实现 = 事务内 `DELETE return_orders, refund_orders, complaint_tickets, order_items, orders`，**只重建** `_SEED_ORDERS` + `_SEED_ITEMS`
+- **⚠️ 不可逆**：被删的 `complaint_tickets` **16 行**、`refund_orders` 1 行、`return_orders` 1 行 **不重建**
+- **执行前已全量备份** 18 行 → `.tmp-probe/cs-reset-backup-20260918.sql`
+  （`--no-create-info --complete-insert --skip-extended-insert`；文件内 INSERT **18 条 = 库内计数** ✓）
+- 实测 diff：`orders.id` 113-117 → **486-490**（重建换新自增 id）；`ORD-20240801-001` 商品 **已退货×2 → 正常×2**；
+  三表 1/1/16 → **0/0/0**；`conversation_history` 553 / `tool_call_log` 352 **不动**
+- ⇒ 与 docstring 用途**逐字吻合**（「退货后 SKU 变 RETURNED…测试前调用恢复到初始状态」）⇒ **符合设计，非缺陷**
+- **回灌命令**（如需恢复那 18 行，**须你确认后再执行**）：
+  `docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" customer_service' < .tmp-probe/cs-reset-backup-20260918.sql`
+  （注意 `complaint_tickets.idempotency_key` 是唯一键，期间若产生同键行会撞）
+
+### 8. 本批自我纠错 ×2（同一病根：**取证选择器**）
+
+1. **把 `hits.total` 读成 error 计数** ——「今日 cs 有 159 条 **error 事件**」是**错的**，159 是**含心跳的总事件数**。
+   （「今日零 404」那条结论是从 `404s` 桶读的，**未受影响**。）
+2. **选择器没排除隐藏/无关节点**，连环两次误报：
+   - 「上传后 UI 表格没有新行」→ 实为 `slice(0,8)` 被订单表挤占 + 页面用了 **4 个 `<table>`（表头/表体分离）**，新行在 `table[1]` 首位
+   - 「保存后模态框未关闭 / 取消点不动」→ 实为 `[role=dialog]` 命中了 **`parentDisplay:none`、`rect` 全 0 的隐藏残节点**；
+     模态框**正常关闭**，只是 DOM 节点未卸载 ⇒ **两条观察项均已撤回**
+
+⇒ 教训：**取「可见元素」必须过滤 `getBoundingClientRect().width > 0`**，否则隐藏残节点会让界面**看起来坏了**。
+（同族：[[unreachable-assertion-vs-false-red]] —— 判 FAIL 的两种相反成因。）
+
+### 9. 本批未处置 / 未验
+
+- **未验：无**。admin 页面上的写操作按钮**已全量走完**（知识库 4 + 订单 4）。
+- **登记未处置**：知识库「同步」的结果在 UI 上**无独立呈现**（无「上次同步时间」栏），只体现为列表刷新。
+- **cs 仍未做：无**。`/chat` 当日真流量已做（见 §11）。
+
+### 10. 收口环（第七环）缺口 —— **已定性：不是缺陷，是「没人认领」**（用户拍板「不认领，就此结项」）
+
+**先订正我自己的半截话**：我此前记的「cs 第七环未观测到」**不准确**。
+
+`dev.obs`.`error_case_link` 三簇对照：
+
+| link | 簇 | case | trace | trigger_version | verify_status | 时间 |
+|---|---|---|---|---|---|---|
+| 2223 | 3842（注入） | NULL | `clm-customer-service-1` | `2026.09.09-r1` | pending | 09-14 |
+| **2243** | **3861（真实）** | 4075 | `fd75aa34…`（真 uuid） | `0.1.0` | **`pending`（至今）** | 组装 09-16 02:22:05 |
+| **2244** | **3865（真实）** | 4076 | `d1994368…`（真 uuid） | `0.1.0` | **`passed`** | 组装 08:16:54 → 08:46:43 |
+
+⇒ **3865 = 真实 uuid → case 4076 → link `passed` → 簇 `fixed`**：**第七环在 cs 上是真走通过一次的**，
+「真实用户流量走完七环」这句话**成立**。
+
+**3861 停在 `open` 的根因链（三条证据咬合）**：
+
+1. **`open→claim` 没有后台作业**：worker 六个 job（`judge_scan`/`cluster`/`assemble`/`claim_ttl`/`rejudge`/`rollup`）
+   **无一做此事**；它是**人工端点** `POST /clusters/{id}/claim`（`backend/app/api/backflow.py:630`）。
+2. `backend/app/worker/rejudge_job.py` 的 docstring **逐字写了这个现场**：「**claim 晚于推送**……
+   此时 cluster 仍是 `open` ⇒ **推送端点被 `cluster.status=='claim'` 守卫挡下**」。
+3. **实测吻合**：3861 的 link 组装于 `02:22:05`，offline 的 `error_regression` run 在 `02:23–02:26` 跑完
+   ⇒ 结果到达时簇仍 `open` ⇒ 被挡 ⇒ link **至今 `pending`**；
+   而 **3865 被认领后 52 秒**（≈ 一个 `rejudge_job` 周期）link 转 `passed` ⇒ 簇 `fixed`。
+
+⇒ **3861 缺的唯一一样东西 = 一次人工认领**；认领后 `rejudge_job` 会自动重放已落库结果，**无需重跑离线**。
+**这是设计（收口由人工发起），不是缺陷** ⇒ 用户拍板**不认领，就此结项**。
+
+> **可移植读法**：判「某簇为何没收口」，先看 `claimed_by`。**`claimed_by` 为 NULL 的簇永远停在 `open`，
+> 且不会有任何报错或日志** —— 它**看起来像机制故障，其实是「没人按按钮」**。
+
+> **复核命令**：
+> ```bash
+> docker exec shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select id,cluster_id,case_id,source_trace_id,trigger_version,verify_status,assembled_ts,updated_at from \`dev.obs\`.error_case_link where cluster_id in (3861,3865) order by id"'
+> ```
+
+### 11. cs `/chat` 当日真流量 —— liveness 取证（**结论：链路今日仍活；不构成七环证据**）
+
+**做法**：浏览器在 `https://localhost:8443/chat`（已登录 `cs_token`）发一条真实提问
+「商品到货后发现外包装破损、里面也有磕碰，我想退货，运费谁承担？」（2026-09-18 03:07:21Z）。
+
+**取到的证据（三条，均逐字）**：
+
+| 面 | 结果 |
+|---|---|
+| ① ES（排除心跳） | 本次新增 **2 条**，全 `ok`：`POST /api/v1/sessions/{id}/messages`（68ms，trace `28e7ca83…`）+ `GET /api/v1/sessions`（3ms） |
+| ② online `dev.obs` | 当日 `error_cluster` **0 行**；按 `first_trace_id=28e7ca83…` 查 **0 行** |
+| ③ offline `ai_evaluation` | cs(2298) 最新 run 仍 **3702 / 2026-09-16 08:46:28** ⇒ **零新增** |
+
+**跨端对账（顺带取得，非本次动作产生）**：online 看板 cs 卡片 `c1-signal-20260916-2 / 96.74 / 96% / 16-17 用例`
+↔ offline `eval_run` id=3701 `agent_score=96.74 / total_case=17 / pass_case=16` —— **逐字相等**。
+
+**⚠️ 本次提问的真实成分（不许夸大）**：响应是 SSE（`text/event-stream`），但**全程约 68ms**，
+且 `usage` 事件 `prompt_tokens=0 / completion_tokens=0`；`done` 带 `intent=RETURN_REQUEST`，
+回复文案「请提供您的订单号」由 **`order_query` 阶段短路产出**。
+⇒ **本次根本没有调用 LLM**，是规则路径。因此这条流量：
+
+- **能证明**：`/chat` 真链路今日仍活；真实提问确实进了 agent 主链路并被观测面记到（2 条 `ok`）；
+  当日真实 trace 在 online 侧**确无簇**，与「正常消息不回流」一致；两端计数零漂移。
+- **不能证明**：七环。**它连 L1 判定面都没进**（无 LLM 调用、无 `error`、无簇）。
+  七环的真实流量证据仍是 09-16 那组（簇 3865 → link 2244 `passed`，见 §10）。
+
+- **登记未处置（观察项，未判缺陷）**：`GET /api/v1/sessions` 当日有 1 条 `HTTP_401`
+  （我未登录时碰的，客户端 4xx）⇒ **与「4xx 永不回流」一致，未建簇**，是既有判据的又一次独立复现。
