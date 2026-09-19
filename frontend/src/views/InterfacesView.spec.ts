@@ -84,3 +84,54 @@ describe('接口页排序（P1-6）', () => {
     expect(w.findAll('.tabs button')[1].classes()).toContain('on')
   })
 })
+
+// P1-6 剩余面：后端 terms size=50 顶格截断会在**不报错**的情况下少露接口
+// （真机 7d 请求级 64 种只剩 50）⇒ 页面必须自陈「共 N 种、只显示了 M 种」。
+// 判定依据只有 `truncated` —— 拿 `iface_total` 去比会是错的（cardinality 是近似值）。
+describe('接口页截断自陈（P1-6）', () => {
+  beforeEach(() => {
+    metricsMock.metricsInterfaces.mockReset()
+    filter.window = '24h'
+    filter.agent = ''
+  })
+
+  async function mountTruncated(truncated: boolean, ifaceTotal: number) {
+    const p = mkPayload()
+    p.truncated = truncated
+    p.iface_total = ifaceTotal
+    metricsMock.metricsInterfaces.mockResolvedValue(p)
+    const w = mount(InterfacesView, {
+      global: { stubs: { MetricFilterBar: true, RouterLink: true } },
+    })
+    await flushPromises()
+    return w
+  }
+
+  it('未截断：不出提示（否则等于天天喊狼来了）', async () => {
+    const w = await mountTruncated(false, 1)
+    expect(w.find('.trunc-hint').exists()).toBe(false)
+  })
+
+  it('截断：同时报出「真实种类数」和「只显示了几个」', async () => {
+    const w = await mountTruncated(true, 64)
+    const hint = w.find('.trunc-hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('64')  // 窗口内共 64 种
+    expect(hint.text()).toContain('1')   // 此处只显示 1 种（payload.request 只造了 1 行）
+    // 默认序下说的是「请求量最大」——截断丢掉的是**请求量最小的**接口
+    expect(hint.text()).toContain('请求量最大')
+  })
+
+  it('截断 + error 序：措辞随之改为「错误最多」（同一句在两序下不能都成立）', async () => {
+    const w = await mountTruncated(true, 64)
+    const th = () => w.findAll('thead th').find((t) => t.text().startsWith('错误'))!
+    await th().trigger('click')
+    await flushPromises()
+
+    const hint = w.find('.trunc-hint')
+    expect(hint.text()).toContain('错误最多')
+    expect(hint.text()).not.toContain('请求量最大')
+    // 截断提示与排序提示是**两条独立**的行（同用 .hint 样式），别把后者顶掉
+    expect(w.text()).toContain('未上榜 ≠ 没出错')
+  })
+})

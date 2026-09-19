@@ -279,6 +279,10 @@ def build_metrics_interfaces_body(
 
     ⚠️ terms 的 order **同时决定取哪 top N 个桶**，不是「同一批里重排」：按 err 降序得到的是
     **错误最多的 50 个接口**，未必包含请求量最大的接口。调用方必须把这点写给用户看。
+
+    ⚠️ size=50 会被**顶格截断**（实测 7d 请求级 interface 真实 64 种 ⇒ 静默少显示 14 种）。
+    `iface_card`（cardinality）就是为把这个「被截掉多少」量出来而挂的：terms 只回报
+    返回桶，不给真实种类数；没有它前端就报不出「共 N 种、只显示 50 种」。
     """
     req_terms: dict = {"field": "interface", "size": 50}
     llm_terms: dict = {"field": "interface", "size": 50}
@@ -300,7 +304,9 @@ def build_metrics_interfaces_body(
                             "err": {"filter": {"term": {"status": "error"}}},
                             "to": {"filter": {"term": {"status": "timeout"}}},
                         },
-                    }
+                    },
+                    # 真实种类数（terms 截断时用来算「少显示了几种」）
+                    "iface_card": {"cardinality": {"field": "interface"}},
                 },
             },
             "llm": {
@@ -453,7 +459,11 @@ async def run_metrics_overview(
 async def run_metrics_interfaces(
     client, *, settings, request_timeout_s: float, **kw
 ) -> dict:
-    """interfaces 实时查询 → {request: [ReqIfaceRow], llm: [LlmIfaceRow]}（解析钉定形状）。"""
+    """interfaces 实时查询 → {request, llm, iface_total, truncated}（解析钉定形状）。
+
+    `iface_total` = 请求级 interface 真实种类数；`truncated` = 请求级 terms 落了桶外文档
+    （即 `sum_other_doc_count > 0`，判定用不着 cardinality，且不存在「近似」问题）。
+    """
     body = build_metrics_interfaces_body(**kw)
     resp = await client.options(request_timeout=request_timeout_s).search(
         index=event_index_patterns(settings), body=body
@@ -486,7 +496,13 @@ async def run_metrics_interfaces(
                 for m in (b.get("by_model") or {}).get("buckets") or []
             ],
         })
-    return {"request": request_rows, "llm": llm_rows}
+    req_agg = (aggs.get("req") or {}).get("by_iface") or {}
+    return {
+        "request": request_rows,
+        "llm": llm_rows,
+        "iface_total": int((aggs.get("req") or {}).get("iface_card", {}).get("value") or 0),
+        "truncated": int(req_agg.get("sum_other_doc_count") or 0) > 0,
+    }
 
 
 def build_agents_body(*, start_ts: int, end_ts: int, size: int = 100) -> dict:

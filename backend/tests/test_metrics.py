@@ -189,6 +189,10 @@ class TestStoreBodies:
         assert pct == [50, 95, 99]
         model_aggs = aggs["llm"]["aggs"]["by_iface"]["aggs"]["by_model"]["aggs"]
         assert {"pt", "ct", "fail"} <= set(model_aggs)
+        # P1-6：terms size=50 会顶格截断 ⇒ 必须同时问真实种类数，否则报不出「共 N 种」
+        assert aggs["req"]["aggs"]["iface_card"] == {"cardinality": {"field": "interface"}}
+        # 挂在 req filter agg 内（与 by_iface 同级）：挂外层会被 agent/时间窗之外的全库计数
+        assert "iface_card" not in aggs
 
     def test_interfaces_body_sort_error_orders_both_terms_by_their_own_subagg(self):
         """P1-6：sort="error" ⇒ 两个 tab 的 terms 各按自己的错误子聚合降序。
@@ -519,6 +523,45 @@ class TestInterfacesEndpoint:
         m = llm["models"][0]
         assert m["model"] == "claude-sonnet" and m["prompt_tokens"] == 1000
         assert es.calls[0][1]["aggs"]["llm"]["filter"] == {"term": {"node": "llm_call"}}
+        # 该 fixture 没有 sum_other_doc_count / iface_card ⇒ 未截断的默认读数
+        assert body["truncated"] is False and body["iface_total"] == 0
+
+    def test_interfaces_truncation_self_report(self):
+        """P1-6：terms 顶格截断必须自陈（真机 7d：64 种只剩 50 ⇒ 静默少显示 14 种）。
+
+        应答即判据来源：`sum_other_doc_count` 判「有没有截」，`iface_card` 报「真实几种」。
+        只验前者的话，前端只能说「还有没显示的」而说不出少了几种。
+        """
+        resp = _interfaces_resp()
+        resp["aggregations"]["req"]["by_iface"]["sum_other_doc_count"] = 14
+        resp["aggregations"]["req"]["iface_card"] = {"value": 64}
+        app, es = _app(FakeES(response=resp))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                      params={"window": "24h"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["truncated"] is True
+        assert body["iface_total"] == 64
+        # 被截了但桶还在：50 种里最少的那个也得能读到（截断不是丢数据，是少露行）
+        assert len(body["request"]) == 1 and body["request"][0]["interface"] == "POST /chat"
+
+    def test_interfaces_llm_truncation_does_not_set_flag(self):
+        """反向保护：llm tab 的 terms 也 size=50，但**本次只对请求级自陈**。
+
+        写死这条是因为两个 tab 形状一样、极易顺手把 llm 的 sum_other 也 or 进来 ——
+        而前端文案报的是请求级的 `iface_total`/`request.length`，一旦 or 进来，
+        llm 单独截断时会渲染出**张冠李戴的数字**（说的是 llm，报的是 req）。
+        """
+        resp = _interfaces_resp()
+        resp["aggregations"]["llm"]["by_iface"]["sum_other_doc_count"] = 7
+        app, es = _app(FakeES(response=resp))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                      params={"window": "24h"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["truncated"] is False and body["iface_total"] == 0
 
     def test_interfaces_sort_error_reaches_es(self):
         """P1-6：sort=error 一路透传到 ES body（endpoint → _load_interfaces → es body）。"""

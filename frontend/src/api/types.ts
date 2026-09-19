@@ -142,6 +142,9 @@ export interface MetricsInterfaces {
   fallback_hours: number[]
   request: ReqIfaceRow[]
   llm: LlmIfaceRow[]
+  // P1-6：请求级 terms 顶格截断的自陈（后端 size=50 是硬上限）
+  iface_total: number
+  truncated: boolean
 }
 
 export interface AnomalyItem {

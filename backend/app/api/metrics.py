@@ -159,6 +159,10 @@ class MetricsInterfaces(BaseModel):
     fallback_hours: list[int] = []
     request: list[ReqIfaceRow] = []
     llm: list[LlmIfaceRow] = []
+    # P1-6：请求级 terms 顶格截断的自陈（iface_total=真实种类数，truncated=确实被截了）。
+    # 不给这两个数，前端就分不清「只有这 50 种接口」和「只显示了 50 种」。
+    iface_total: int = 0
+    truncated: bool = False
 
 
 class AnomalyItem(BaseModel):
@@ -454,6 +458,8 @@ async def _load_interfaces(
         window=window, agent=agent, source=_source, fallback_hours=fallback_hours,
         request=[ReqIfaceRow(**r) for r in result["request"]],
         llm=llm_rows,
+        iface_total=result["iface_total"],
+        truncated=result["truncated"],
     )
 
 

@@ -59,6 +59,13 @@ function fmtTok(v: number): string {
       按错误数排序：每个 tab 只列出<strong>错误最多的 50 个接口</strong>（不是请求量最大的 50 个）—— 未上榜 ≠ 没出错。
     </p>
 
+    <!-- P1-6：后端 terms size=50 是硬上限，超了会**静默少显示**（实测 7d 请求级 64 种只剩 50）。
+         不写这行的话，「表里没有」会被读成「没有流量」——数字不假，但读者的结论假。 -->
+    <p v-if="props.payload?.truncated" class="muted slim hint trunc-hint">
+      请求级：窗口内共 {{ props.payload.iface_total }} 种接口，此处只显示{{
+        props.sort === 'error' ? '错误最多' : '请求量最大' }}的 {{ reqRows.length }} 种 —— 未上榜 ≠ 没流量。
+    </p>
+
     <p v-if="props.loading && !props.payload" class="muted slim">加载中…</p>
 
     <template v-else-if="tab === 'request'">
