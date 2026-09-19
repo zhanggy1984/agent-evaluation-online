@@ -457,8 +457,20 @@ async def _load_interfaces(
     )
 
 
+def _validate_anomalies_sort(sort: str | None) -> None:
+    """P1-6：/anomalies 排序口径白名单（∈ {ts, duration} 或省略）。
+
+    与 `_validate_sort`（/interfaces 专用，只放 error）**分开两套**：两张表的排序语义
+    与可用键都不同，共用一个白名单会让「哪天给一张表加键」顺手放宽另一张。
+    """
+    if sort is not None and sort not in ("ts", "duration"):
+        raise AppError(
+            "ERR_METRICS_0001", f"sort 非法（∈ {{ts, duration}} 或省略）: {sort}", http=400)
+
+
 async def _load_anomalies(
-    request: Request, session: AsyncSession, agent: str | None, window: str
+    request: Request, session: AsyncSession, agent: str | None, window: str,
+    sort: str | None = None,
 ) -> MetricsAnomalies:
     client = request.app.state.es_query
     window_ms, _interval = _WINDOWS[window]
@@ -469,6 +481,7 @@ async def _load_anomalies(
         result = await es_store.fetch_anomalies(
             client, settings=request.app.state.settings, request_timeout_s=timeout_s,
             agent=agent, start_ts=start_ms, end_ts=end_ms, size=_LIST_LIMIT,
+            sort=sort or "ts",
         )
     except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
@@ -589,10 +602,14 @@ async def metrics_anomalies(
     session: _Session,
     agent: str | None = Query(default=None, max_length=64),
     window: str = Query(default="24h"),
+    sort: str | None = Query(default=None),
 ) -> MetricsAnomalies:
     _validate_window(window)
-    value = await _cached(session, "anomalies", agent, window,
-                          lambda: _load_anomalies(request, session, agent, window))
+    _validate_anomalies_sort(sort)
+    # ⚠️ sort 必须进缓存 key：否则「按耗时排序」会命中默认排序的缓存条目，
+    # 表现为「点了排序没反应」（且只在缓存 TTL 内出现，更难查）—— 同 /interfaces。
+    value = await _cached(session, f"anomalies|{sort or 'default'}", agent, window,
+                          lambda: _load_anomalies(request, session, agent, window, sort))
     return value  # type: ignore[return-value]
 
 

@@ -334,19 +334,31 @@ def build_metrics_interfaces_body(
 
 
 def build_anomalies_body(
-    *, agent: str | None, start_ts: int, end_ts: int, size: int
+    *, agent: str | None, start_ts: int, end_ts: int, size: int, sort: str = "ts"
 ) -> dict:
-    """GET /metrics/anomalies body：request 红显（error/timeout）列表，ts desc。
+    """GET /metrics/anomalies body：request 红显（error/timeout）列表，默认 ts desc。
 
     track_total_hits=True：列表截断（size≤100）需如实 total 支撑 truncated 指示
     （§8.4 v1.14）；量级可控时取精确计数，超大可换 track_total_hits: 10001 阈值语义。
+
+    - `sort="duration"`（P1-6）：按 `duration_ms` desc，`missing: "_last"` 让无耗时的行沉底，
+      再以 ts desc 兜底保证**次序稳定**（同值行不会在两次请求间换位）。
+      ⚠️ 两种排序共享的是**过滤条件**，不是**返回集合**：ES 先对全量命中排序、再取前 size 条，
+      所以超过 size 时 duration 序返回的是「窗口内最慢的 size 条」而非「最新 size 条的重新排列」。
+      这正是该功能的目的（找最慢，不是找最新）；前端截断提示的措辞须随之变化，
+      写死「仅显示最新 N 条」在 duration 序下就是撒谎。
     """
+    ts_desc = {"ts": {"order": "desc", "format": "epoch_millis"}}
+    order = (
+        [{"duration_ms": {"order": "desc", "missing": "_last"}}, ts_desc]
+        if sort == "duration" else [ts_desc]
+    )
     return {
         "query": _base_metrics_query(
             agent, start_ts, end_ts, node="request", statuses=["error", "timeout"]),
         "size": size,
         "track_total_hits": True,
-        "sort": [{"ts": {"order": "desc", "format": "epoch_millis"}}],
+        "sort": order,
     }
 
 

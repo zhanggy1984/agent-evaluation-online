@@ -29,8 +29,10 @@ export function metricsInterfaces(
   return api<MetricsInterfaces>(`/metrics/interfaces${qs({ agent, window, sort })}`)
 }
 
-export function metricsAnomalies(agent: string | null, window: string): Promise<MetricsAnomalies> {
-  return api<MetricsAnomalies>(`/metrics/anomalies${qs({ agent, window })}`)
+export function metricsAnomalies(
+  agent: string | null, window: string, sort?: string | null,
+): Promise<MetricsAnomalies> {
+  return api<MetricsAnomalies>(`/metrics/anomalies${qs({ agent, window, sort })}`)
 }
 
 export function metricsLlmFailures(

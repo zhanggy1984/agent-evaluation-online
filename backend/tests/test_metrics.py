@@ -215,11 +215,35 @@ class TestStoreBodies:
         assert a["size"] == 50
         # v1.14：列表截断提示需真实 total → 关闭 hits.total 近似（截断语义 §8.4）
         assert a["track_total_hits"] is True
+        # 默认（不传 sort）仍是纯 ts desc 单键，不多带 duration 兜底键
+        assert a["sort"] == [{"ts": {"order": "desc", "format": "epoch_millis"}}]
         lf = es_store.build_llm_failures_body(agent=None, start_ts=1, end_ts=2, size=50)
         assert lf["collapse"] == {"field": "trace_key"}
         assert {"term": {"node": "llm_call"}} in lf["query"]["bool"]["filter"]
         # collapse 不改 hits.total → trace_total 单独 cardinality(trace_key)（去重失败 trace 总数）
         assert lf["aggs"]["trace_total"] == {"cardinality": {"field": "trace_key"}}
+
+    def test_anomalies_body_sort_duration(self):
+        """P1-6：sort="duration" ⇒ duration_ms desc + ts desc 兜底。
+
+        三处都要在：
+        - `order: desc` 是主排序（本条的**意图**所在）；
+        - `missing: "_last"` 让**无 duration_ms 的行沉底**。ES 在 desc 下 missing 的默认
+          也是 `_last`，所以这条今天**等价于默认值**；显式写死的理由是它决定了「'-' 的行
+          该在哪」，属**用户可见口径**，不该随 ES 版本/字段 mapping 变化而漂移；
+        - ts desc 兜底 → 同值行次序稳定，否则两次请求可能换位（前端 table key 带下标，会闪）。
+        再断言**集合口径不变**：query/size/track_total_hits 与默认逐字相同，只是次序不同。
+        """
+        d = es_store.build_anomalies_body(agent=None, start_ts=1, end_ts=2, size=50,
+                                          sort="duration")
+        assert d["sort"] == [
+            {"duration_ms": {"order": "desc", "missing": "_last"}},
+            {"ts": {"order": "desc", "format": "epoch_millis"}},
+        ]
+        # 排序只改次序，不改集合：与默认 body 除 sort 外逐字相同
+        base = es_store.build_anomalies_body(agent=None, start_ts=1, end_ts=2, size=50)
+        assert {k: v for k, v in d.items() if k != "sort"} == \
+            {k: v for k, v in base.items() if k != "sort"}
 
     def test_request_statuses_body_caps_terms_at_100(self):
         body = es_store.build_request_statuses_body([f"t{i}" for i in range(150)])
@@ -556,6 +580,39 @@ class TestAnomaliesEndpoint:
         q = es.calls[0][1]["query"]["bool"]["filter"]
         assert {"term": {"node": "request"}} in q
         assert {"term": {"agent": _AGENT}} in q
+
+    def test_anomalies_sort_duration_reaches_es_and_enters_cache_key(self):
+        """P1-6：sort=duration 一路透传到 ES body + 必须进缓存 key。
+
+        判别点仍是 `len(es.calls) == 2`（同 /interfaces 那条）：sort 没进 key 时第二次
+        命中默认排序的缓存条目 ⇒ 只 1 次 ES 调用，UI 表现 = 「点了排序没反应」。
+        """
+        src = [_anomaly_source()]
+        app, es = _app(FakeES(response=es_hits(1, src)))
+        with _enter(app, es) as c:
+            c.get("/api/v1/metrics/anomalies", headers=_auth_hdr(), params={"window": "1h"})
+            r = c.get("/api/v1/metrics/anomalies", headers=_auth_hdr(),
+                      params={"window": "1h", "sort": "duration"})
+        assert r.status_code == 200
+        assert len(es.calls) == 2, "sort 未进缓存 key：同窗不同 sort 命中了同一条缓存"
+        assert es.calls[1][1]["sort"][0] == {"duration_ms": {"order": "desc",
+                                                            "missing": "_last"}}
+
+    def test_anomalies_sort_illegal_400(self):
+        """白名单外的 sort 直接 400，且**不进 ES**（别把非法值透传给 ES 再靠它报错）。"""
+        src = [_anomaly_source()]
+        app, es = _app(FakeES(response=es_hits(1, src)))
+        with _enter(app, es) as c:
+            r = c.get("/api/v1/metrics/anomalies", headers=_auth_hdr(),
+                      params={"window": "1h", "sort": "error"})
+        assert r.status_code == 400
+        assert es.calls == [], "非法 sort 仍打到了 ES"
+        # 反向保护：这个值在 /interfaces 上合法 —— 证明两张表**各一套白名单**没被合并
+        app2, es2 = _app(FakeES(response=_interfaces_resp()))
+        with _enter(app2, es2) as c2:
+            r2 = c2.get("/api/v1/metrics/interfaces", headers=_auth_hdr(),
+                        params={"window": "1h", "sort": "error"})
+        assert r2.status_code == 200
 
     def test_anomalies_total_truncated_hint(self):
         # hits.total(5) > 返回条数(2) → truncated True：UI 渲染"仅显示最新 N 条"
