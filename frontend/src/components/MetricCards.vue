@@ -82,6 +82,10 @@ const counts = (): CardCell[] => [
   min-width: 120px;
   background: #fafbfc;
   border: 1px solid var(--border);
+  /* P1-20：左边条提到基础样式，让**所有卡同构** —— 于是「色条颜色」才是状态
+     （中性 / 红 / 橙），而不是「有的卡有色条、有的没有」。
+     此前只有 .err/.to 额外加 border-left，同行三张里 2 张有 1 张无。 */
+  border-left: 3px solid var(--border);
   border-radius: 6px;
   padding: 10px 12px;
   display: flex;
@@ -89,12 +93,13 @@ const counts = (): CardCell[] => [
   gap: 2px;
 }
 
+/* P1-20：只改颜色，宽度由 .card 基础样式统一给（3px）—— 三态同构。 */
 .card.err {
-  border-left: 3px solid var(--error);
+  border-left-color: var(--error);
 }
 
 .card.to {
-  border-left: 3px solid var(--timeout);
+  border-left-color: var(--timeout);
 }
 
 .card b {

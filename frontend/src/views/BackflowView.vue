@@ -333,7 +333,12 @@ function agentCounts(): BackflowByAgent[] {
 
 .kv li {
   display: flex;
-  justify-content: space-between;
+  /* P2-27：原为 space-between —— 但「cluster 状态」那张卡的 li 有**三个**子元素
+     （色点 / 标签 / 数字），space-between 会把**中间的标签**甩到剩余空间正中，
+     色点与标签之间因此空出大片。改 flex-start + 数字 margin-left:auto：
+     「色点 + 标签」自然相邻（gap 8px），数字仍贴最右。
+     同页「link 回查分布」的 li 只有两个子元素，此改法对它**逐像素等价**（本就是 span 左 / b 右）。 */
+  justify-content: flex-start;
   align-items: center;
   gap: 8px;
   padding: 2px 0;
@@ -342,6 +347,7 @@ function agentCounts(): BackflowByAgent[] {
 
 .kv b {
   font-weight: 600;
+  margin-left: auto;
 }
 
 .dot {
