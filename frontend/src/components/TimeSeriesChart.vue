@@ -83,13 +83,29 @@ function linePath(l: SeriesLine): string {
   return segs.join(' ')
 }
 
+// x 轴刻度：首尾必在、中间等分，最多 7 个（P2-23 主因）。
+// 旧实现是「按 step 走网格 + 无条件补 n-1」，补位与末位网格点只隔几桶时两个标签会重叠
+// （n=123 时末两刻度仅隔 2 桶，实测压在一起 11px）。等分生成让间距恒为 (n-1)/(count-1)，
+// 从根上不存在「补位贴脸」；代价是刻度不再落在 step 的整数倍上（对读图无影响）。
 const ticks = computed(() => {
   const n = rows.value.length
-  if (!n) return [] as number[]
-  const step = Math.max(1, Math.floor(n / 6))
-  const out: number[] = []
-  for (let i = 0; i < n; i += step) out.push(i)
-  if (!out.includes(n - 1)) out.push(n - 1)
+  if (!n) return [] as { i: number; text: string }[]
+  const count = Math.min(7, n)
+  const idx: number[] = []
+  for (let k = 0; k < count; k++) {
+    idx.push(count === 1 ? 0 : Math.round((k * (n - 1)) / (count - 1)))
+  }
+  // 标签去重（P2-23 次因）：7d 的 MM-DD 粒度粗于 1 小时桶，等分后相邻刻度仍可能同日
+  // ⇒ 连续重复只保留第一个；被跳过者整个条目都不产出，即**该处不渲染任何东西**。
+  // （x 轴本来就只有刻度文字、没有网格线，所以「少一个刻度」不会让任何线错位。）
+  const out: { i: number; text: string }[] = []
+  let prev = ''
+  for (const i of [...new Set(idx)]) {
+    const t = props.xFmt(rowTs(i))
+    if (t === prev) continue
+    out.push({ i, text: t })
+    prev = t
+  }
   return out
 })
 
@@ -169,9 +185,9 @@ const hoverDots = computed(() => {
         />
       </template>
       <text
-        v-for="(ti, k) in ticks" :key="`t${k}`"
-        :x="xAt(ti)" :y="H - 6" text-anchor="middle" class="axis"
-      >{{ xFmt(rowTs(ti)) }}</text>
+        v-for="(t, k) in ticks" :key="`t${k}`"
+        :x="xAt(t.i)" :y="H - 6" text-anchor="middle" class="axis"
+      >{{ t.text }}</text>
     </svg>
 
     <div v-if="tipRows" class="tip" :style="{ left: tipLeft() }">
