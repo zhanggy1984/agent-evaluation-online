@@ -84,16 +84,13 @@ const sourceLabel = computed(() => {
   return '实时'
 })
 
-// 7d 顶部横幅：整窗或部分小时回退实时口径
-const banner = computed(() => {
-  if (filter.window !== '7d' || !overview.value) return null
-  const src = overview.value.source
-  if (src === 'realtime') return '7d 无聚合数据，整窗按实时数据计算（聚合索引未生成或缺口）'
-  if (src === 'mixed' && overview.value.fallback_hours.length > 0) {
-    return `部分时段按实时数据计算（${overview.value.fallback_hours.length} 个小时没有聚合数据）`
-  }
-  return null
-})
+// 7d 顶部横幅「部分时段按实时数据计算（N 个小时没有聚合数据）」2026-09-20 整体移除，两因：
+// ① 措辞与实现不符：`fallback_hours` 的那几个小时**不是「用实时数据补上了」，是根本没进分位**
+//    （metrics.py:393-398 —— 只 merge rollup 覆盖小时的 sketch；计数/率/序列本来就恒走实时整窗）。
+//    读起来像「数据完整性的保证」，事实是「分位覆盖率不足」，方向相反。
+// ② 同页 rollupNote 已用准确措辞说了同一件事（168−130=38，是同一个数的两面），
+//    且它明说「哪些字段受影响」——banner 只是同一事实的第二遍渲染，措辞还更差。
+// 保留 rollupNote 即信息不丢；不做「降级成普通提示」是避免同页说两遍。
 
 // v1.14 分位标注：7d 有 rollup 覆盖时，分位与计数是不同样本（§4.4 口径）——分位仅覆盖小时、
 // 计数/序列实时全窗。UI 明示避免"卡与图对不上"的误读（挑战点 1.2 落字）。
@@ -206,7 +203,6 @@ onUnmounted(() => {
             数据源：{{ sourceLabel }} · agent：{{ overview.agent ? agentDisplay(overview.agent) : '全站' }} · 窗口 {{ filter.window }}
           </span>
         </div>
-        <p v-if="banner" class="warn">{{ banner }}</p>
         <p v-if="rollupNote" class="muted note">{{ rollupNote }}</p>
         <MetricCards :cards="overview ? overview.cards : null" :loading="loading" />
 
@@ -215,14 +211,14 @@ onUnmounted(() => {
             <p class="chart-title">QPS 趋势</p>
             <TimeSeriesChart
               :data="chartRows" :lines="qpsLines"
-              :xFmt="xFmt" :yFmt="yFmtQps" :height="140"
+              :xFmt="xFmt" :yFmt="yFmtQps" :height="170"
             />
           </div>
           <div class="chart-box">
             <p class="chart-title">失败率 / 超时率</p>
             <TimeSeriesChart
               :data="chartRows" :lines="rateLines"
-              :xFmt="xFmt" :yFmt="yFmtRate" :height="140"
+              :xFmt="xFmt" :yFmt="yFmtRate" :height="170"
             />
           </div>
         </div>
@@ -236,49 +232,49 @@ onUnmounted(() => {
 .sec-row {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
 }
 
+/* 小节标题：左侧 3px 竖条 + 字距。竖条是全站通用的「这里是读数区起点」记号，
+   与卡片左边条同一套语汇（颜色=状态），不额外引入图形元素。 */
 .sec {
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   margin: 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--brand);
+  line-height: 1.2;
 }
 
 .src {
   font-size: 12px;
 }
 
-.warn {
-  margin: 0 0 10px;
-  padding: 7px 10px;
-  background: #fef3e2;
-  border: 1px solid #f4d5a8;
-  color: var(--timeout);
-  border-radius: 4px;
-  font-size: 13px;
-}
-
 .charts {
   display: flex;
-  gap: 12px;
-  margin-top: 12px;
+  gap: var(--sp-4);
+  margin-top: var(--sp-5);
   flex-wrap: wrap;
 }
 
+/* 图表容器：与卡片同样用 --bg 凹槽（白面板上的内嵌区），全页内嵌区一个语汇。 */
 .chart-box {
   flex: 1 1 420px;
   min-width: 320px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px 10px;
-  background: #fafbfc;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  background: var(--bg);
 }
 
 .chart-title {
-  margin: 0 0 4px;
-  font-size: 13px;
+  margin: 0 0 var(--sp-2);
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
 .auto {

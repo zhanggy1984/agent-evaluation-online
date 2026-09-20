@@ -260,7 +260,7 @@ tr.iface {
 }
 
 tr.iface:hover {
-  background: #fafbfc;
+  background: var(--hover-row);
 }
 
 tr.red td:first-child {
@@ -285,7 +285,7 @@ td.red {
 
 table.inner {
   margin: 4px 0;
-  background: #fafbfc;
+  background: var(--bg);
 }
 
 table.inner th,
@@ -296,7 +296,7 @@ table.inner td {
 }
 
 tr.sub td {
-  background: #fafbfc;
+  background: var(--bg);
   padding: 4px 8px 10px;
 }
 

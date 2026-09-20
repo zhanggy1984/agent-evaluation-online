@@ -543,7 +543,7 @@ const rows = computed(() => detail.value?.conversions ?? [])
 
 .note-line {
   color: var(--muted);
-  background: #f7f8fa;
+  background: var(--bg);
   border-radius: 4px;
   padding: 6px 8px;
   margin: 8px 0 0;

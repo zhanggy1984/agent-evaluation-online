@@ -1,21 +1,65 @@
-/* 全局极简样式（IA 重构 v1.13 细节整容：面板轻阴影 + 圆角统一 + 表格斑马纹基调）。
-   约定：scoped 组件内表格/面板继承本基调，勿在组件内重复声明 border-radius/shadow 冲突值。 */
+/* 全局样式（v1.15 视觉层：深色顶栏 + 「精密仪表」基调）。
+   约定：scoped 组件内表格/面板继承本基调，勿在组件内重复声明 border-radius/shadow 冲突值。
+   本次改动只动「表现层」——信息架构、字段口径、交互流程一律未动。 */
 :root {
-  --bg: #f5f6f8;
+  /* —— 面 —— */
+  --bg: #f2f4f7;
   --panel: #ffffff;
-  --border: #e2e5ea;
-  --text: #24292f;
-  --muted: #6b7280;
-  --brand: #1a73e8;
+  --border: #dfe3e9;
+  /* 细网格线：比 --border 更淡一档，专用于面板内的行分隔（表体、图例框）。
+     硬分隔用 --border、软分隔用 --border-soft，两档并存才能既有结构又不显碎。 */
+  --border-soft: #edf0f4;
+  /* 行悬停底色。必须比 --bg 更深：表格行底色是白（--panel），而 --bg 同时被用作
+     「面板内凹槽」（table.inner / 卡片 / 图表容器）。若两者同值，
+     凹槽表格里的行悬停就**完全看不出变化** —— 这不是审美问题而是功能缺陷。
+     （2026-09-20 由 6 处硬编码 #fafbfc 收拢至此：原值在白底上几乎不可见，
+     且与凹槽灰并存两套灰。） */
+  --hover-row: #e9edf3;
+  --text: #1f2937;
+  /* 2026-09-20 由 #6b7280 加深：原值配新 --bg 实测 4.51:1，贴 AA 4.5 线无余量。现值 5.4:1。 */
+  --muted: #5b6472;
+  /* 2026-09-20 由 #1a73e8 换为 #2563eb：同为品牌蓝，但配白底 5.17:1（原 4.9:1）且更「仪表」。 */
+  --brand: #2563eb;
+
+  /* —— 语义色 —— */
   --error: #d93025;
   --timeout: #b45309;
-  --ok: #188038;
+  /* P2-26（2026-09-20 落地）：原 #188038 配 #e7f3e9 实测 4.40:1 < AA 4.5。
+     现值 5.83:1。该变量**只被用作文字色**（4 处 .st-fixed/.st-active/.run-status.ok/.st-ok
+     的底色都是字面量 #e7f3e9），故改色值只提对比度、不动任何背景。 */
+  --ok: #0f6b28;
+
+  /* —— 高亮底 —— */
   --hl-llm: #eef4ff;
   --hl-red: #fdecea;
-  /* 圆角层级：大面板 8px、小控件(输入/下拉/胶囊) 4px——大板与小件分层的惯例，避免全 4px 的平板感 */
+
+  /* —— 深色顶栏（本次新增：此前顶栏底色 == 页面底色，整页没有视觉锚点）—— */
+  --topbar: #141b26;
+  --topbar-line: #0b1017;
+  --topbar-text: #e8edf4;   /* 配 --topbar 14.7:1 */
+  --topbar-muted: #94a3b8;  /* 配 --topbar 6.74:1，过 AA */
+  --topbar-hover: rgba(255, 255, 255, 0.07);
+
+  /* —— 形 —— */
   --radius-lg: 8px;
   --radius-sm: 4px;
-  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.05);
+  /* —— 控件高度（2026-09-20 新增，全站唯一真源）——
+     此前 input/select/button 各写各的 padding，实测**同一行里**出现过
+     19 / 24 / 26 / 29 / 33 / 34 六种高度（裸 select 与漏写 padding 的 .btn-ghost
+     落 UA 默认值最矮）。高度统一由本值决定，各控件只负责左右内距。 */
+  --ctl-h: 32px;
+  /* —— 间距阶（2026-09-20 新增）——
+     此前全站没有间距 token，各组件硬写 6/7/9/10/12/14 混用 ⇒ 「紧凑且不匀」。
+     六档够用：4 元素内 / 8 紧邻 / 12 组内 / 16 组间 / 24 区块间 / 32 大区块间。 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  /* 原 0 1px 2px rgba(16,24,40,.05) 在浅底上几乎不可见 ⇒ 面板与底靠边框硬分。
+     提到两段式（扩散 + 贴地）后白面板才「浮」得起来。 */
+  --shadow-panel: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
 * {
@@ -29,6 +73,11 @@ body {
   color: var(--text);
   font-size: 14px;
   line-height: 1.5;
+  /* 等宽数字：仪表读数的基础 —— 比例数字下 1 和 0 宽度不同，
+     同列多行数字位数对不齐，读数时要逐位找位置。tnum 支持时生效，不支持则退化为原样。 */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* 根节点全宽：内容宽度/居中由 App.vue 布局壳统一控制（顶部双行导航吸顶 + 1280 内容域） */
@@ -45,10 +94,29 @@ button {
   cursor: pointer;
 }
 
-input {
-  padding: 6px 10px;
+/* input 与 select 同形：此前只给 input 写了样式，`<select>` 完全没有 ⇒
+   admin 页的角色下拉落到 UA 默认（实测 61×19），比旁边的按钮矮 7px。 */
+input,
+select {
+  height: var(--ctl-h);
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-variant-numeric: inherit;
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* .btn 与 .btn-ghost 的**共同外观**（P2-21 2026-09-18 起就在补这一层）：
+   本类在模板里从不与 .btn 同用，凡只写在 .btn 上的属性一点都继承不到。
+   2026-09-20 补上此前**唯一漏掉的 padding** —— 漏了它时按钮落 UA 默认 1px 6px（24px 高），
+   与同行的 .btn（34px）参差 10px。 */
+.btn,
+.btn-ghost {
+  height: var(--ctl-h);
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
 }
 
@@ -56,9 +124,6 @@ input {
   background: var(--brand);
   color: #fff;
   border: none;
-  border-radius: 4px;
-  padding: 7px 14px;
-  font-size: 14px;
 }
 
 .btn:disabled {
@@ -67,14 +132,9 @@ input {
 }
 
 .btn-ghost {
-  background: #fff;
+  background: var(--panel);
   color: var(--brand);
   border: 1px solid var(--border);
-  /* P2-21（2026-09-18）：本类在模板里**从不与 .btn 同用**（21 处调用全是单独用），
-     故 .btn 上的 border-radius/font-size 一点都继承不到，此前落到浏览器 UA 默认值
-     （圆角 2px、字号 13.33px），与 .btn 并排时明显不齐。此处补齐两者的共同外观。 */
-  border-radius: 4px;
-  font-size: 14px;
 }
 
 .panel {
@@ -82,7 +142,16 @@ input {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
-  padding: 14px 16px;
+  /* 2026-09-20 由 14/16 放宽：原值让内容贴边，读数区看起来「挤」。 */
+  padding: var(--sp-5) var(--sp-5);
+}
+
+/* 表头小标题：统一为「小号 + 字距」的仪表标签形态，全站表头沿用 */
+.panel-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
 .error-text {

@@ -105,7 +105,7 @@ tr.clickable {
 }
 
 tr.clickable:hover {
-  background: #fafbfc;
+  background: var(--hover-row);
 }
 
 .st {

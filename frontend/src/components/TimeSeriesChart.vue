@@ -83,6 +83,33 @@ function linePath(l: SeriesLine): string {
   return segs.join(' ')
 }
 
+// 孤立点采集（2026-09-20）：**长度恰好为 1 的连续非空段**在 linePath 里只产出 "M x y"，
+// 而 SVG 中只有 moveto、没有 lineto 的路径**什么都不画**（fill 又是 none）⇒
+// 该点有真实读数却彻底不可见。
+// 实测（/dashboard 7d, agent=contract-check）：error_rate 的段长分布是 [1,3,1,2,2,1]，
+// 6 段里 3 段长度为 1 —— count 2 / 68 / 15 三个桶的读数全丢，其中 count=68 那次
+// 失败率 1.47% 是个不该消失的点。此处把它们单独画成实心圆。
+// ⚠️ 只补"点可见"，**不跨空桶连线** —— 空桶 = 无流量 = 算不出率，断开是对的语义。
+const isolatedDots = computed(() => {
+  const out: { id: string; x: number; y: number; color: string }[] = []
+  const n = rows.value.length
+  for (const l of props.lines) {
+    let i = 0
+    while (i < n) {
+      const v = numAt(i, l.key)
+      if (v === null) {
+        i++
+        continue
+      }
+      let j = i
+      while (j + 1 < n && numAt(j + 1, l.key) !== null) j++
+      if (j === i) out.push({ id: `${l.key}-${i}`, x: xAt(i), y: yAt(v), color: l.color })
+      i = j + 1
+    }
+  }
+  return out
+})
+
 // x 轴刻度：首尾必在、中间等分，最多 7 个（P2-23 主因）。
 // 旧实现是「按 step 走网格 + 无条件补 n-1」，补位与末位网格点只隔几桶时两个标签会重叠
 // （n=123 时末两刻度仅隔 2 桶，实测压在一起 11px）。等分生成让间距恒为 (n-1)/(count-1)，
@@ -112,6 +139,23 @@ const ticks = computed(() => {
 const gridVals = computed(() => {
   const { min, max } = yDomain.value
   return [0, 1, 2, 3, 4].map((i) => min + ((max - min) * i) / 4)
+})
+
+// y 轴标签（2026-09-20）：此前**只标首尾两个值**（模板里的三元判断），中间三条网格线
+// 是无标签的装饰线 —— 画了线却读不出数，线越多越像"有刻度"，实际只能读两端。
+// 现改为五条全标；并沿用 x 轴那套**相邻同文案只留第一个**的去重：极端量程下
+// yFmt 可能把相邻两个值格式化成同一串（失败率量程极小时两位小数会撞），
+// 那属于"这个刻度太小、量不出来"，不该硬渲染成两个一样的数。
+const yLabels = computed(() => {
+  const out: { i: number; y: number; text: string }[] = []
+  let prev = ''
+  gridVals.value.forEach((gv, i) => {
+    const text = props.yFmt(gv)
+    if (text === prev) return
+    out.push({ i, y: yAt(gv) + 3, text })
+    prev = text
+  })
+  return out
 })
 
 function nearestX(px: number): number {
@@ -169,13 +213,18 @@ const hoverDots = computed(() => {
     <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="none">
       <g v-for="(gv, i) in gridVals" :key="`g${i}`">
         <line :x1="PAD_L" :y1="yAt(gv)" :x2="W - PAD_R" :y2="yAt(gv)" class="grid" />
-        <text :x="PAD_L - 4" :y="yAt(gv) + 3" text-anchor="end" class="axis">
-          {{ i === 0 || i === gridVals.length - 1 ? yFmt(gv) : '' }}
-        </text>
       </g>
+      <text
+        v-for="l in yLabels" :key="`y${l.i}`"
+        :x="PAD_L - 4" :y="l.y" text-anchor="end" class="axis"
+      >{{ l.text }}</text>
       <path
         v-for="l in lines" :key="l.key" :d="linePath(l)"
         :style="{ stroke: l.color }" fill="none" stroke-width="2" stroke-linejoin="round"
+      />
+      <circle
+        v-for="d in isolatedDots" :key="`iso-${d.id}`"
+        :cx="d.x" :cy="d.y" r="3" :style="{ fill: d.color }"
       />
       <template v-if="hover !== null">
         <line :x1="guideX()" :x2="guideX()" :y1="PAD_T" :y2="H - PAD_B" class="guide" />
@@ -219,12 +268,14 @@ const hoverDots = computed(() => {
   display: block;
 }
 
+/* 网格改实线细线（原为 2/3 点线）：点线在浅底上读起来像「没画完」，
+   实线细网格才是仪表刻度盘的语汇。颜色仍取 --border，不喧宾夺主。 */
 .grid {
   stroke: var(--border);
   stroke-width: 1;
-  stroke-dasharray: 2 3;
 }
 
+/* 十字准星保留虚线：它跟网格是两种东西，虚线才能和常驻网格区分开。 */
 .guide {
   stroke: var(--muted);
   stroke-width: 1;
@@ -232,7 +283,7 @@ const hoverDots = computed(() => {
 }
 
 .axis {
-  font-size: 10px;
+  font-size: 11px;
   fill: var(--muted);
 }
 

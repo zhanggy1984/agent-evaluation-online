@@ -425,7 +425,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background: #fafbfc;
+  background: var(--hover-row);
 }
 
 .err {

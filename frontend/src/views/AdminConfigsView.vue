@@ -110,7 +110,7 @@ onMounted(() => void load())
             </td>
             <td class="hint">{{ i.updated_by || '—' }} / {{ i.updated_ts || '—' }}</td>
             <td>
-              <button :disabled="saving === i.key" @click="save(i)">保存</button>
+              <button class="btn-ghost" :disabled="saving === i.key" @click="save(i)">保存</button>
             </td>
           </tr>
         </tbody>

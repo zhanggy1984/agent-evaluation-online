@@ -124,10 +124,10 @@ onMounted(() => void load())
             </td>
             <td>{{ u.status === 1 ? '启用' : '停用' }}</td>
             <td>
-              <button :disabled="busyId === u.id" @click="patch(u, { status: u.status === 1 ? 0 : 1 })">
+              <button class="btn-ghost" :disabled="busyId === u.id" @click="patch(u, { status: u.status === 1 ? 0 : 1 })">
                 {{ u.status === 1 ? '停用' : '启用' }}
               </button>
-              <button :disabled="busyId === u.id" @click="resetPassword(u)">重置口令</button>
+              <button class="btn-ghost" :disabled="busyId === u.id" @click="resetPassword(u)">重置口令</button>
             </td>
           </tr>
         </tbody>
@@ -148,7 +148,7 @@ onMounted(() => void load())
           <option value="admin">admin</option>
         </select>
       </label>
-      <button :disabled="submitting" type="submit">创建</button>
+      <button class="btn" :disabled="submitting" type="submit">创建</button>
     </form>
     <p class="hint">
       口令最小规则 = 长度 8~64（不做复杂度要求）。停用/改口令即时生效：该用户现有会话全部失效。

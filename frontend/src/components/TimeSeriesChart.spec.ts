@@ -104,3 +104,71 @@ describe('TimeSeriesChart x 轴刻度（P2-23）', () => {
     for (let i = 1; i < texts.length; i++) expect(texts[i]).not.toBe(texts[i - 1])
   })
 })
+
+// —— 孤立点可见性（2026-09-20，/dashboard 7d 真机取证驱动）——
+// 真机读数：error_rate 的连续非空段长分布 = [1,3,1,2,2,1]，6 段里 3 段长 1。
+// 长度 1 的段在 linePath 里只产出 "M x y"，SVG 中只有 moveto 的路径**什么都不画** ⇒
+// count=68（失败率 1.47%）这样的真实读点彻底不可见。修复 = 单独收集并画成圆点。
+describe('TimeSeriesChart 孤立点', () => {
+  const line = [{ key: 'v', label: 'v', color: '#000' }]
+
+  function mountSeries(vals: Array<number | null>) {
+    return mount(TimeSeriesChart, {
+      props: {
+        data: vals.map((v, i) => ({ ts: 1_700_000_000_000 + i * 3_600_000, v })),
+        lines: line,
+        xFmt: (ts: number) => String(ts),
+        yFmt: (v: number) => String(v),
+      },
+    })
+  }
+
+  it('前后皆空的单点会渲染成一个圆点（旧实现下这个点完全不可见）', () => {
+    const w = mountSeries([null, 5, null])
+    expect(w.findAll('circle')).toHaveLength(1)
+  })
+
+  it('两点以上的连续段不产生圆点（它们本来就画得出来）', () => {
+    const w = mountSeries([null, 5, 6, null])
+    expect(w.findAll('circle')).toHaveLength(0)
+  })
+
+  it('一条线里多个孤立点各出一个圆点，互不合并', () => {
+    // 段长分布 [1,1,1]：三个孤立点必须全部可见（真机那一次是 [1,3,1,2,2,1]）
+    expect(mountSeries([1, null, 2, null, 3]).findAll('circle')).toHaveLength(3)
+  })
+
+  it('全空序列不产生圆点，也不抛错', () => {
+    const w = mountSeries([null, null])
+    expect(w.findAll('circle')).toHaveLength(0)
+  })
+})
+
+// —— y 轴刻度（2026-09-20，/dashboard 观感走查驱动）——
+// 旧实现：模板里 `i === 0 || i === gridVals.length - 1 ? yFmt(gv) : ''` ⇒
+// 画了 5 条网格线、**只有 2 条能读出数**，中间三条是无标签的装饰线。
+describe('TimeSeriesChart y 轴刻度', () => {
+  // y 轴标签 = text-anchor="end" 的 .axis（x 轴那些是 middle）。
+  // ⚠️ `.filter(Boolean)` **不是**洁癖，它是本组测试的判别力来源：旧实现同样渲染 5 个
+  // <text> 元素，只是其中 3 个的文本是空串（模板三元判断给的 ''）⇒ 若只数元素个数，
+  // 旧实现也「通过」。**数元素 ≠ 数有值的标签**，这是本条第一次写出来时的假绿。
+  const yTexts = (w: ReturnType<typeof mountWith>): string[] =>
+    w.findAll('text.axis[text-anchor="end"]').map((t) => t.text()).filter(Boolean)
+
+  it('五条网格线全部标值（旧实现只有 2 个非空标签 ⇒ 本条对它必红）', () => {
+    const w = mountWith(5) // v = 0..4 ⇒ 值域 [0,4] ⇒ 网格值 0/1/2/3/4，互不相同
+    expect(yTexts(w)).toEqual(['0', '1', '2', '3', '4'])
+  })
+
+  it('相邻标签文案重复时只留第一个（量程极小时 yFmt 会把两个值格式化成同一串）', () => {
+    const w = mount(TimeSeriesChart, {
+      props: {
+        data: mkData(5),
+        lines: [{ key: 'v', label: 'v', color: '#000' }],
+        xFmt: (ts: number) => String(ts),
+        yFmt: () => '0.00%', // 五位小数都撞在一起 ⇒ 五个刻度其实是同一个读数
+      },
+    })
+    expect(yTexts(w)).toEqual(['0.00%'])
+  })
+})

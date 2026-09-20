@@ -86,13 +86,15 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 
 <style scoped>
 .bar {
-  margin-bottom: 12px;
+  /* 控件高度取**全局** --ctl-h（2026-09-20）：此前本组件三个控件各自靠 padding 撑高，
+     实测同一行里 29 / 33 / 31 三种高度；现与全站 .btn / input / select 完全同高。 */
+  margin-bottom: var(--sp-3);
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
@@ -101,11 +103,12 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 }
 
 .sel {
-  padding: 5px 8px;
+  height: var(--ctl-h);
+  padding: 0 var(--sp-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .hint {
@@ -121,8 +124,10 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
   flex-wrap: wrap;
 }
 
+/* 原为 var(--danger, #c0392b)：全局**根本没有** --danger 这个变量（调色板里叫 --error），
+   所以这里一直在渲染回退的字面量 #c0392b —— 又一个绕过调色板的红，且与 --error 不同色。 */
 .warn-text {
-  color: var(--danger, #c0392b);
+  color: var(--error);
 }
 
 .link-like {
@@ -135,15 +140,17 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 
 .win-group {
   display: inline-flex;
+  height: var(--ctl-h);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
+/* 高度由 .win-group 定（flex 默认 stretch），这里只给左右内距 —— 与 .sel/.ghost-inline 同高。 */
 .win {
   border: none;
-  background: #fff;
-  padding: 6px 12px;
+  background: var(--panel);
+  padding: 0 var(--sp-3);
   font-size: 13px;
   color: var(--muted);
 }
@@ -154,11 +161,12 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 }
 
 .ghost-inline {
-  padding: 5px 12px;
+  height: var(--ctl-h);
+  padding: 0 var(--sp-3);
   font-size: 13px;
-  background: #fff;
+  background: var(--panel);
   color: var(--brand);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 </style>

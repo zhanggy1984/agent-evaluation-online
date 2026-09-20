@@ -330,7 +330,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background: #fafbfc;
+  background: var(--hover-row);
 }
 
 tr.red td:first-child {
