@@ -2400,6 +2400,19 @@ T=$(( ($(date +%s) - 604800) * 1000 )); curl -s 'http://localhost:39200/dev.obs-
 | `agent-evaluation-online/.tmp-probe/` | 529 KB / 53 文件 | 各批真机探针取证快照（`gq-*`/`sp-*`/`f6-*`/`rules-*`/`cs-*-snap` 等），**被本台账 §6~§11 多处引作复核依据** | **留** |
 | `customer-service/.tmp-probe/` | 8 KB / 2 文件 | cs 探针脚本 | **留** |
 | `smart-procurement/.env.c1bak` · `contract-check/backend/.env.c1bak` · `contract-check/.tmp-revert/.env.c1bak` | — | 凭据备份 | **一律保留，不读不删** |
+| **`%TEMP%\tmp.2TWtJnlZuR\`** | **1.2 GB / 34,727 文件** | **同一批 F3 判别性回退的「第二份」** —— 同一次操作**先落 `%TEMP%`、后改用仓内 `.tmp-revert/`** | **已于 2026-09-20 删除**（用户授权） |
+
+> ⚠️ **2026-09-20 订正：本表此前漏了第二份**。上表第 1 行只登记了 `contract-check/.tmp-revert/`；
+> `%TEMP%\tmp.2TWtJnlZuR\` 是**同一会话**（`85c6430c`，2026-09-18）**先**落在临时目录的那一份 ——
+> 该会话记录里逐字写着「简单点：用 `D:/study/aiprojcet/contract-check/.tmp-revert/`（在 cc 仓内……）」，
+> 即**先 `%TEMP%`、后换仓内**。两份体积与文件数**逐字相同**（1.2 GB / 34,727）。
+> **它此前不在任何账本里**：`grep 2TWtJnlZuR` 在 `aiprojcet` 下**零命中** ——
+> **本表按「位置」枚举，而临时目录是它没想到的第二个位置**。
+> 删除前逐文件验过**零独有数据**：9 个内容不同的文件里 2 个 ==HEAD、**7 个 ==历史提交**
+> （`git cat-file` 可取回），`.env` / `.env.c1bak` / 仓内 `.env` **三份 md5 全等 `d14f878c`**。
+> ⚠️ **同时上表第 4 行已过时**：`contract-check/.tmp-revert/.env.c1bak` 随 `.tmp-revert/` 清除而消失；
+> **2026-09-20 实测该目录本身已不存在**（`ls` = No such file or directory）。
+> 教训 ⇒ [[batch-delete-needs-value-distribution]] **第 3 个面：按名字/位置枚举的清单，漏的正是「没想到的那个位置」**。
 
 **🔴 cc 凭据忽略缺口 —— 已出方案并处置（用户拍板方案 A）**
 
