@@ -3367,6 +3367,12 @@ px 探针（col2=280px / col3=320px）：[98, 342, 391, 68, 142, 117]   ← 六�
 1. **第二次 run 谁来推？—— 本批没解决，也不在 online 侧可解**。
    `backflowLabels.ts:295` 已记明链路是 **offline 自己来拉**（online 从不 push，`pull.py:81`）
    ⇒ 「下一版结果」只在 offline 下一轮拉到该用例时才出现。**这 3 条已停 4 天**。
+   ⚠️ **2026-09-20 批 51 订正（本句「自己来拉」不准确）**：不是「offline 定时来拉」，而是
+   **被下一次同 agent 的 error run 顺带重跑** —— `agent-evaluation-offline` 的
+   `runner/orchestrator.py:916-923` 建 error run 时选的是**该 suite 全部 active 的 error case**
+   （按 id desc 取 `ERROR_CASE_CAP=200` 个），**不是只跑新 case** ⇒ 该 agent 每产生一个**新**
+   error 簇、触发一次 error run，存量 case 就被重跑一遍。**故「第二次」的前提是该 agent 先
+   产生新的错误，而不是时间到了就会有**。详见 §五十三。
 2. **open 簇除 K=2 外无任何出口**（批 35-A 撤除人工写面后，人也不能关）—— 与批 43 记的
    claim 态「存量消亡」不同：open 是**活态**，卡住不会自愈。**本批只让它可见，没让它可动。**
 3. ⚠️ 未取证：offline 侧到底按什么节奏重跑用例（要不要重跑、隔多久）。**没查就不写结论** ——
@@ -3573,3 +3579,235 @@ INSERT INTO `dev.obs`.conversion_record (cluster_id, action, detail) VALUES
   **成因未查**（本批未做归因，不写成一条待办）。
 - **未验**：E 类两处「当前取不到数据」是**静态推理 + 库内读数**得出，**未在真机页面上确认「那个分支确实不渲染」**
   （要造一条带 `fix_version` 的 `fixed` 簇才能验，属另一验证面）。
+
+## 五十三、批 51（2026-09-20）：复核 #3874 为什么还停在 `open`（任务 #46 的前置取证）
+
+**动因**：任务 #46「运行 4 个 agent，验证 online→offline 完整数据显示与闭环」开工前，先复核
+任务 #45 的当事簇 #3874 —— 它被 #45 处理过（已标完成），但**至今仍是 `open`**，link 仍 `pending`。
+
+### 53.1 结论：不是卡死，是**被「该 agent 三天没有新错误」饿停**
+
+| 环 | 读数 | 出处 |
+|---|---|---|
+| ① `seq=1 < claim_k=2` ⇒ 本就不该 `fixed` | 簇 3874 `claim_k=2`；link 2253 只有 **1** 行 `verify_run_record`（run 3708，`case_pass=1`，09-16 14:25:46） | `verify.py:101-114` `decide_k` |
+| ② **我的「pending 挡住重组装 ⇒ 死锁」假说被证伪** | 每 link 结果条数分布 = `1条×5 / 2条×4 / 3条×2 / 4条×1 / 5条×1 / 6条×1` ⇒ 同一 link 会陆续收多次结果（3861 收过 **6** 次） | `SELECT link_id, COUNT(*) FROM verify_run_record GROUP BY link_id` |
+| ③ 真机制：error run 跑的是**该 suite 全部 active case** | `runner/orchestrator.py:916-923` `cases = select(TestCase).where(suite_id, status=="active", case_type.is_not(None)).order_by(id.desc)` ⇒ `cases[:cap]` | offline 仓 |
+| ④ `cap` 截断**不是**原因 | suite 2969 只有 **6** 条 active error case，`ERROR_CASE_CAP = 200`；case 4081 按 id desc 排**第 2**，必然入选 | `orchestrator.py:66` |
+| ⑤ **真因：contract-check 自 09-16 后再无 error run** | 09-17 的 run 3710/3712 = good-question；3713–3716 = smart-procurement；**cc 最后一次 error run = 3708** | `verify_run_record` join `error_cluster` |
+
+⇒ 3872/3873/3874/3875 **四条一起停住**，同因。**闭环机制是通的，它需要的是新流量。**
+
+### 53.2 本条订正的既有记载
+
+1. **§49.5 第 1 条**已就地订正（「offline 自己来拉」→「被下一次同 agent 的 error run 顺带重跑」）。
+   差别是实质性的：**「第二次」的前提是该 agent 先产生新的错误**，不是时间到了就会有。
+2. **memory `real-traffic-can-complete-seven-rings`** 已订正：「3861 停在 open 是因为没人认领、
+   认领是人工端点 `backflow.py:630`」已整体过时 —— 认领端点已删（批 35-A）、3861 现在是 `fixed`、
+   其 link 收了 **6** 次结果。**「先看 `claimed_by`」这条读法随之失效**（该字段现恒为 NULL）。
+
+### 53.3 方法学留痕（本批最有价值的一条）
+
+**我中途提出的「pending link 挡住 assemble ⇒ 第二次永远装不出来 ⇒ 死锁」是一个自洽、有代码行号、
+读起来完全成立的结论 —— 它是错的。** 证伪它的动作只有一个：**去查「历史上有没有任何 link 收到过
+不止一次结果」**（一条 `GROUP BY … HAVING COUNT(*)>1` 的查询）。
+
+⇒ 记法：**判「某个状态永远到不了」之前，先去数据里找「它曾经到过」的实例。** 找得到，说明你的
+机制推理漏了一条路径；找不到，才能把「不可达」写下去。这比读更多代码有效。
+
+### 53.4 未取证 / 不做
+
+- **未取证**：offline 侧「信号 run」与「error run」的完整触发面（本批只读了建单函数与其调用参数，
+  没追完 `pull_loop` → 信号的整条链）。**故本批只说「error run 按 agent 建、跑全部 active case」这
+  一条实测结论，不外推整条信号链。**
+- **不动代码**：本批零代码改动，纯取证。
+
+## 五十四、批 52（2026-09-20）：任务 #46 批 A —— 四家 agent 真实流量走通（**零代码改动**）
+
+**目的**：验证「从 online 到 offline 的完整数据显示」的第一步 —— **四家 agent 各自经自身业务入口产生真实流量，
+online 三个观测页能看到它**。用受控造错驱动闭环是批 B，本批不掺。
+
+### 54.1 四家业务入口（**均经其自身前端实际调用的那个接口**，非我按契约打 HTTP）
+
+| agent | 宿主端口 | 登录 | 业务链路 | 凭据出处 |
+|---|---|---|---|---|
+| customer-service | `https://localhost:8443` | `POST /api/auth/login` | 建会话 → `POST /api/v1/sessions/{sid}/messages` | `user_1` / `123456`（既有） |
+| good-question | `http://localhost:8089` | 同上（返 `access_token`） | `GET /api/libraries` → `POST /api/sessions` → `POST /api/chat/{sid}` | `admin` / `123456`（`test-data/chat.py:9-10`） |
+| contract-check | `http://localhost:8088` | 同上（返 **`token`**，字段名与其他三家不同） | `POST /api/files/upload`（multipart，字段名 `file`） | `admin` + 容器内 `AUTH_PASSWORD`（无默认值，必须 env 注入） |
+| smart-procurement | `http://localhost:18082` | `POST /api/auth/login`（**在 `/api` 前缀，不在 `/api/v1`**） | `GET /api/v1/suppliers/me/market` | `supplier_01` / `123456` |
+
+⚠️ **sp 的端口 `18082` 是实测生效值**，不是 compose 默认值 —— compose 写的是 `${WEB_PORT:-18080}`
+（默认 18080），而 `.env.example` 又写 8080。**读配置 ≠ 读生效值**（此前已因此误报过一次端口冲突）。
+
+### 54.2 观测面读数（四家全部可见）
+
+| 面 | 读数 |
+|---|---|
+| ES `dev.obs-event-*`（近 10 min，**已排除 `node=heartbeat`**） | cc 51（request 47 / llm_call 4）、gq 9、cs 24、sp 2 |
+| `/traces` | total 2028；按 agent 拆：cc 1259 / gq 386 / cs 299 / sp 84 |
+| `/traces/{agent}/{trace}` | cs trace `0a3520a2…` 返 5 个 span（`request` 5288ms + llm_call + tool_call） |
+| `/metrics/interfaces?window=1h` | `request` 11 行、`llm` 3 行；四家接口都在（`/api/chat/{id}`、`/api/v1/suppliers/me/market`、`/api/tasks/{id}`、`sessions/{id}/messages`） |
+| `/metrics/anomalies?window=1h` | 4 行 —— **全部是我自己探针的自伤，见 54.3** |
+
+**`/metrics/interfaces` 的响应形状是 `{request:[…], llm:[…], iface_total, truncated}`，不是 `{items}`**。
+按 `items` 取会静默得到 0 行 —— 我一度据此以为页面是空的，**是探针取错字段，不是产品缺陷**（同族：
+[[shape-mismatch-yields-silent-zero]]）。
+
+### 54.3 三条「假故障」（**都不是产品缺陷，登记以免后人重查**）
+
+1. **`{"detail":"There was an error parsing the body"}`**（cs 发消息）：**Git Bash 把中文 body 的编码弄坏**
+   所致 —— 同一端点改发 ASCII 立刻成功。绕法 = body 走文件/脚本，不走 shell 单引号。
+2. **`POST /api/v1/sessions//messages`（双斜杠）** 出现在 `/anomalies`：我早期 shell 脚本取 `SID` 的表达式
+   写坏、`session=` 为空所致。
+3. **cc `POST /api/auth/login` HTTP_401**：我把 `docker ps` 的输出当成 `AUTH_PASSWORD` 传进去。
+
+⇒ **批 A 期间 `/anomalies` 上的 error 无一条来自 agent 自身**。这与
+[[self-injected-fault-looks-like-real-defect]] 同形：人为故障与真缺陷逐字同形，**唯一区分手段是标注**。
+
+### 54.4 顺带取证：4xx 不入簇（**设计而非缺陷**）
+
+cs 一条 `error` trace 的 `error_type` = **`HTTP_400`**，它**没有**成簇。原因是 `classify.py` 的
+L1（7 个 `llm_*`）/ L2（`llm_interface_business` / `external_non_llm` / `db_error` / `redis_error`）
+白名单**不含 `HTTP_*`** ⇒ 客户端 4xx 不产候选。**查 agent 错误事件必须先排除 `HTTP_*`**，否则
+「今天有多少错误」会被我自己的失败尝试挤满。
+
+### 54.5 未取证
+
+- 四家**前端页面**（浏览器）的显示未验 —— 本批验的是**后端三页 API 的读数**，不是渲染结果。
+- gq / sp 的**闭环**（≥⑤ 环）本批完全未触及，只验到「流量进了观测面」。
+
+---
+
+## 五十五、批 B：受控造错驱动闭环（2026-09-20/21）
+
+**目标**：验「造一个真错误 → 它自动走完七环到收口」。**结论：走不到收口，断点已定谳（见 55.3）。**
+
+### 55.1 造错方式与七环推进
+
+**造错** = 把 cc 的 `DEEPSEEK_BASE_URL` 指向不可达地址（`http://127.0.0.1:9`）＋ `docker compose up -d backend`
+（⚠️ **必须 recreate 不能 restart**：`.env` 走 `env_file`，`restart` 不重读）。**已于 13:4x 回滚并复验**：
+回滚后走真实业务流上传合同 → task **669 SUCCESS**（造错时 668 = FAILED）。
+
+| 环 | 产物 | 读数 |
+|---|---|---|
+| ①观测 | ES `dev.obs-event-*` | `llm_call` 事件 `error_type=llm_connection` |
+| ②聚类 | `error_cluster` **3883** | `llm_connection` / L1 / `GET /api/tasks/{id}/result` / `first_trace_id=task-668` |
+| ③组装回流 | link **2257** → inbox **35** | `case_id=4085`，13:35 到 offline |
+| ④回归 run | `eval_run` **3719** | `error_regression`，7 case —— **4085 = `na` / `contract_error`** |
+| ⑤回推 / ⑥收口 | —— | **未发生** |
+
+### 55.2 ④ 的触发条件：**不会自动发生，必须有发版信号**
+
+`error_regression` run **只能由「信号 run」触发**（`eval_run.trigger_signal_id` 实证：3708 由 manual 3707 带
+version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 inbox + ack，**不建 run**；
+`reconcile_loop` 只补「有版本、无 error run」的差集 —— cc 最新版 `0.2.1` 已有 3708，**无新版本即无新 run**。
+
+⇒ **case 建完后没有任何自动路径会跑它。** 本次靠人为建 manual run 3718（version `0.2.2`）作信号，
+才触发 3719。**这是设计（回归由发版驱动），但走查时极易误判成「系统坏了」。**
+
+### 55.3 🔴 断点：**回流信封不携带文件本体**（结构性）
+
+`eval_result`：case **4085 = `na` / `contract_error`**，`prepare: [Errno 2] No such file or directory:
+'/app/uploads/cc_gen_good.pdf'`。同 suite 另 6 条（4077-4082）全 `pass`。
+
+**判据链（逐条实证）**：
+
+| # | 事实 | 出处 |
+|---|---|---|
+| 1 | 平台要求 `input.file_path` 是**平台 uploads 内**的文件 | `offline/backend/app/adapters/base.py:13-15`、`core/probe.py:61-63`、`docs/接入指南.md:135` |
+| 2 | 4077-4082 用 `/app/uploads/b1_missing_date.pdf` —— **该文件确在**平台 uploads（9.7MB 样例） | 宿主 `agent-evaluation-offline/uploads/` |
+| 3 | 4085 用 `/app/uploads/cc_gen_good.pdf` —— **平台里没有**（只有 `cc_good.pdf`，名字差一截） | 同上 |
+| 4 | 该 `file_path` **不是我探针发的**（只发了 `filename="cc_batch_b.pdf"`，无 `file_path` 字段） | `_probe_batch_b.py:25-33` |
+| 5 | 它由 **cc 侧合成**：`payload["file_path"] = f"/app/uploads/{原名}"` | `contract-check/backend/app/service/check_task_service.py:175-198` |
+| 6 | cc 合成它是**为了满足离线闸门的形状**（注释自陈「只写 task_id → 离线 content_gap 闸判不可达」） | 同上 |
+| 7 | 装载闸 `check_input_wiring` **只判键可达性（形状）**，复用 `_get_path`，**从不检查文件存在** | `offline/backend/app/adapters/engine.py:65-99` |
+| 8 | 唯一守卫 `_assert_inside_uploads` 是**路径逃逸闸**（`os.path.realpath` 防 `../`），`realpath` 对**不存在的路径不报错** | `offline/backend/app/adapters/base.py:37-42` |
+| 9 | `adapters/` 全目录 grep `isfile|exists(|EXISTS` 命中 **0**（阳性对照已做：同目录能命中别的函数） | — |
+
+⇒ **「键可达」被保证，「文件存在」被假定**，且假定的成立条件 = 该错误由**平台驱动**的评测产生
+（原名 ∈ 平台样例集）。**真实用户自带文件上传 ⇒ 原名不在平台 ⇒ 回跑 `na`。**
+
+**为什么文本型 agent 不受影响**：cs / gq / sp 的 input **就是内容本身**，不依赖外部文件。
+
+🔴 **症状特征（最值钱的一点）**：`na` **既不算 pass 也不算 fail** ⇒ `case_pass=NULL` ⇒ link 永停
+`pending`、簇永 `open`、**没有任何判据会红**。在线侧看到的是「待回归」永远停着。
+
+### 55.4 `R-27` 的登记**已腐**（同族问题、结论相反）
+
+`offline/error-backflow-task.md:243`（R-27，2026-09-15）写：
+
+> **已知后果**：contract-check 要 `file_path`（平台容器内样例文件路径，**捕获快照永不带**）⇒
+> **文件型接口的 error 回流将被系统性驳回**。
+
+- 「捕获快照永不带 file_path」**已不成立**：cc 于 **2026-09-16** 加了合成补丁（55.3 #5）。
+- 「将被系统性驳回」**因此不成立**：形状被补齐后闸门放行 ⇒ **实际是静默 `na`，不是可见驳回**。
+- ⇒ 问题从「**可见的驳回**」退化成「**静默的卡死**」——**更坏**。
+
+⚠️ **本条推翻的是「预测」，不是 R-27 的问题识别** —— 它指出的「文件型回流有缺口」是对的。
+
+### 55.5 副作用（批 B 次要假设，✅ 确认）
+
+3719 跑的是「该 suite **全部 active error case**」（`orchestrator.py:916-923`）⇒ **3872/3873/3874/3875
+四条存量 `open` 簇被顺带重跑、各攒到第 2 次 pass 而自动 `open→fixed`**（`claim_k=2`）。
+⇒ **⑤ 回推与 ⑥ 收口机制本身已验证可通**，批 B 唯一没走通的就是 4085 那一条。
+
+### 55.6 未取证 / 遗留
+
+- 我造的 **link 2257 / 簇 3883 现在卡在 `open`**（`case_pass=NULL`）—— **待批 C 决策是否清理**。
+- 后台探针脚本 7 个（`_probe_*.py`）在仓根，**未提交、待批 C 决策**。
+
+### 55.7 补证：四家 `evidence.input` 实形（组内对照，非外推）
+
+用户要求「先取证再定性」，故把**四家的真实 link** 全拉出来核：
+
+| agent | `evidence.input` 实形 | vs |
+|---|---|---|
+| cs | `{"content": "..."}` ×2 | passed |
+| gq | `{"stream":true,"content":"..."}` ×2 ／ `{"content":"..."}` ×1 | passed |
+| sp | `{"bid_id":"BID-027","question":"...","dimension_id":"DIM-LOT-008-1"}` | passed |
+| **cc** | `{"task_id":N,"file_path":"/app/uploads/b1_missing_date.pdf"}` × **6** | **passed** |
+| **cc** | `{"task_id":668,"file_path":"/app/uploads/cc_gen_good.pdf"}` | **pending** |
+
+**最强判据是 cc 的组内对照**：同一 agent / 同一 suite / 同一接口 / 同种错误，**6 passed vs 1 pending**，
+唯一变量 = `file_path` 指向的文件**平台有没有**。这排除了「agent 类型不同所以结论不同」的解释。
+且那 6 条的 `b1_missing_date.pdf` **正是平台自己的样例**（`task_id` 646-651，平台驱动评测产生）
+⇒ **「平台驱动时天然成立」被实测坐实**。
+
+### 55.8 🔴 本质结论：**回放输入的两难**
+
+> 回放需要的「输入」必须同时满足两个互相冲突的来源：**它要代表产生错误的那次真实调用，
+> 又必须是平台自己拥有且可复现的。**
+
+**自包含输入**（cs/gq/sp 的标量 `content`/`question`）两者天然合一 ⇒ 通。
+**引用式输入**（cc 的 `file_path`）两者分离 ⇒ 平台手里只有一个名字。
+
+**关键补充：字节不是「没传过去」，是「采集时就已经只剩名字」。** 采集契约是「**应用自陈的入参**」
+而非「HTTP 原始请求」（cc `main.py:102` 取 `request.state.obs_input`；cc `files.py:22` 只写 `{"filename": ...}`
+—— **应用自己把字节丢了**）。所以「保留原始请求体」这条路**不在本仓可控范围内**。
+
+⇒ **「引用靠猜翻译、且只校形状不校引用」是根因**；cc `check_task_service.py:187-198` 合成的
+`/app/uploads/{原名}` 正是这个猜，猜中（`b1_missing_date.pdf`）就通、猜不中静默卡死。
+
+### 55.9 选型：**S1 等价输入 + 显式降级**（2026-09-21 用户拍板，**尚未实现**）
+
+**决定性事实**：实测 17 条簇 **100% 是瞬态错误**（`llm_connection` ×10 / `llm_timeout` ×7），
+零条内容相关。⚠️ **适用范围必须标死**：这 17 条**全部是人造数据**，只证明「造数者只造了瞬态错」，
+**不能外推真实生产**。真正的值域依据是 `classify.py` 白名单（L1 = 7 个 `llm_*`；L2 含可能的非瞬态）。
+
+**核心原则 = 按 `error_type` 分流**（等价性要求不是全局常量）：
+
+| 类别 | 与输入内容 | 回放输入 |
+|---|---|---|
+| 瞬态：`llm_connection`/`llm_timeout`/`llm_rate_limit`/`db_error`/`redis_error` | 无关 | **平台自有等价样例足够** |
+| 内容相关：`llm_interface_business`/`llm_other`/`external_non_llm` | 强相关 | **必须原始输入 ⇒ 平台无解 ⇒ 驳回** |
+
+**S1 动作（未实现）**：装载时 `file_path` 指向平台没有的文件 →
+① `error_type` ∈ 瞬态集 → 换平台样例建单，case 记 `input_substituted` + 原引用（**必须可见**）；
+② 否则 → 驳回（复用 `content_gap`）。**瞬态集必须取窄**（`llm_other` 是兜底值域，误纳会假绿）。
+
+**落选方案（登记以免后人重走）**：
+- **S2 契约扩张**（信封带平台可达的文件引用）：真解，但要改双仓契约 + 四家 agent 的 obs 接入约定
+  + 平台增设制品存储，对已接入方是**破坏性扩张**。留作「真出现内容相关错误时」的升级路径。
+- **S3 纯驳回**：零概念但**永久放弃**该能力。
+
+**S1 的已知风险（用户已知悉）**：①「等价」是平台单方面判定，无物可验 —— 误判即**静默假绿**
+（比现在的静默卡死更坏）；② 支撑选型的「17 条全是瞬态」是**人造数据**，有循环论证之嫌。
