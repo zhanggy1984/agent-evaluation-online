@@ -378,7 +378,12 @@ describe('字段与边界', () => {
     })
     const t = w.text()
     expect(t).toContain('待 offline 拉取') // assembled
-    expect(t).toContain('已驳回（推送已停）') // invalidated（批 36：原「重推位」指向已撤除的重推动作）
+    // invalidated。批 45（任务 #42）：原「（推送已停）」**是假话**已删 ——
+    // 批 37 的 auto_requeue_stuck 会对 online_content_gap 的 link 自动重推。
+    // ⚠️ 下面两条**必须成对**：`toContain('已驳回')` 对「已驳回（推送已停）」也成立
+    // （是它的前缀）⇒ 单靠它**判别不出括号删没删**，只有反向那条才钉得住。
+    expect(t).toContain('已驳回')
+    expect(t).not.toContain('推送已停')   // 反向钉住：那个括号不许长回来
     expect(t).not.toContain('现行 link')   // 页脚那句误导已删
   })
 

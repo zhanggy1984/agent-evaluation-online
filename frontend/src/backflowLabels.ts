@@ -166,7 +166,18 @@ export const WATCH_OPTIONS = [
   { value: '', label: '全部 offline 态' },
   { value: 'assembled', label: '待 offline 拉取' },
   { value: 'active', label: '已激活' },
-  { value: 'invalidated', label: '已驳回（推送已停）' },
+  // ⚠️ 批 45（任务 #42）：原「已驳回（**推送已停**）」的括号已删 —— **它是假话**。
+  // 批 37 的 `requeue.py::auto_requeue_stuck`（:131）会把 `invalidated` +
+  // `invalidate_reason='online_content_gap'` 的 link **复位成 assembled 并重填 payload
+  // 重推** —— 那正是本下拉要筛的那一类；只有其它原因（offline_cap_gap /
+  // manual_invalidate）才真的停推（后端 where 只收 online_content_gap）。
+  // **同一个 tip 的括号腐了两次**：批 36 的「重推位」指向一个已撤除的动作，
+  // 本批的「推送已停」被批 37 推翻 ⇒ 教训 = **下拉标签只写值名、不写因果解释**：
+  // 值名不会腐，解释会。原因码级的差异由 `INVALIDATE_REASON_NOTE` /
+  // `invalidatedText` 在**详情页**按原因码说 —— 那里有上下文放得下这句话。
+  // ⚠️ 本 label 同时被 `OFFLINE_SHORT`（BackflowView.vue:69-71）复用为
+  // **表格列 + 概览卡**的短标签 ⇒ 改这一行**同时动三处显示面**（下拉 / 列 / 卡）。
+  { value: 'invalidated', label: '已驳回' },
 ]
 
 // 状态筛选下拉（批 38：用户拍板「三个都删，只留未处置/已修复」）。

@@ -3111,3 +3111,143 @@ claim 态的 human 本就是「无需操作」⇒ **本处只是漏报进度，�
    实测 **4 条**。
 3. `rejudge_job.py:49` docstring 说扫 `status=='claim'`，**代码是 `'open'`**
    （模块头 :26 同病）—— 正是本批取证时差点被它误导的那一处。
+
+---
+
+## 四十六、批 44（2026-09-20）：任务 #41 —— 簇 #3839 无 offline 态（**数据清理，零代码改动**）
+
+### 46.1 用户报告与第一层误判
+
+用户报「`/backflow/clusters/3839` 在详情页和列表页 offline 状态都为空」。
+我第一版读成「整块 offline 区块没渲染」——**那是措辞差异不是事实差异**：
+两页**都渲染了**，只是渲染的是「无内容的兜底」：
+
+| 页 | 现渲染 | 代码 |
+|---|---|---|
+| 列表页 | `-`（灰） | `BackflowView.vue:339` `<span v-else class="muted">-</span>` |
+| 详情页 | 「暂无 link」+「暂无回归 run」 | `DetailView.vue:264,302` |
+
+用户说「为空」指的是**这两处兜底没有信息量**，不是「没渲染」。
+
+### 46.2 根因：该簇**从未被组装过**（`error_case_link` 一条都没有）
+
+库内读出的事实链（同一时刻，误差 26 毫秒）：
+
+```
+09:24:40.057  簇创建（status=open）
+09:24:40.079  被认领 → status=claim     ← 创建后 22ms
+09:24:40.083  流转记录 claim, actor_user_id=181, {"k":2,"ttl_days":14}
+```
+
+`assemble_job` 每 60 秒扫一次且**只扫 `open`**。它还没轮到第一次组装，簇已进 `claim`；
+此后 `assemble_job` 不再看它，而 `claim` 态**没有任何别的 worker 会碰它** ⇒ **冻结**，
+唯一出口是 `claim_ttl_job`（`claim_due_ts = 2026-09-28 09:24`）。
+
+⚠️ **所以「offline 态为空」不是渲染缺陷，是这条数据本来就没有 offline 态。**
+
+### 46.3 普查与「不可再生」论证（**这是本批判定的支点，不是背景**）
+
+```
+==全库：无任何 link 的簇==
+3839  claim  0          ← 17 条簇里就这一条
+```
+
+**不可再生**：批 43 刚取证过 `claim` 态零写入方；新簇离开 `open` 的唯一路径是
+`_apply_auto_fixed`，而那条路**必须先有 link**（K 满才收敛）。⇒ 该形态是历史遗留，
+不会再出现。**没有这条论证，「删掉」就只是把症状藏起来。**
+
+### 46.4 处置（用户拍板：删除）
+
+**删前存证**（批 42 的教训：删之前先抓完以后要用的读数）：
+
+```
+3839 | good-question | POST /api/chat/{session_id} | L1 | llm_timeout
+input_hash=e8fb9056… | clm-good-question-1 | 2026.09.09-r1
+first_ts = latest_ts = 2026-09-14 09:24:40.057 | count=1 | generation=1
+claim | claimed_by=181 | claim_due_ts=2026-09-28 09:24:40.079 | claim_k=2
+连带：link 0 条 / conv 1 条（id 3166）| 全库簇总数 17 / conv 总数 93
+```
+
+其中 `latest_ts = 2026-09-20 11:32:15`（**当天**）是批 42 清 `fix_version` 那次 UPDATE
+留下的痕 —— 顺带印证了批 42 的写面确实落到了这一行。
+
+**连带面取证**：
+- `error_case_link`：**0 行**（无需级联）
+- `conversion_record`：1 行，且 **全库无任何外键引用 `error_cluster`**
+  （`information_schema.KEY_COLUMN_USAGE` 查询返回空）⇒ 只删簇会**留下一条孤儿 conv**。
+- **重建方检查**（[[delete-check-the-rebuilder]]）：`assemble_job` 只扫 `open`（3839 是 `claim`）；
+  `claim_ttl_job` 的 CAS 是 `WHERE id=cid AND status='claim'`，行已删则 `rowcount=0`
+  走 `raced` 分支跳过 ⇒ **无人会重建它**。
+
+**动作**：单事务删 `conversion_record`(cluster_id=3839) → `error_cluster`(id=3839)，
+各 `ROW_COUNT()` 报 1；复核 `0 / 0`，簇总数 **17→16**、conv 总数 **93→92**。
+
+### 46.5 验证（真机，新标签页）
+
+- 详情页 `/backflow/clusters/3839`：**无崩溃**，渲染
+  「加载失败（ERR_CLUSTER_0001）：cluster 不存在：3839」+「该 cluster 不存在或已删除」
+  —— 404 兜底路径本身是好的，**顺带验了它**。
+- 列表页：**16 行**、无 3839、`.error-text` 为空，与库内 16 一致。
+
+### 46.6 登记不做的部分（**避免把「删了数据」读成「修了 UI」**）
+
+`-`（列表页 `BackflowView.vue:339`）与「暂无 link」（详情页）**未改**。判不做的理由：
+
+- 它服务的是「无**现行** link」这一个集合，同时覆盖「从未组装」与「有 link 但已非现行」
+  两种成因 —— 要写文案就得同时说清两者，通用说法只能是「暂无现行用例」这类模糊句。
+- 在库实例数：**0**（3839 是唯一一条，已删）⇒ 无消费方。
+- 将来若因故重现有 link-less 簇，`claim` 零写入方 + 「离开 open 必先有 link」两条
+  决定了**新数据不会再落进这个集合**。
+
+⇒ 符合「谁用、什么时候用、不做会怎样」（答不上具体故障）。**这条判定的前提已取证，不是听来的。**
+
+---
+
+## 四十七、批 45（2026-09-20）：任务 #42 —— 删掉 offline 筛选下拉的「（推送已停）」
+
+### 47.1 用户报的是「删几个字」，取证后实为**订正一处假话**
+
+用户原话：把 offline 状态查询条件里的 `(推送已停)` 删掉。
+
+**取证**：`requeue.py::auto_requeue_stuck`（`:131`）会把 `invalidated` +
+`invalidate_reason='online_content_gap'` 的 link **复位成 `assembled` 并重填 payload 重推**
+（批 37 引入）—— 而那**正是本下拉要筛的那一类**。后端 `where` 只收
+`online_content_gap`（`:152`），故 `offline_cap_gap` / `manual_invalidate` 才真停推。
+
+⇒ 「（推送已停）」**是假话**。所以本批不是「删个括号」，是**订正一处与后端行为矛盾的文案**。
+
+### 47.2 来历：同一个 tip 的括号**腐了两次**
+
+`docs/ux-review-newbie.md:2320` 记着：批 36 把 `已驳回（重推位）` 改成
+`已驳回（推送已停）`（理由：「没有『重推位』这个东西了」）。两次括号**都是想解释因果**，
+两次都腐：第一次指向已撤除的动作，第二次被批 37 的自动重推推翻。
+
+⚠️ **批 37 修了 `invalidatedText` 与 `INVALIDATE_REASON_NOTE`，唯独漏了这个下拉** ——
+又是「同一概念散落多站点、改了一处漏另一处」（批 36 的教训，同型第 N 次）。
+
+**教训（已写进代码注释）**：**下拉标签只写值名、不写因果解释** —— 值名不会腐，解释会。
+原因码级的差异由详情页的 `INVALIDATE_REASON_NOTE` / `invalidatedText` 承载，那里有上下文。
+
+### 47.3 影响面：改一行、动三处显示面（**已实测印证**）
+
+`OFFLINE_SHORT`（`BackflowView.vue:69-71`）是**从 `WATCH_OPTIONS` 派生的**
+`Object.fromEntries(...)` ⇒ 同一个 label 同时供：① 筛选下拉；② 表格「offline 态」列；
+③ 概览卡短标签。A/B 的实收文本把①②**当场印在了同一段里**：
+
+```
+全部 offline 态 待 offline 拉取 已激活 已驳回（推送已停） 查询 刷新
+…未处置 a-1 POST /api/chat llm_timeout 超时 2 已驳回（推送已停） 查看 →
+```
+
+### 47.4 改动与验证
+
+- `backflowLabels.ts:169`：`'已驳回（推送已停）'` → `'已驳回'` + 14 行说明（含「三处显示面」警告）。
+- `BackflowView.spec.ts:381`：改为**成对断言** ——
+  `toContain('已驳回')` **加** `not.toContain('推送已停')`。
+  ⚠️ 前者对「已驳回（推送已停）」**也成立**（是它的前缀）⇒ 单靠它判别不出括号删没删，
+  **只有反向那条钉得住**（[[negative-assertion-needs-positive-pin]] 本 session 第二次实证）。
+- **判别性 A/B**（`git show HEAD:` 取旧码）：**恰好 1 条红**，实收含 `推送已停`。
+- 前端 **243 passed / 17 files**（与批 43 持平，本批只改文案未增用例）；`npm run build` 绿。
+- **真机**（新标签页 bundle `index-BW6T-OEk.js`）：下拉四项 =
+  `全部 offline 态 / 待 offline 拉取 / 已激活 / 已驳回`；整页 `推送已停` **零出现**。
+  列与卡未现形是因库内当前 **0 条** `invalidated` link（非未生效）。
