@@ -1284,7 +1284,7 @@ CREATE TABLE `trace_judge_state` (
 | 页面（路由） | 功能点 | 数据源 |
 |---|---|---|
 | 登录 `/login` | 登录、会话维持、角色归属 | §8.1 |
-| 总览 `/dashboard` | 跨 agent 指标纵览（QPS 时序 + 失败率/超时率叠加 + 概览卡），agent 缺省=全站；数据源徽标（实时/小时聚合/mixed）+ 7d 缺口横幅；**7d 分位口径注（v1.14）**：「分位(P50/P95/P99) 基于 N 个已完成小时聚合（截至上一整点，迟到流量不计入分位）；总数/失败率/序列为实时全窗」——source∈{rollup,mixed} 时渲染（卡片下、无缺口时也显）；**自动刷新 v1.14**：45s + 后台（document.hidden）暂停 + 回前台且 >15s 陈旧补一轮（45< 后端 60s 缓存 TTL 非整约 → tick 命中缓存存活期、后端实查约减半；仅本页自动） | §8.3 overview |
+| 总览 `/dashboard` | 跨 agent 指标纵览（QPS 时序 + 失败率/超时率叠加 + 概览卡），agent 缺省=全站；数据源徽标（实时/小时聚合/mixed）+ 7d 缺口横幅；**7d 分位口径注（v1.14；v1.15 订正归因）**：「分位(P50/P95/P99) 基于 N 个小时的汇总数据（本窗内未汇总的时段与进行中的整点不计入分位）；总数/失败率/序列按实时数据统计」——source∈{rollup,mixed} 时渲染（卡片下、无缺口时也显）；**自动刷新 v1.14**：45s + 后台（document.hidden）暂停 + 回前台且 >15s 陈旧补一轮（45< 后端 60s 缓存 TTL 非整约 → tick 命中缓存存活期、后端实查约减半；仅本页自动） | §8.3 overview |
 | 接口 `/interfaces` | 接口明细：请求级 + LLM 级双 tab（model 分组）；行级分位/计数实时整窗；空（双 tab 均空）= no_traffic | §8.3 interfaces |
 | 异常 `/anomalies` | request 级 error/timeout 倒序列表；行点击下钻 trace 详情；空列表 = 「窗口内无异常（错误=0）」有效空态；**截断提示（v1.14）**：`total > len(items)` 时「窗口内共 N 条，仅显示最新 M 条」 | §8.3 anomalies |
 | LLM 失败 `/llm-failures` | request ok + 子节点 llm_call error/timeout 兜底/降级现场列表（标注「v1 不回流、L3 二期」）；行点击下钻 trace 详情；空列表 = 「窗口内无 LLM 失败现场」有效空态；**截断提示（v1.14）**：同上（total = 失败 trace 去重数） | §8.3 llm-failures |
@@ -1315,7 +1315,7 @@ CREATE TABLE `trace_judge_state` (
 | cluster status=needs_review | reason 值域 {`na`（该 case infra 无法判定，cluster 级单点处置）、`unclean_run`（环境级 na 污染下 pass 存疑，批量处置）、`reentry_same_version`（同版本旧 run pass，需人工/升版）、`input_truncated`（复现输入截断证据不可信，需人工复核或小输入重测，v1.6 R-10）}：补充证据回 open / 升级（v1.6 口径） | §7.6 |
 | 词表空 | 配置页/组装提示「空词库守卫不生效（fail-closed）」 | §10.1/§7.1 |
 | 历史通过被 superseded | 展示「历史通过于 V_x / 现又复发」 | §6.2 |
-| 总览 7d 分位口径（v1.14） | rollup/mixed 时卡片下注「分位(P50/P95/P99) 基于 N 个已完成小时聚合（截至上一整点，整点后迟到流量不计入分位）；总数/失败率/序列为实时全窗」——明示分位与计数是不同样本，防空读「卡与图对不上」 | §8.3/§9.2 |
+| 总览 7d 分位口径（v1.14；v1.15 订正归因） | rollup/mixed 时卡片下注「分位(P50/P95/P99) 基于 N 个小时的汇总数据（本窗内未汇总的时段与进行中的整点不计入分位）；总数/失败率/序列按实时数据统计」——明示分位与计数是不同样本，防空读「卡与图对不上」；**v1.15 只订正归因方向、口径一字未动**：旧措辞「汇总只到上一个整点，之后的流量不计入」把缺口说成只在**尾部**，实测 `covered_hours` 与窗口长度之差 98% 来自**头部**（rollup 起点之前的时段） | §8.3/§9.2 |
 | 幽灵 agent（v1.14） | 持久化 agent 掉出活跃列表：「『X』已不在近 7d 有流量 agent 列表（可能已下线/改名）——当前筛选实际无数据命中」+「清除为全站」（=`agent=''`） | §9.1/§8.3 agents |
 | agent top100 截断（v1.14） | 「近 7d 共 N 个 agent，下拉仅显示最活跃 M 个」 | §8.3 agents |
 | 列表截断提示（v1.14） | anomalies/llm-failures `truncated`：「窗口内共 N 条，仅显示最新 M 条」（llm-failures 文案为「共 N 条失败现场」） | §8.3 |
