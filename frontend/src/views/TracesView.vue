@@ -1,14 +1,18 @@
 <script setup lang="ts">
 // 链路查询页（一级菜单"链路查询"，IA 重构 v1.13 接壳）：trace_id / keyword 可任一
-// （都空 = 近 7d 全部命中），agent 过滤。检索走后端默认时间窗（keyword_search_days=7）
-// 与 ≤200 上限；红显 = status∈{error,timeout}。
+// （都空 = 当前时间窗内全部命中），agent 过滤。检索走 ≤200 上限；红显 = status∈{error,timeout}。
 // Q6 决策：agent 过滤由自由文本框改为共享动态下拉（全站 + /metrics/agents 实测列表）。
+// P1-10 后半（2026-09-20）：此前时间窗**没有前端控件**（「近 7 天」只在空态里出现一次）
+// ⇒ 7d 全量超 200 上限时，后端错误消息要求「缩小范围」，而页面上没有任何时间维度可缩小。
+// ⚠️ 档位常量复用指标页的 `WINDOWS`，但**只 import 常量、不碰它的单例 state**：
+// P1-11 用户拍板「跨页窗口不共享」，链路页的窗必须与指标页各自独立，否则互相拖拽。
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
 import { listTraces } from '../api/traces'
 import { agentDisplay, useAgents } from '../composables/useAgents'
+import { WINDOWS, type WindowKey } from '../composables/useMetricFilter'
 import type { TraceListItem } from '../api/types'
 
 const router = useRouter()
@@ -30,6 +34,14 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const DEEP_PAGE_LIMIT = Math.ceil(200 / pageSize) // §14.4 深翻页上限 200 → 前端最多 10 页
+// P1-10 后半：时间窗档位（默认 7d = 改动前行为，进页观感不变）。
+// ⚠️ 毫秒在**前端本地算**，刻意**不读 `keyword_search_days`** —— 那个键是运行时配置，
+// 若跟随它，档位名会与实际窗不符（管理员把它改成 3d 时，「近 7 天」这个按钮就开始撒谎）。
+// 代价：链路页不再跟随该配置；换来的是**名字与行为始终一致**。
+const win = ref<WindowKey>('7d')
+const WIN_MS: Record<WindowKey, number> = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3 }
+/** 当前档位中文名（供空态 / 提示条引用）。档位本身已由上方下拉常显 ⇒ 不再另加状态栏。 */
+const winLabel = computed(() => WINDOWS.find((w) => w.v === win.value)?.label ?? '')
 // P1-10：分母此前恒等于上式（写死 10），total 小于 200 时也显示「x / 10」
 // ⇒ 用户会以为还有 9 页可翻。真实可翻页数 = min(上限, ceil(total/pageSize))，且至少 1 页。
 const maxPages = computed(() =>
@@ -53,6 +65,15 @@ function pickAgent(v: string): void {
   queryForm.value.agent = v
 }
 
+/** 切时间窗 = 换检索范围 ⇒ **必须回第 1 页**，否则会停在旧范围算出的、现已越界的页码上。
+ *  形参与 `pickAgent` 同形（收 string、内部收窄），免得模板里写类型断言。 */
+function pickWindow(v: string): void {
+  const k = WINDOWS.find((w) => w.v === v)?.v
+  if (!k || win.value === k) return
+  win.value = k
+  void doSearch(1)
+}
+
 async function doSearch(p = 1): Promise<void> {
   loading.value = true
   errorMsg.value = ''
@@ -63,6 +84,8 @@ async function doSearch(p = 1): Promise<void> {
       agent: queryForm.value.agent.trim() || undefined,
       interface: queryForm.value.interface.trim() || undefined,
       status: statusFilter.value.trim() || undefined,
+      // 每次查询都按**当刻**重算窗起点（不缓存），否则页面开久了窗会悄悄前移。
+      start_ts: Date.now() - WIN_MS[win.value],
       page: p,
       page_size: pageSize,
     }
@@ -132,6 +155,16 @@ onMounted(() => {
           agent 列表重试
         </button>
       </label>
+      <!-- P1-10 后半：时间窗。默认 7d = 改动前行为；用户可主动收到 1h / 24h，
+           这样后端那条「检索深度上限 200，请缩小范围」终于有了对应的 UI 动作。 -->
+      <label class="agent-field">
+        <select
+          :value="win"
+          class="sel" @change="pickWindow(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="w in WINDOWS" :key="w.v" :value="w.v">{{ w.label }}</option>
+        </select>
+      </label>
       <button class="btn" type="submit" :disabled="loading">
         {{ loading ? '查询中…' : '查询' }}
       </button>
@@ -140,7 +173,8 @@ onMounted(() => {
     <!-- P1-11：status / interface 没有表单控件 ⇒ 必须显式告诉用户「你正被什么筛着」，
          否则条数少得像 bug。散文里的口径提示是**认领**，不是装饰。
          ⚠️ 口径差异有**三个**独立成因，缺一个都会让用户认定提示条在胡说：
-           ① 时间窗：接口页的窗由该页筛选条决定（进页默认 24h），本页固定近 7 天。
+           ① 时间窗：接口页的窗由该页筛选条决定（进页默认 24h），本页由**本页自己的档位下拉**决定
+              （P1-10 后半补上；此前无控件、恒为后端默认值）—— 两页**互不联动**（P1-11 用户拍板）。
            ② 折叠去重：本页 trace_key 折叠 ⇒ 倾向于**更少**
            ③ 节点范围：接口页只看 node=request，本页不限 ⇒ 倾向于**更多**
          ⚠️ 2026-09-18 此处曾写「24h 显示 2 → 本页 120，60 倍」——**该论据已作废**：
@@ -158,8 +192,8 @@ onMounted(() => {
       <span v-if="queryForm.interface">接口 <code>{{ queryForm.interface }}</code></span>
       <span v-if="statusFilter">状态 <code>{{ statusFilter }}</code></span>
       <span class="muted">
-        （本页固定近 7 天、按 trace 去重、不限节点；接口页按它自己的时间窗、按事件计数
-        ⇒ 条数通常不相等）
+        （本页按上方时间窗 {{ winLabel }}、按 trace 去重、不限节点；接口页按它自己的时间窗、
+        按事件计数 ⇒ 条数通常不相等）
       </span>
       <button class="link-like" type="button" @click="clearInheritedFilters">清除筛选</button>
     </p>
@@ -167,7 +201,7 @@ onMounted(() => {
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
 
     <div class="panel list">
-      <p class="muted" v-if="!loading && items.length === 0">无命中 trace（近 7 天检索窗，可缩小 trace_id / keyword 重试）</p>
+      <p class="muted" v-if="!loading && items.length === 0">无命中 trace（{{ winLabel }}检索窗；可切换上方时间窗，或缩小 trace_id / keyword 重试）</p>
       <table v-else>
         <thead>
           <tr>

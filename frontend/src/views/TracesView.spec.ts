@@ -55,6 +55,53 @@ const pageNo = (w: ReturnType<typeof mount>) => w.find('.page-no')
 const nextBtn = (w: ReturnType<typeof mount>) =>
   w.findAll('button').find(b => b.text().includes('下一页'))
 
+describe('P1-10 后半（2026-09-20）时间窗控件', () => {
+  beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset(); routeQuery.value = {} })
+
+  // [0] = agent 下拉，[1] = 时间窗下拉（模板顺序）
+  const winSel = (w: ReturnType<typeof mount>) => w.findAll('select')[1]
+
+  it('首屏按默认 7d 发 start_ts（= now - 7d，容差 60s 容忍用例自身耗时）', async () => {
+    await mountView({ items: [], total: 0 })
+    const q = apiMock.listTraces.mock.calls[0][0]
+    const delta = Date.now() - q.start_ts
+    expect(delta).toBeGreaterThan(7 * 86400e3 - 60_000)
+    expect(delta).toBeLessThan(7 * 86400e3 + 60_000)
+  })
+
+  it('切到「近 1 小时」⇒ 真的重发请求，且 start_ts 收窄到 1h 量级', async () => {
+    const w = await mountView({ items: [], total: 0 })
+    apiMock.listTraces.mockClear()
+    await winSel(w).setValue('1h')
+    await Promise.resolve()
+    expect(apiMock.listTraces).toHaveBeenCalled()
+    const q = apiMock.listTraces.mock.calls[0][0]
+    expect(Date.now() - q.start_ts).toBeLessThan(2 * 3600e3)
+  })
+
+  it('切窗必须回到第 1 页（否则会停在旧范围算出的、现已越界的页码上）', async () => {
+    // ⚠️ 必须给满一页（pageSize=20）：下一页按钮的 disabled 是
+    // `page >= maxPages || items.length < pageSize`，给不满时点击**静默无效**。
+    const w = await mountView({ items: Array.from({ length: 20 }, (_, i) => row(i)), total: 60 })
+    await nextBtn(w)!.trigger('click')
+    await Promise.resolve()
+    const calls = apiMock.listTraces.mock.calls
+    expect(calls[calls.length - 1][0].page).toBe(2)
+    apiMock.listTraces.mockClear()
+    await winSel(w).setValue('24h')
+    await Promise.resolve()
+    expect(apiMock.listTraces.mock.calls[0][0].page).toBe(1)
+  })
+
+  it('切到与当前相同的档 ⇒ 不重发（下拉 change 会抖，别白打一次请求）', async () => {
+    const w = await mountView({ items: [], total: 0 })
+    apiMock.listTraces.mockClear()
+    await winSel(w).setValue('7d')
+    await Promise.resolve()
+    expect(apiMock.listTraces).not.toHaveBeenCalled()
+  })
+})
+
 describe('P1-10 分页分母', () => {
   beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset(); routeQuery.value = {} })
 

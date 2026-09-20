@@ -45,3 +45,31 @@ describe('P1-11 listTraces 参数透传', () => {
     }
   })
 })
+
+describe('P1-10 后半（2026-09-20）listTraces 时间窗透传', () => {
+  beforeEach(() => { apiMock.mockReset(); apiMock.mockResolvedValue({ items: [], total: 0 }) })
+
+  it('start_ts 必须进 URL（与 status 同形：漏一行就静默回退到后端默认窗，UI 上毫无征兆）', async () => {
+    await listTraces({ start_ts: 1750000000000 })
+    expect(pathOf()).toContain('start_ts=1750000000000')
+  })
+
+  it('不传 start_ts → URL 里不出现该参数（缺省由后端 keyword_search_days 兜底，不能退化成空串）', async () => {
+    await listTraces({ agent: 'cc' })
+    expect(pathOf()).not.toContain('start_ts')
+  })
+
+  it('start_ts 与既有筛选并列时一个都不丢', async () => {
+    await listTraces({
+      trace_id: 't-1', keyword: 'kw', agent: 'cc', interface: 'x',
+      status: 'error', start_ts: 1750000000000, page: 1, page_size: 20,
+    })
+    const p = pathOf()
+    for (const kv of [
+      'trace_id=t-1', 'keyword=kw', 'agent=cc', 'interface=x',
+      'status=error', 'start_ts=1750000000000', 'page=1', 'page_size=20',
+    ]) {
+      expect(p).toContain(kv)
+    }
+  })
+})

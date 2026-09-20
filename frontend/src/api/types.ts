@@ -71,6 +71,10 @@ export interface TraceQuery {
   // P1-11：状态过滤（ok / error / timeout）。判的是该 trace 最新命中行的状态，
   // 与 /metrics/interfaces 的 error（按事件计数、只看 request 节点）**口径不同**。
   status?: string
+  // P1-10 后半（2026-09-20）：时间窗起点（epoch ms）。后端 §8.2 早有 start_ts 参数，
+  // 缺省 = now - keyword_search_days；前端此前零命中 ⇒ 用户看不到也改不了时间窗，
+  // 而 7d 全量 417 条 > 深翻页上限 200 ⇒ 错误消息「请缩小范围」在 UI 上无路可走。
+  start_ts?: number
   page?: number
   page_size?: number
 }
