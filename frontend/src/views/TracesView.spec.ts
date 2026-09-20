@@ -30,6 +30,8 @@ vi.mock('../composables/useAgents', async () => {
     useAgents: () => ({
       agents: ref<string[]>([]), loading: ref(false), errorMsg: ref(''), load: vi.fn(),
     }),
+    // 显示名映射的内容（中文名）由真机验证覆盖；此处按恒等放行，避免单测锁死文案。
+    agentDisplay: (n: string) => n,
   }
 })
 

@@ -40,6 +40,11 @@ class FakeResult:
     def scalar(self):
         return self._row
 
+    def all(self):
+        """`.all()` 语义：本替身不造多行 —— agent 表的 name→display_name 映射内容由真机验证覆盖
+        （同 scalars 的立场：假装支持会造假绿）。"""
+        return []
+
     def scalars(self):
         """`.scalars().all()` 语义：本替身按等值匹配只取首行 → 返回 0/1 行列表。
 

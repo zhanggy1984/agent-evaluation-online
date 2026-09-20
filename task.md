@@ -2969,3 +2969,61 @@ grep -n "tmp-probe/cs-reset-backup" /d/study/aiprojcet/agent-evaluation-online/t
 docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select name,display_name,backflow_allow from agent order by id;" "dev.obs"' 2>&1 | grep -v 'Using a password'
 grep -n 'contract-check' backend/app/core/seed.py
 ```
+
+---
+
+## 18. P1-18 接线批：把中文 display_name 接到显示层（2026-09-20）
+
+范围（用户拍板「选 A」）：**3 处下拉 + 4 处表格列**，不碰另外 7 个端点、不碰其余 9 个渲染站点。
+
+### ① 改动落点
+
+**后端** `app/api/metrics.py`：
+- `MetricsAgents` 新增 `display: dict[str, str]` —— **新增字段，`agents` 原样不动**（理由见 ②）
+- `_load_agents` 末尾 `select(Agent.name, Agent.display_name)` → `display={n: d for n, d in rows if d}`
+
+**前端**：
+- `composables/useAgents.ts`：模块级 `displayMap` + 导出 `agentDisplay(name)`（映射不到**回退裸 key**）
+- `api/types.ts`：`MetricsAgents.display`
+- 7 处渲染：`MetricFilterBar.vue:61` / `TracesView.vue:128` / `BackflowView.vue:199`（下拉，**只改 `{{ }}` 文本，`:value="a"` 保持英文**）；
+  `TracesView.vue:191` / `BackflowView.vue:253` / `AnomaliesSection.vue:63` / `LlmFailuresSection.vue:56`（表格列）
+- 2 个 spec 的 `vi.mock` 补 `agentDisplay: (n) => n`（不补则模板取不到该标识符 → 23 failed）
+
+### ② 硬约束（本批设计的根据）
+
+下拉的 `:value` 与 `TraceDetailView` 的 agent 都是**查询参数 / 路由参数** ⇒ display_name **只能进显示层**。
+后端若拿中文替换 `agents` 的值，整条查询链路（ES/DB）将查不到数据。
+
+### ③ 验证
+
+| 面 | 结果 |
+| --- | --- |
+| 后端单测 | **502 passed** |
+| 前端单测 | **213 passed**（= 基线） |
+| `vue-tsc --noEmit` + `vite build` | 通过 |
+| **后端真机** | 200；`display` 4 条中文全对，`agents` 仍为英文 4 个 |
+| **前端真机**（重建 `obs-frontend` 镜像） | 下拉项显示中文、`option.value` 仍为 `contract-check`；表格 agent 列渲染「合同校验」 |
+
+⚠️ **未验**：真实**点击筛选**后的请求参数。我用 `dispatchEvent` 触发的那次**未产生网络请求**，成因未查明。
+现有替代证据 = `option.value` 属性实测为英文，而 `MetricFilterBar.vue:59` 读的正是 `.value`。
+**不要**把这条读成「筛选已验证」——那是本轮唯一没拿到的证据。
+
+### ④ 本批证不了
+
+其余 9 个渲染点仍显英文（4 处头部/面包屑/总览卡、1 处幽灵提示、3 处硬编码 tooltip）⇒ **页面中英混排**；
+ES 里有而 `agent` 表没有的名字（`probe-c2-push` 等）回退裸 key。
+
+### ⑤ 记录订正（5 站）
+
+`docs/ux-review-newbie.md`：`:34` 头注 / P1-18 主表行 / 复验轮表 / `§九` 总表 / `§九` P1-18 节末后记。
+P1-18 原判「判不做」的**前提**（表内 display_name 全 == name、`/metrics/agents` 是纯 ES 端点）
+由批 22 起名 + 本批接线**解除**。**原判在当时是对的** —— 它错在时效：注释写的是「现在做是空转」，
+被后人读成了「永远不必做」。见 memory `stale-rationale-outlives-its-data`。
+
+### ⑥ 复核命令
+
+```bash
+# 后端：display 应 4 条中文、agents 应 4 个英文（未污染）
+curl -s -H "Authorization: Bearer <token>" localhost:18080/api/v1/metrics/agents
+# 前端真机：打开 http://localhost:18080/traces，看 agent 下拉项与表格 agent 列
+```

@@ -15,7 +15,7 @@ import type {
   BackflowOverview,
   BackflowQuery,
 } from '../api/types'
-import { useAgents } from '../composables/useAgents'
+import { agentDisplay, useAgents } from '../composables/useAgents'
 import {
   CLUSTER_STATUS_LABEL,
   LAYER_OPTIONS,
@@ -196,7 +196,7 @@ function agentCounts(): BackflowByAgent[] {
       <label class="agent-field">
         <select :value="queryForm.agent" class="sel" @change="pickAgent(($event.target as HTMLSelectElement).value)">
           <option value="">全站 agent</option>
-          <option v-for="a in agents" :key="a" :value="a">{{ a }}</option>
+          <option v-for="a in agents" :key="a" :value="a">{{ agentDisplay(a) }}</option>
         </select>
         <span v-if="agentsLoading" class="muted hint">载入中…</span>
       </label>
@@ -250,7 +250,7 @@ function agentCounts(): BackflowByAgent[] {
               <span class="muted small" v-if="row.generation > 1">gen{{ row.generation }}</span>
             </td>
             <td>
-              <div>{{ row.agent }}</div>
+              <div>{{ agentDisplay(row.agent) }}</div>
               <div class="muted small">{{ row.interface }}</div>
             </td>
             <td class="err">

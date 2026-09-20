@@ -6,7 +6,7 @@
 // - v1.14：幽灵 agent（localStorage 持久化值掉出活跃列表）+ top100 截断提示 + 前台可见性刷新。
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 
-import { useAgents } from '../composables/useAgents'
+import { agentDisplay, useAgents } from '../composables/useAgents'
 import { useMetricFilter, WINDOWS } from '../composables/useMetricFilter'
 
 // 会话中新上线 agent 的可见性刷新节流（仅切回前台时查一次，非轮询）
@@ -58,7 +58,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
       <label class="muted lab">agent</label>
       <select :value="filter.agent" class="sel" @change="pickAgent(($event.target as HTMLSelectElement).value)">
         <option value="">全站</option>
-        <option v-for="a in agents" :key="a" :value="a">{{ a }}</option>
+        <option v-for="a in agents" :key="a" :value="a">{{ agentDisplay(a) }}</option>
       </select>
       <span v-if="agentsLoading" class="muted hint">列表载入中…</span>
       <button v-else-if="agentsError" class="link-like" type="button" @click="retryAgents">agent 列表重试</button>

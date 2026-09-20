@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 异常列表（T-2.4）：anomalies 端点是实时事件列表（不做 rollup，rollup 丢 trace 身份）。
 // 红显 = request 节点 status ∈ {error, timeout}；行点击下钻原 trace（复用详情页）。
+import { agentDisplay } from '../composables/useAgents'
 import { fmtDT } from '../format'
 import type { AnomalyItem } from '../api/types'
 
@@ -60,7 +61,7 @@ function isTo(r: AnomalyItem): boolean {
           :class="{ clickable: r.agent && r.trace_id }" @click="toOpen(r)"
         >
           <td>{{ fmtDT(r.ts) }}</td>
-          <td>{{ r.agent }}</td>
+          <td>{{ agentDisplay(r.agent) }}</td>
           <td class="mono">{{ r.trace_id }}</td>
           <td>{{ r.interface }}</td>
           <td><span class="st" :class="isTo(r) ? 'to' : 'err'">{{ r.status }}</span></td>

@@ -35,12 +35,14 @@ from typing import Annotated, Awaitable, Callable
 from elasticsearch.exceptions import ApiError, TransportError
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ViewerUser
 from app.core.db import get_session
 from app.core.dict_config import get_global_int
 from app.core.errors import AppError
+from app.models.agent import Agent
 from app.store import es as es_store
 from app.store import metrics_rollup as rollup_store
 
@@ -216,7 +218,10 @@ class MetricsAgents(BaseModel):
 
     total: int = 0
     truncated: bool = False
+    # ⚠️ agents 的取值是**查询参数**（下拉的 :value、路由参数）—— 另加本字段供**显示层**用，
+    # 绝不可用 display 去替换 agents 的值，否则中文会被带去查 ES/DB、整条链路查不到。
     agents: list[str] = []
+    display: dict[str, str] = {}
 
 
 # ---------- O-1 进程内缓存（仿 dict_config 无锁；key = endpoint|agent|window） ----------
@@ -561,8 +566,12 @@ async def _load_agents(request: Request, session: AsyncSession) -> MetricsAgents
     except (TransportError, ApiError) as exc:
         raise AppError("ERR_METRICS_0001", f"指标检索暂不可用或超时: {exc}", http=400) from exc
     total = int(res["total"])
+    # display_name 映射：ES 只知英文 name，中文名在 agent 表 —— 此处单独取一份供显示层用。
+    # 只查 name/display_name 两列；ES 里有而表里没有的名字（如探针残留）**不补**，前端回退裸 key。
+    rows = (await session.execute(select(Agent.name, Agent.display_name))).all()
     return MetricsAgents(
         total=total, truncated=total > len(res["agents"]), agents=res["agents"],
+        display={n: d for n, d in rows if d},
     )
 
 

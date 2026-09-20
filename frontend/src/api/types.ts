@@ -194,6 +194,8 @@ export interface MetricsAgents {
   total: number
   truncated: boolean
   agents: string[]
+  // name → 中文 display_name。**仅供显示**；agents 的英文值才是查询参数。
+  display: Record<string, string>
 }
 
 // ---------- 回流看板（P2-6 T-3.7 / detail §9.2；GET /backflow/* 响应镜像，字段级钉死） ----------

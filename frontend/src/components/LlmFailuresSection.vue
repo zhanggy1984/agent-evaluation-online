@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // LLM 失败现场（T-2.4）：请求成功(request ok)但 LLM 节点失败的兜底/降级事件，
 // 不计入接口失败率（口径归 llm-failures 下钻）；行点击下钻原 trace 看现场。
+import { agentDisplay } from '../composables/useAgents'
 import { fmtDT } from '../format'
 import type { LlmFailureItem } from '../api/types'
 
@@ -53,7 +54,7 @@ function reqStatus(r: LlmFailureItem): string {
           :class="{ clickable: r.agent && r.trace_id }" @click="toOpen(r)"
         >
           <td>{{ fmtDT(r.ts) }}</td>
-          <td>{{ r.agent }}</td>
+          <td>{{ agentDisplay(r.agent) }}</td>
           <td class="mono">{{ r.trace_id }}</td>
           <td>{{ r.interface }}</td>
           <td>{{ reqStatus(r) }}</td>

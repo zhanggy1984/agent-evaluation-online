@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError } from '../api/client'
 import { listTraces } from '../api/traces'
-import { useAgents } from '../composables/useAgents'
+import { agentDisplay, useAgents } from '../composables/useAgents'
 import type { TraceListItem } from '../api/types'
 
 const router = useRouter()
@@ -125,7 +125,7 @@ onMounted(() => {
           class="sel" @change="pickAgent(($event.target as HTMLSelectElement).value)"
         >
           <option value="">全站 agent</option>
-          <option v-for="a in agents" :key="a" :value="a">{{ a }}</option>
+          <option v-for="a in agents" :key="a" :value="a">{{ agentDisplay(a) }}</option>
         </select>
         <span v-if="agentsLoading" class="muted hint">载入中…</span>
         <button v-else-if="agentsError" class="link-like" type="button" @click="retryAgents">
@@ -188,7 +188,7 @@ onMounted(() => {
             @click="toDetail(row)"
           >
             <td>{{ fmtTs(row.ts) }}</td>
-            <td>{{ row.agent }}</td>
+            <td>{{ agentDisplay(row.agent) }}</td>
             <td class="mono">{{ row.trace_id }}</td>
             <td>{{ row.interface }}</td>
             <td>{{ row.node }}</td>

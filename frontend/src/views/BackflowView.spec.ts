@@ -28,6 +28,8 @@ vi.mock('../composables/useAgents', () => ({
     agents: agentsMock.agents, loading: { value: false },
     errorMsg: { value: '' }, load: agentsMock.load,
   }),
+  // 同 TracesView.spec：映射内容由真机验证覆盖，单测按恒等放行。
+  agentDisplay: (n: string) => n,
 }))
 
 function row(over: Partial<BackflowCluster> = {}): BackflowCluster {

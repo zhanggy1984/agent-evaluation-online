@@ -6,6 +6,9 @@ import { ApiError } from '../api/client'
 import { metricsAgents } from '../api/metrics'
 
 const agents = ref<string[]>([])
+// name → 中文 display_name（来自 /metrics/agents 的 display 字段）。**仅供显示层**：
+// agents 里的英文值仍是查询参数，切勿用它替换。
+const displayMap = ref<Record<string, string>>({})
 const total = ref(0)
 const truncated = ref(false)
 const loading = ref(false)
@@ -22,6 +25,7 @@ async function doLoad(force = false): Promise<void> {
     try {
       const r = await metricsAgents()
       agents.value = r.agents
+      displayMap.value = r.display ?? {}
       total.value = r.total
       truncated.value = r.truncated
       lastLoadAt = Date.now() // 可见性刷新的节流基准（切回前台 >60s 才重拉）
@@ -36,6 +40,12 @@ async function doLoad(force = false): Promise<void> {
     }
   })()
   return inFlight
+}
+
+/** 显示名：有中文映射则用中文，**映射不到回退裸 name**（ES 里有而 agent 表没有的，如探针残留）。 */
+export function agentDisplay(name: string | null | undefined): string {
+  if (!name) return ''
+  return displayMap.value[name] || name
 }
 
 export function useAgents(): {
