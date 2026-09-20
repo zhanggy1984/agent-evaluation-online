@@ -2870,3 +2870,73 @@ if decision["action"] == "unclean_run" and rec.id == trigger_id:
 3. **`OverviewView.vue:91` 注释里的 `168−130=38` 已腐**：那是批 27 撤 banner 当刻的读数
    （fallback=130 / covered=38），现 covered=46。同型 = [[stale-rationale-outlives-its-data]]。
    **本批未改。**
+
+---
+
+## 四十三、批 41（2026-09-20）：任务 #38 —— 详情页「认领人 + 复核窗倒计时」整体删除
+
+### 43.1 判据：用户的前提**在数据面不成立**，但动作仍然成立
+
+用户提法：「现在已经没有认领人了，详情页认领区域能不能整体删掉」。**取证后前半句是假的** ——
+真机 `GET /api/v1/backflow/clusters/3845` 实测 `status=claim`、`claimed_by=181`、
+`claim_due_ts=2026-09-28T09:48:31`（**未到期**）；17 簇里 13 簇有 `claimed_by`，4 簇正处 `claim` 态。
+⇒「无人认领」观测不到。
+
+但**删的动作仍然对**，只是理由要换一个：批 35-B 已把认领/复核**端点**整体撤除，
+页面上再无任何人工动作可做 —— 那个倒计时数的是**用户无法干预**的窗口，
+却逐字读作「你有 N 天去复核」＝教人点一个不存在的按钮（同批 36 记过的病）。
+⚠️ **纠前提不是为了纠动作**：若照用户的前提直接删，下一个人看到「4 簇正处 claim 态」只会以为删错了。
+
+### 43.2 改动（纯前端展示面，后端零改动）
+
+`frontend/src/views/BackflowClusterDetailView.vue` 5 处：
+
+| # | 位置 | 动作 |
+|---|---|---|
+| 1 | `import` | `{ fmtCountdownMs, fmtISO, parseISODate }` → `{ fmtISO }` |
+| 2 | 脚本 | 删 `now` / `claimDueMs` / `claimExpired` / 1s tick；`syncClaimTimers` 减为 poll-only |
+| 3 | 模板 meta 行 | 删「认领人 {claimed_by}（{claimed_at}）」 |
+| 4 | 模板 | 删「复核窗剩余 …」+「复核窗口已超时（…），等待后台自动回退 open…」两行 |
+| 5 | 注释 | 删因逐条写死（含**下一条 `mode === 'claim'` 为何必须保留**） |
+
+**刻意保留 3 样**（删之前逐条问过「删了会不会静默丢功能」）：
+① **45s 可见轮询** —— 后端 `claim_ttl_job`（worker，每 60s 扫全表）会把超窗 claim 自动回退 `open`，
+无轮询则本页会一直停在「复核中」不反映这个**真实会发生**的系统动作（= 批 30 记过的「系统背着我干了什么」）。
+② **`mode === 'claim'` 的「自…起复发观察」行** —— 查 `recurrence.py:122`
+`mode = "fixed" if status == "fixed" else "claim"` ⇒ 它是**所有非 fixed 态的通称**，不是认领动作产物。
+③ **流转记录区** —— 历史 claim 行的 detail 里仍有「复核窗 14 天」（认领表单原文），**那是历史不是控件**。
+
+### 43.3 验证
+
+- 改动前后 `frontend/src/views/BackflowClusterDetailView.spec.ts` 的
+  `describe('claim 复核窗倒计时')` 里 **第 1 个用例测的正是被删行为**（断言 `复核窗剩余` /
+  `复核窗口已超时` / `等待后台自动回退`）⇒ 改写为**反向钉住**：同一组 fixture
+  （`status:'claim'` + `claimed_by:'181'` + `claim_due_ts` 未到期）下断言这三处**都不再渲染**。
+  ⚠️ 只删不加 = 将来有人把倒计时加回来**没有任何判据会红**。
+- 判别力取证：`git show HEAD:…DetailView.vue` 确认三处字串在 HEAD 确实存在（`:229`/`:234`/`:236`），
+  且触发条件与我传入的 fixture 逐条对得上（`claimed_by` 真值 ⇒ 渲染；`isClaim && !claimExpired` ⇒ 渲染）。
+- 前端 **238 passed / 17 files**；`npm run build`（含 `vue-tsc --noEmit`）绿。
+- **真机（新标签页 `pageId=44`，bundle `index-BN9v2M4Q.js` 已换）**：
+  - **删除侧**：`认领人` / `复核窗剩余` / `等待后台自动回退` 三者 `includes()` 全 `false`；
+  - **保留侧（判别性对照，防负向断言空转）**：同一页仍渲染「复核中」徽标 /「修复版本 2026.09.14-r99」/
+    「回归阈值 K=2」/「已等待 6 天」/ 流转记录区 /「系统自动 · 等待 offline 回归（需连续通过 2 次）」；
+  - **45s 轮询真机实证**：`performance.getEntriesByType('resource')` 显示
+    `/api/v1/backflow/clusters/3845` 在 **t=45 143 ms** 被再次请求（间隔 = 45 s 整）——
+    光有单测不足以证明「刻意保留的那一半」在真机上真的还活着。
+
+### 43.4 本批孤立出、**未处置**的两条尾巴（勿当已修）
+
+> **用户拍板（2026-09-20）**：两条**一并并入 #33**（端点契约与人工处置流程描述同步）
+> —— 同属「撤除写面之后的同步」，一次出方案、一次验收。**本批不碰**。
+
+1. **`fmtCountdownMs` 已成死代码**：全仓 grep 后，除自身定义（`format.ts:70`）与其单测
+   （`format.spec.ts`）外**零调用方**。⚠️ 这是本批直接造成的 ——
+   「无消费方的实现」正是全局约定点名的反面模式。**未删**：动 `format.ts` 属另一验证面
+   （格式函数 + 其单测），按「切分线按验证面切」不并入本批。
+2. **5 处文档仍把倒计时写成「已实现」**（按**概念词**穷尽 grep 得出，非按本批改的组件搜）：
+   - **承载规格**（教后人怎么实现，必须改）：`solution_detail.md:1294`（§9.2 读面表）
+   - **待验清单**（会让人去验一个不存在的控件）：`task.md:374`（T-4.11 e2e）
+   - **历史记录**（显式锚定当刻，**不该动**）：`solution_detail.md:26`（v1.20 修订记录）、
+     `task.md:119`（T-3.7 收口注）、`revision-design-register.md:472`（P2-6 登记行）
+   - 另：`docs/integration-report.md:49`（T-4.11 覆盖范围列举）—— 归类待定。
+   ⇒ 与既有待办 **#33（文档同步：端点契约与人工处置流程描述）** 同面，**建议并入 #33**。

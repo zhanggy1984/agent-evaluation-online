@@ -29,7 +29,7 @@ import {
   VERIFY_STATUS_TEXT,
 } from '../backflowLabels'
 import { agentDisplay, useAgents } from '../composables/useAgents'
-import { fmtCountdownMs, fmtISO, parseISODate } from '../format'
+import { fmtISO } from '../format'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,18 +39,14 @@ const detail = ref<BackflowClusterDetail | null>(null)
 const loading = ref(true)
 const errorMsg = ref('')
 
-// claim 复核窗本地倒计时（1s tick）与 45s 轮询
-const now = ref(Date.now())
-let tickId: number | undefined
+// 批 41：claim 复核窗**倒计时展示面已删**（含「认领人」）—— 认领/复核端点随批 35-B 撤除，
+// 页面上已无任何可做的人工动作，倒计时读起来像「你有 N 天去复核」，实际无人能复核。
+// ⚠️ 但 **45s 轮询保留**：后端 `claim_ttl_job`（worker，每 60s 扫全表）会把超窗的 claim
+// 自动回退 `open` 并写一条 `claim_ttl_expire` 流转记录。无轮询则本页会一直停在「复核中」
+// 而不反映这个系统动作 —— 那正是批 30 记过的「系统背着我干了什么」。
 let pollId: number | undefined
 
 const isClaim = computed(() => detail.value?.status === 'claim')
-const claimDueMs = computed(() => {
-  const d = parseISODate(detail.value?.claim_due_ts)
-  return d ? d.getTime() : null
-})
-// 复核窗已过但状态未回退（后端 TTL 轮询尚未执行）→ 提示等待自动回退
-const claimExpired = computed(() => isClaim.value && claimDueMs.value !== null && claimDueMs.value <= now.value)
 
 const st = computed(() => detail.value?.status ?? '')
 const stLabel = computed(() => CLUSTER_STATUS_LABEL[st.value] ?? st.value)
@@ -120,10 +116,9 @@ function back(): void {
   void router.push({ name: 'backflow' })
 }
 
-// claim 复核窗：1s 本地倒计时 tick + 45s 后台轮询（仅前台可见时拉，防后台堆积）
+// claim 期 45s 后台轮询（仅前台可见时拉，防后台堆积）—— 承接后端自动回退（见上）
 function syncClaimTimers(): void {
   if (isClaim.value) {
-    if (tickId === undefined) tickId = window.setInterval(() => { now.value = Date.now() }, 1000)
     if (pollId === undefined) {
       pollId = window.setInterval(() => {
         if (document.visibilityState === 'visible') void loadDetail(false)
@@ -135,7 +130,6 @@ function syncClaimTimers(): void {
 }
 
 function stopClaimTimers(): void {
-  if (tickId !== undefined) { window.clearInterval(tickId); tickId = undefined }
   if (pollId !== undefined) { window.clearInterval(pollId); pollId = undefined }
 }
 
@@ -226,15 +220,19 @@ const convRows = computed(() =>
         </div>
         <div class="meta-row muted small">
           <span>已等待 {{ detail.waiting_days }} 天</span>
-          <span v-if="detail.claimed_by">认领人 {{ detail.claimed_by }}（{{ fmtTs(detail.claimed_at) }}）</span>
+          <!-- 批 41：原「认领人 {{ claimed_by }}（时间）」已删 —— 认领端点随批 35-B 撤除，该动作在
+               online 侧不存在；且该字段渲染的是**裸 user id**（如 181），新用户读不懂。
+               若需追溯「谁动过」，流转记录里那条「认领 · 人工 · user#181」仍在，信息不丢。
+               ⚠️ **下一条保留**：`mode === 'claim'` 是后端 `recurrence.py:122` 的**通称**
+               （`"fixed" if status == "fixed" else "claim"` = 所有非 fixed 态），不是认领的产物。 -->
           <span v-if="detail.reentry_observe && detail.reentry_observe.mode === 'claim' && detail.reentry_observe.count > 0">
             自 {{ fmtTs(detail.reentry_observe.since_ts) }} 起复发观察
           </span>
         </div>
-        <p v-if="claimExpired" class="warn-line">复核窗口已超时（{{ fmtCountdownMs(claimDueMs, now) }}），等待后台自动回退 open…</p>
-        <p v-if="isClaim && !claimExpired" class="muted small">
-          复核窗剩余 {{ fmtCountdownMs(claimDueMs, now) }}
-        </p>
+        <!-- 批 41：原「复核窗剩余 …」倒计时与「复核窗口已超时…等待后台自动回退 open」两行已删。
+             倒计时数的是**用户无法干预**的窗口（复核端点已撤除），却读起来像「你有 N 天去复核」。
+             后端 `claim_ttl_job` 到期自动回退 open 这件事，改由 45s 轮询让页面自己反映状态变化
+             （见 syncClaimTimers），并由流转记录里的 `claim_ttl_expire` 行留下事后解释。 -->
         <p v-if="(st === 'fixed' || st === 'claim') && showObserveCaption()" class="note-line">
           {{ reentryText() }}
         </p>

@@ -2,7 +2,9 @@
 // 本页是**唯一**有写动作的页面，风险集中在三处：
 //   ① 状态门控（§9.4）——按钮该显的不显/不该显的显了，都会导致 409 或越权尝试；
 //   ② admin 隔离——fixed-review / invalidate / requeue 仅 admin，前端隐藏是第一道，后端 require_admin 是第二道；
-//   ③ claim 复核窗倒计时——1s tick + 45s 轮询，用假时钟驱，并验证卸载后定时器清零（防路由离开后泄漏）。
+//   ③ claim 期 45s 后台轮询——假时钟驱，并验证卸载后定时器清零（防路由离开后泄漏）。
+//      ⚠️ 批 41 已删「认领人 + 复核窗倒计时」展示面（认领/复核端点随批 35-B 撤除），
+//      但轮询保留（后端 claim_ttl_job 会自动回退 open，无轮询则本页停在不反映该动作的状态）。
 // 手法：mock 掉 vue-router 与 api 模块，断言「渲染出的按钮集合」与「发出的请求体」，不碰真实网络。
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -97,20 +99,19 @@ describe('needs_review：整批处置徽标', () => {
   })
 })
 
-describe('claim 复核窗倒计时（假时钟）', () => {
-  it('未到期：显示剩余；过期后翻转 claimExpired 文案', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const nowMs = Date.now()
-    const due = new Date(nowMs + 90_000)   // 90s 后到期
-    const iso = due.toISOString().replace('Z', '')  // 后端 naive-UTC 同形
-
-    const w = await mountWith(mk({ status: 'claim', claim_due_ts: iso }))
-    expect(w.text()).toContain('复核窗剩余')
-
-    vi.advanceTimersByTime(120_000)   // 越过到期点，靠 1s tick 触发重算
-    await w.vm.$nextTick()
-    expect(w.text()).toContain('复核窗口已超时')
-    expect(w.text()).toContain('等待后台自动回退 open')
+describe('claim 复核窗展示面 —— 批 41 已删（认领人 + 倒计时）', () => {
+  it('claim 态 + 有认领人 + 有到期时间：三处一并不再渲染', async () => {
+    // 判别性：旧实现在这三处**都会渲染** ——「认领人 181（…）」「复核窗剩余 …」，
+    // 以及越过到期点后的「复核窗口已超时（…），等待后台自动回退 open…」。
+    // 认领/复核端点随批 35-B 撤除后页面上已无任何人工动作，倒计时读起来像
+    // 「你有 N 天去复核」，实际无人能复核 ⇒ 整块删除。
+    const w = await mountWith(mk({
+      status: 'claim', claimed_by: '181', claimed_at: '2026-09-14T17:48:31',
+      claim_due_ts: '2099-01-01T00:00:00',
+    }))
+    expect(w.text()).not.toContain('认领人 181')
+    expect(w.text()).not.toContain('复核窗剩余')
+    expect(w.text()).not.toContain('等待后台自动回退')
   })
 
   it('非 claim 态不起定时器（不无谓轮询）', async () => {
@@ -119,15 +120,17 @@ describe('claim 复核窗倒计时（假时钟）', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('**卸载后定时器清零**（路由离开不泄漏 tick/轮询）', async () => {
+  it('**卸载后定时器清零**（路由离开不泄漏轮询）', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const w = await mountWith(mk({ status: 'claim', claim_due_ts: '2099-01-01T00:00:00' }))
-    expect(vi.getTimerCount()).toBeGreaterThan(0)   // 先证明确实起了
+    expect(vi.getTimerCount()).toBeGreaterThan(0)   // 先证明确实起了（45s 轮询）
     w.unmount()
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('45s 轮询：前台可见时重拉 detail（状态回退能被侦测到）', async () => {
+  it('45s 轮询**保留**：前台可见时重拉 detail', async () => {
+    // 倒计时删了，但这个轮询刻意留下 —— 后端 claim_ttl_job 会把超窗的 claim 自动回退
+    // open，无轮询则本页会一直停在「复核中」而不反映那个系统动作。
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const w = await mountWith(mk({ status: 'claim', claim_due_ts: '2099-01-01T00:00:00' }))
     apiMock.backflowClusterDetail.mockClear()
