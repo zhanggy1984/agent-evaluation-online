@@ -116,8 +116,11 @@ def decide_k(seq: int, prev_pure: bool, decision: dict, claim_k: int):
         return seq, False, None
     if action == "reopen":
         return seq, False, {"outcome": "reopened"}
-    return seq, False, {"outcome": "needs_review",
-                        "reason": decision.get("reason") or "na"}
+    # 批 35-A（online 只读化）：needs_review 不再返回 terminal。原实现让它 break 掉 K 序列
+    # 循环并迁到 `needs_review` 态，而该态的唯一出口是**人工** resolve —— 全自动下没人来救，
+    # 簇永久卡死。并入 unclean 档：不中断、不累计、继续往后看；判定信号改由 judge_link
+    # 循环内按「仅触发记录」记一条 conv（同 unclean_batch 的写法），状态机不动。
+    return seq, False, None
 
 
 # ---- 载荷 raw_json 重派生（推送源无 offline 读面，判定信息全部从留档载荷现算） ----
@@ -215,7 +218,8 @@ async def _agent_versions(session: AsyncSession, agent: str) -> set[str]:
 _OUTCOME_MAP = {
     "passed": "fixed_auto",
     "reopened": "reopened",
-    "needs_review": "needs_review",
+    # 批 35-A：`needs_review` 条目已删 —— 它不再是终态（decide_k 已并入 unclean 档），
+    # 留着会让 TERMINAL_OUTCOMES 声称一个永不产生的终态，links_advanced 判据随之失真。
 }
 
 # 终态迁移 outcome 全集 = **_OUTCOME_MAP 的值域**（judge_link 返回的是映射后的字面量：
@@ -237,10 +241,9 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
       no_progress
     """
     cid = cluster.id
-    fv = claim_flow.normalize_fix_version(cluster.fix_version or "")
     case_id = link.case_id if link is not None else None
-    if not fv or not case_id:
-        return {"outcome": "no_progress", "reason": "缺 fix_version / 现行 pending case_id"}
+    if not case_id:
+        return {"outcome": "no_progress", "reason": "缺现行 pending case_id"}
     if link.verify_status != "pending":
         # E-10 终态只读显式守卫（P2-5）：pending 是唯一可判定态，passed/failed/
         # invalidated/superseded 均不可覆写（迟到 run 不追加不改写，重开另起新 link）。
@@ -261,17 +264,9 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
         # 无任何已收结果：不是 gap（没有「缺失」的证据），只是本 link 还没收到推送
         return {"outcome": "pending", "seq": 0,
                 "reason": "本 link 尚无已收结果（等 offline 首次结果推送）"}
-    # 发版水位（原 `fv not in face_versions` 守卫的推送源重建）：offline 已产终态 run 的最大
-    # 版本，随载荷单调不减；本 link 全部行取最大 = 最近一次推送的水位。
-    latest = max((str(_raw_of(r).get(_RAW_LATEST) or r.bound_version) for r in rec_rows),
-                 key=_ver_key)
-    if _ver_key(fv) > _ver_key(latest):
-        # fix_version 还没被 offline 跑到（水位未达）→ 本轮任何判定都无意义，不推进（R-17
-        # 断链起点语义）。为什么不引入「该 (agent,version) 是否首次出现终态 run」这类字段：
-        # 它只说「首见」，**没有**「已覆盖到哪个版本」的序关系，判不了水位（该字段本批已从
-        # 载荷契约删除——必填却零读取点；水位只由 `agent_latest_version` 承载）。
-        return {"outcome": "no_progress",
-                "reason": f"fix_version {fv} 未发版（已收结果水位 {latest}，待 offline 跑到）"}
+    # 批 35-A：原「发版水位」闸整条删除。它的语义是「fix_version 还没被 offline 跑到 → 不判」，
+    # 即**等一个人声明的版本**；online 只读化后无人声明版本，等它就等于永不推进。
+    # 代价：不再有「排除修复前历史」的能力（见 judge_link 循环下界的同名说明）。
 
     # 同版多 run：取**最后推送**的一条（id 最大 = 迟到回写的最新真相）。推送源只有终态 run
     # （offline 侧保证），故原 `_pick_run` 的「completed 优先」是死代码——已删。
@@ -291,18 +286,21 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
     # agent 级版本全集惰性缓存：仅当真的出现「≥ fv 的前序」时才查一次（常见路径零查询）
     seen_versions: set[str] | None = None
 
-    for V in sorted((v for v in by_version if _ver_key(v) >= _ver_key(fv)), key=_ver_key):
+    # 批 35-A：原下界 `_ver_key(v) >= _ver_key(fv)` 已去掉 —— fv 是「本轮 K 序列从哪个版本起算」，
+    # 全自动下无人声明该起点，改由**全历史重放**：连续 pass 才累计、任何 fail/unclean 都会把 seq
+    # 打回 1（见 decide_k），故无需下界自洽。代价：簇创建前的历史 pass 也会被计入。
+    for V in sorted(by_version, key=_ver_key):
         rec = by_version[V]
         raw = _raw_of(rec)
         prev_v = raw.get(_RAW_PREV_TERMINAL)
-        if prev_v and _ver_key(str(prev_v)) >= _ver_key(fv):
+        if prev_v:
             # 缺行中断（v1.23 第 3 刀新判据，替代原「枚举 versions 读面缺版」）：本 run 的前
             # 一个终态版本 online 侧**无记录** → 该版结果推送丢失（fire-and-forget 三次全败）。
             # 为什么必须堵：推送源只有单值最大版本，无法枚举中间版本——v2 的推送全丢时 online
             # 只见 v1(pass)、v3(pass) 会误算「连续 2 次纯净 pass」→ 簇被静默误判 fixed。
-            # 为什么只看 ≥ fix_version 的前序：claim 锚定 fv，fv 之前的终态 run 是促成本次 claim
-            # 的那次失败，**不属本轮 K 序列**，其记录天然不在本 link 上（reopen → 改版重 claim
-            # 会换新 link，E-17 现场）——不加该界会把该现场永久钉在 gap，claim 永判不出 fixed。
+            # 批 35-A：原「只看 ≥ fix_version 的前序」界已随下界一并去掉（无人声明起点）。
+            # 现改为对**全部前序版本**查记录 —— 比原来更严：原先 fv 之前的前序不查，是因为
+            # 那些 run 不属本轮 K 序列；现在全历史都算，任何缺失都该中断。
             # 判据第三修（本批）：`"有行吗"` 由**本 link 行集**改 **agent 级版本全集**（见
             # `_agent_versions` docstring）——prev_terminal_version 本身是 agent 级事实，
             # 用 link 级行集查会在同 agent 多簇并行 claim 时产生假 gap。
@@ -335,6 +333,17 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
             )
             unclean_registered = True
 
+        if decision["action"] == "needs_review":
+            # 批 35-A：needs_review 不再是状态（唯一出口是人工，全自动下会永久卡死），也不再
+            # 打 conv —— conv 是业务流水且判定每次都是**全链幂等重放**，打 conv 会被 rejudge
+            # 每 60s 重放刷爆。改记日志：三类 reason（na / input_truncated）信息不丢，且日志
+            # 天然容忍重复。状态机不动，本版不累计也不清零（decide_k 已并入 unclean 档）。
+            logger.warning(
+                "判定不可信（needs_review，不迁移状态、不计 K）: "
+                "cluster=%s link=%s version=%s reason=%s truncated=%s",
+                cid, link_id, V, decision.get("reason") or "na", truncated,
+            )
+
         seq, prev_pure, outcome = decide_k(seq, prev_pure, decision, claim_k)
         if outcome is not None:
             terminal_ver = V
@@ -342,8 +351,7 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
 
     summary: dict = {"seq": seq}
     if outcome is not None:
-        await _apply_terminal(session, cluster, outcome, terminal=terminal_ver,
-                              truncated=truncated, fv=fv)
+        await _apply_terminal(session, cluster, outcome, terminal=terminal_ver)
         summary["outcome"] = _OUTCOME_MAP[outcome["outcome"]]
         summary["reason"] = outcome.get("reason")
         return summary
@@ -377,8 +385,10 @@ async def link_gap_version(session: AsyncSession, cluster, link) -> str | None:
     link 仍 pending ⇒ 内核从未判出终态 ⇒ 内核遇到的第一个 gap 即本函数扫出的最小 gap。
     无已收结果行 / 无 fix_version / 无 case_id → None（该三态各有别的可见面，不是「疑似丢推送」）。
     """
-    fv = claim_flow.normalize_fix_version(cluster.fix_version or "")
-    if not fv or link is None or not link.case_id:
+    # 批 35-A：原 `fv` 及其「只看 ≥ fv」边界随内核一并去掉（本函数 docstring 明写与内核
+    # **同源**、不得漂移）—— 内核去掉了下界与水位闸，此处必须同步，否则 result_gap_suspected
+    # 会按一个内核已不用的口径报「疑似丢推送」。
+    if link is None or not link.case_id:
         return None
     rec_rows = list((await session.scalars(
         select(VerifyRunRecord)
@@ -392,7 +402,7 @@ async def link_gap_version(session: AsyncSession, cluster, link) -> str | None:
         by_version[str(r.bound_version)] = r  # 同版多 run 取最后推送（与内核同规）
     candidates = [
         str(prev_v)
-        for V in sorted((v for v in by_version if _ver_key(v) >= _ver_key(fv)), key=_ver_key)
+        for V in sorted(by_version, key=_ver_key)
         if (prev_v := _raw_of(by_version[V]).get(_RAW_PREV_TERMINAL))
         and _ver_key(str(prev_v)) >= _ver_key(fv)
     ]
@@ -403,27 +413,22 @@ async def link_gap_version(session: AsyncSession, cluster, link) -> str | None:
 
 
 async def _apply_terminal(session: AsyncSession, cluster, outcome: dict, *,
-                          terminal: str | None, truncated: bool, fv: str) -> None:
-    """终态收敛迁移（复用 claim 侧 apply，CAS 由其中 status 守卫兜并发）。"""
+                          terminal: str | None) -> None:
+    """终态收敛迁移（复用 claim 侧 apply）。
+
+    批 35-A：`outcome` 只剩 passed / reopened 两种 —— needs_review 已不再是终态（见 decide_k），
+    故删去原 else 分支，以及只供它使用的 `fv` / `truncated` 两个参数。
+    """
     cid = cluster.id
     node = f"version={terminal}" if terminal else "version面"
     if outcome["outcome"] == "passed":
         await claim_flow._mark_pending_links(session, cid, "passed")
         await claim_flow._apply_auto_fixed(
-            session, cid, seq_desc=f"{fv}→{terminal} 连续{outcome['seq']}版纯净 pass")
-    elif outcome["outcome"] == "reopened":
+            session, cid, seq_desc=f"{terminal} 连续{outcome['seq']}版纯净 pass")
+    else:  # reopened
         await claim_flow._mark_pending_links(session, cid, "failed")
         await claim_flow._apply_verify_reopen(
             session, cid, detail=f"回归 run {node} fail → open（K 清零）")
-    else:  # needs_review
-        reason = outcome.get("reason") or "na"
-        degraded = ("，input_truncated 降级单条"
-                    if reason == "input_truncated" and truncated else "")
-        note = f"reason={reason}（{node} run 判定产物{degraded}）"
-        # 现行 pending link superseded 释放 cur_key：needs_review 停回查，
-        # 待 resolve reopen 后 assemble_job 生成新 link（uk_link_current 不占位冲突）
-        await claim_flow._mark_pending_links(session, cid, "superseded")
-        await claim_flow._apply_needs_review(session, cid, reason=reason, note=note)
 
 
 def _primary_env_na(na_error_types) -> str:

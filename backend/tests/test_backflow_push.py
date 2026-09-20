@@ -272,7 +272,8 @@ class _GetRegistrySession(_IdBackfillSession):
         return row if row is not None else await super().get(model, pk)
 
 
-def _cluster(status="claim", cid=10):
+def _cluster(status="open", cid=10):
+    # 批 35-A：默认态由 `claim` 改 `open` —— online 只读化后活动态是 open，判定守卫据此放行。
     return ns(id=cid, status=status, claim_k=2, input_truncated=0,
               fix_version="1.5.0", agent="agent-x")
 
@@ -314,9 +315,10 @@ def test_push_lands_row_and_writes_conversion(monkeypatch):
 
 
 def test_push_links_advanced_only_on_terminal_migration(monkeypatch):
-    # 响应语义 = 「真正发生终态迁移的 link」（passed/failed/superseded 三类）
+    # 响应语义 = 「真正发生终态迁移的 link」（passed/failed 两类）
+    # 批 35-A：needs_review 移出终态集（不再迁移状态）⇒ 期望由 [30] 改 []
     for outcome, expected in (("fixed_auto", [30]), ("reopened", [30]),
-                              ("needs_review", [30]), ("gap", []),
+                              ("needs_review", []), ("gap", []),
                               ("unclean_batch", []), ("no_progress", [])):
         session = _GetRegistrySession(
             registry={ErrorCaseLink: [_pending_link()], ErrorCluster: [_cluster()]})
@@ -327,14 +329,17 @@ def test_push_links_advanced_only_on_terminal_migration(monkeypatch):
         assert r.json()["links_advanced"] == expected, outcome
 
 
-def test_push_skips_judgment_when_cluster_not_claim(monkeypatch):
-    """守卫：cluster 非 claim（或已不存在）→ 不调判定，但数据照落。
+def test_push_skips_judgment_when_cluster_not_open(monkeypatch):
+    """守卫：cluster 非 open（或已不存在）→ 不调判定，但数据照落。
 
-    为什么必须挡：`_find_current_link` 只按 link.verify_status=pending 查——needs_review
-    resolve↔reopen 过渡、TTL 认领失效、admin invalidate 都可能在非 claim 簇上留下 pending
-    link；不挡就会对已 fixed/needs_review 的簇写终态迁移（越权改状态）。
+    批 35-A：判据由 `claim` 改 `open`（活动态只剩 open）。**`claim` 现在也属「非 open」**
+    ——它不再产生，但历史库里可能残留，对判定同样该拦。原用例集里没有 `claim` 行，改名时
+    若不补上，本测试会「绿着但测不到它声称的边界」。
+    为什么必须挡：`_find_current_link` 只按 link.verify_status=pending 查——fixed/needs_review
+    /inactive 簇上都可能留下 pending link；不挡就会对已终止的簇写终态迁移（越权改状态）。
     """
-    for row in (_cluster(status="fixed"), _cluster(status="needs_review"),
+    for row in (_cluster(status="claim"), _cluster(status="fixed"),
+                _cluster(status="needs_review"),
                 _cluster(status="inactive"), None):
         registry = {ErrorCaseLink: [_pending_link()]}
         if row is not None:

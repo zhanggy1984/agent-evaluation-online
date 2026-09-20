@@ -59,7 +59,7 @@ async def _scan_candidates(session: AsyncSession, *, batch: int) -> list:
         (
             await session.scalars(
                 select(ErrorCluster)
-                .where(ErrorCluster.status == "claim", has_pending_link)
+                .where(ErrorCluster.status == "open", has_pending_link)
                 .order_by(ErrorCluster.id)
                 .limit(batch)
             )

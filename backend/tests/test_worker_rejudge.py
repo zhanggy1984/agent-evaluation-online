@@ -201,19 +201,22 @@ def test_judge_link_legacy_row_without_cases_is_unjudgeable_not_missing():
     assert "老格式" in summary["reason"], summary
 
 
-def test_judge_link_legacy_row_records_below_fix_version_ignored():
-    """反假绿对照：老格式行落在 `fix_version` **之前**（上一轮 claim 的残留）→ 不拦本轮。
+def test_judge_link_legacy_row_in_history_now_blocks():
+    """批 35-A **语义反转**：老格式行落在 `fix_version` 之前，原「不拦」、现「会拦」。
 
-    没有本对照，上一条可能只是「只要链上有老行就永不推进」——那会把正常 claim 也钉死。
-    判据与缺行中断同规：只看 `≥ fix_version` 的版本（之前的终态 run 促成本次 claim、
-    不属本轮 K 序列）。
+    原因：本轮去掉了版本下界（全自动下无人声明 fix_version，K 序列改对**全历史**重放），
+    该行不再被「只看 ≥ fv」排除 → 命中老格式不可判 → 簇停在 pending。
+    原设计的前提「fv 之前的 run 不属本轮 K 序列」已随 fv 概念一并消失。
+
+    保留本用例的价值 = **钉住这个反转**，防有人凭旧直觉把「只看 ≥ fv」改回去。
     """
     session = _RecSession([
-        _rec(1, "0.9.0", {"case_pass": 0}),  # 老格式，但在 fv=1.0.0 之前
+        _rec(1, "0.9.0", {"case_pass": 0}),  # 老格式；原在 fv=1.0.0 之前而被跳过
         _rec(2, "1.0.0", {"cases": [{"case_id": "c-1", "pass_fail": "pass"}],
                           "agent_latest_version": "1.0.0", "prev_terminal_version": None}),
     ])
     summary = asyncio.run(
         judge_link(session, cluster=_claim_cluster(1), link=_LINK))
-    assert summary["outcome"] == "fixed_auto", summary  # 与上一条只差「老行在 fv 之前」
-    assert [getattr(c, "action", None) for c in session.added] == ["auto_fixed"]
+    assert summary["outcome"] == "pending", summary
+    assert summary["unjudgeable_version"] == "0.9.0", summary
+    assert session.added == []  # 无终态迁移

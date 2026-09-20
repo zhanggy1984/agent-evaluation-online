@@ -1083,7 +1083,7 @@ async def record_regression_result(
     advanced: list[int] = []
     if link is not None:
         cluster = await session.get(ErrorCluster, link.cluster_id)
-        if cluster is not None and cluster.status == "claim":
+        if cluster is not None and cluster.status == "open":
             try:
                 # savepoint 隔离判定副作用（本批偏离规格的**加严**，非放宽）：判定链是**边判
                 # 边写**（link/cluster CAS + conv），可能在链的后半段才抛异常 —— 裸调用时那些

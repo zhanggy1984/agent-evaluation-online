@@ -273,10 +273,14 @@ async def fixed_review(
 
 
 async def _apply_auto_fixed(session: AsyncSession, cluster_id: int, *, seq_desc: str) -> None:
-    """verify K 满收敛：claim→fixed（closed_by=auto_regression）。"""
+    """verify K 满收敛：open→fixed（closed_by=auto_regression）。
+
+    批 35-A（online 只读化）：准入由 `claim` 改 `open`。不再有人工认领 ⇒ `claim` 态不可达，
+    活动态只剩 `open`；沿用 `claim` 会让自动收口永远进不去（`open → claim` 是它唯一入口）。
+    """
     result = await session.execute(
         update(ErrorCluster)
-        .where(ErrorCluster.id == cluster_id, ErrorCluster.status == "claim")
+        .where(ErrorCluster.id == cluster_id, ErrorCluster.status == "open")
         .values(status="fixed")
     )
     if result.rowcount != 1:
@@ -287,30 +291,19 @@ async def _apply_auto_fixed(session: AsyncSession, cluster_id: int, *, seq_desc:
 
 
 async def _apply_verify_reopen(session: AsyncSession, cluster_id: int, *, detail: str) -> None:
-    """回归 failed：claim→open（K 清零由判据自然重算）。"""
-    result = await session.execute(
-        update(ErrorCluster)
-        .where(ErrorCluster.id == cluster_id, ErrorCluster.status == "claim")
-        .values(status="open")
-    )
-    if result.rowcount != 1:
-        raise _conflict_err(cluster_id)
+    """回归 failed：簇留在活动态、K 清零（只记 conv）。
+
+    批 35-A：原实现是 `claim → open` 的 CAS。online 只读化后活动态就是 `open`，该 update
+    退化成 `open → open`，而 **MySQL 对「值未变」的 UPDATE 返回 rowcount=0**（未开
+    CLIENT_FOUND_ROWS），原 CAS 守卫会误抛 `_conflict_err` 把整条判定链炸掉 —— 故此处
+    **只记 conv、不做 UPDATE**。链的推进由调用方 `_mark_pending_links(failed)` 让 link
+    离开 pending 承载（assemble_job 据此重新组装）。
+    """
     session.add(ConversionRecord(
         cluster_id=cluster_id, action="reopen", detail=f"回归 failed → open（{detail}）",
         actor_user_id=None))
 
 
-async def _apply_needs_review(
-    session: AsyncSession, cluster_id: int, *, reason: str, note: str
-) -> None:
-    """error run 判定产物：claim→needs_review（reason ∈ {na, reentry_same_version,
-    input_truncated}；unclean_run 不入态）。"""
-    result = await session.execute(
-        update(ErrorCluster)
-        .where(ErrorCluster.id == cluster_id, ErrorCluster.status == "claim")
-        .values(status="needs_review", needs_review_reason=reason)
-    )
-    if result.rowcount != 1:
-        raise _conflict_err(cluster_id)
-    session.add(ConversionRecord(
-        cluster_id=cluster_id, action="needs_review", detail=note[:1024], actor_user_id=None))
+# 批 35-A：`_apply_needs_review` 已删除 —— 全自动下 needs_review 不再是一个状态
+# （进了就没人能救它出去，因为唯一的出口 resolve 是人工动作）。判定信号改为在
+# `verify.judge_link` 循环内按「仅触发记录」记一条 conv，状态机不动。见 `decide_k`。

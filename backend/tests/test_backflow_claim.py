@@ -172,9 +172,15 @@ def test_k_fail_terminal_reopen_resets():
     assert t["outcome"] == "reopened"
 
 
-def test_k_na_terminal_needs_review():
+def test_k_na_no_longer_terminal():
+    """批 35-A：na 不再判终态。
+
+    原实现返回 needs_review terminal 并 break 掉 K 序列 —— 而该态的唯一出口是**人工**
+    resolve，全自动下没人来救 ⇒ 簇永久卡死。现并入 unclean 档：不中断、不累计
+    （prev_pure 归 False），后续版本照常判。
+    """
     t = _fold([{"action": "count_k"}, {"action": "needs_review", "reason": "na"}])
-    assert t == {"outcome": "needs_review", "reason": "na"}
+    assert t == {"seq": 1}  # 无 outcome；seq 保留不清零（同 unclean 档）
 
 
 def test_k_unclean_breaks_chain_then_two_pure_pass_fixed():
