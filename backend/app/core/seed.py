@@ -35,10 +35,12 @@ REQUIRED_TABLES = ("user", "agent", "interface", "dict_config")
 
 # ---- agent 字典基线（name 唯一；backflow_allow = 维度3 回流白名单，cc=0 见 D18） ----
 AGENTS = [
-    {"name": "good-question", "display_name": "good-question", "backflow_allow": 1},
-    {"name": "customer-service", "display_name": "customer-service", "backflow_allow": 1},
-    {"name": "contract-check", "display_name": "contract-check", "backflow_allow": 0},
-    {"name": "smart-procurement", "display_name": "smart-procurement", "backflow_allow": 1},
+    # display_name = 观测台上的中文显示名，取自各仓 README 的**产品名**（去掉「AI」「系统」后缀）
+    # —— 不按英文名直译：smart-procurement 的产品名是「智能评标」而非「智能采购」
+    {"name": "good-question", "display_name": "不懂就问", "backflow_allow": 1},
+    {"name": "customer-service", "display_name": "智能客服", "backflow_allow": 1},
+    {"name": "contract-check", "display_name": "合同校验", "backflow_allow": 0},
+    {"name": "smart-procurement", "display_name": "智能评标", "backflow_allow": 1},
 ]
 
 # ---- dict_config v1 生效键（§10.1）。默认仅补缺省，不覆盖已存在行 ----

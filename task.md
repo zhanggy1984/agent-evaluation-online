@@ -2901,3 +2901,71 @@ grep -n "tmp-probe/cs-reset-backup" /d/study/aiprojcet/agent-evaluation-online/t
 #   ⇒ 判据是「除自命中外**有且仅有 1 处**，且它带『原路径』标注」；**不许写成「应输出 1」**——
 #     那样照跑得 2，会被下一个人读成「有残留路径」而误判（属 `chronic-noise-defeats-gate` 的造噪音）。
 ```
+
+---
+
+## 17. P1-18 给 4 家 agent 起中文名（2026-09-20）—— 只动数据，接线另起一批
+
+### ① 范围与名字（两项均由用户单独拍板）
+
+**范围 = 只动数据**（接线另起一批）；**名字 = 短名**（去掉「AI」「系统」后缀）。
+中文名**取自各仓 README 的产品名，不按英文直译** —— `smart-procurement` 的产品名是「智能评标」，
+直译会写成「智能采购」（我第一次的建议就错在这里，是读 README 才改过来的）。
+
+| `name` | `display_name` | 来源（各仓 README 标题） |
+|---|---|---|
+| `good-question` | 不懂就问 | 不懂就问（Native RAG） |
+| `customer-service` | 智能客服 | AI 智能客服系统 |
+| `contract-check` | 合同校验 | AI 合同校验系统 |
+| `smart-procurement` | 智能评标 | AI 智能评标系统 |
+
+### ② 改动落点（两处，缺一不可）
+
+- **仓内**：`backend/app/core/seed.py:38-41` 四个种子的 `display_name`（+2 行动机注释）。
+- **库内**：`` `dev.obs`.agent `` 现有 4 行 UPDATE（**带四值白名单**，非裸全表；预期 `affected=4`）。
+
+**为什么必须两处一起改**：`seed.py:122` 是 `ON DUPLICATE KEY UPDATE updated_at = updated_at`
+（幂等**空更新**）⇒ **只改 seed 对现有库是空操作**；只改库则下次全新部署又变回英文。
+
+### ③ 关键事实（本批取证，两条推翻直觉）
+
+1. 全仓**没有任何「运行时自动注册」写路径** —— `route_source='auto_register'` 只是列的
+   `server_default`（`models/agent.py:30`），全仓只有 seed 与测试写过它。
+2. ⇒ 手动 UPDATE **不会被任何逻辑覆盖**；`seed.py:153` 的第二处 `AGENTS` 消费点只读
+   `a["name"]` 查 id，**不碰 `display_name`**（改前逐一核实过）。
+
+### ④ 验证
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 改后查库 = 4 行中文 | ✅ |
+| 2 | **seed 幂等语句不覆盖 `display_name`** | ✅ 事务内复刻 `:119-122` 那条 SQL，执行后仍为中文，ROLLBACK 无残留 |
+| 3 | 回归 | ✅ `py_compile` OK + 后端全量 **502 passed**（9.58s） |
+
+⚠️ **验证 2 偏离了原方案（如实记）**：原写的是「跑一次 `python -m app.core.seed` 再查」，
+**实际没跑** —— 读码发现 `seed.py:146-151` 的 `dict_config` 全局键是**无 `ON DUPLICATE` 的裸 INSERT**，
+跑一次就多插一批行、**污染配置表**。故改为事务内探针。
+**断言强度的差别**：它证明的是**那条 SQL 的语义**，不证明 `_seed_agents` 真的执行到了它（后者是读码所得）。
+
+### ⑤ 本批证不了 / 未验
+
+- **前端渲染**：`agent.display_name` **零消费方** —— `types.ts` 里没有 `Agent` 类型
+  （`:5` 与 `:361` 两处都是 `UserOut` / `AdminUserOut`），后端 `admin.py` 的 `display_name` 是 user 的。
+  ⇒ **本批完成后浏览器里无任何变化**，验收只能查库。**接线另起一批。**
+- **前端测试未跑**（零前端改动）。
+
+### ⑥ 顺带发现（未处置 —— 按用户拍板「只登记、另起一批」）
+
+**`contract-check.backflow_allow`：库内 = `1`，`seed.py:40` = `0`。**
+`seed.py:36` 的注释写明「cc=0 见 D18」⇒ **seed 那个 0 是有意的设计值，库里的 1 才是偏离**。
+
+**未查明**：库里这行何时、被谁改成 1，以及是否有意（可能是某次验收需要 cc 参与回流）。
+**处置 = 另起一批**：现改是拿一个**未验证的值**覆盖另一个，方向不明不动手。
+⚠️ **本项未做任何取证** —— D18 的具体内容我**还没读过**，只从 `seed.py:36` 的注释看到它被引用。
+**不许**把本条读成「已知 1 是错的」。
+
+```bash
+# 复核：两处取值应不一致（库 1 / seed 0），且 display_name 已是中文
+docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 -t -e "select name,display_name,backflow_allow from agent order by id;" "dev.obs"' 2>&1 | grep -v 'Using a password'
+grep -n 'contract-check' backend/app/core/seed.py
+```
