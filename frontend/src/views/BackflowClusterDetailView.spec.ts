@@ -280,7 +280,8 @@ describe('现在轮谁（批 30）', () => {
     expect(lanes[0].text()).toContain('系统自动')
     expect(lanes[0].text()).toContain('offline 拉走')   // 系统那条线不等你
     expect(lanes[1].text()).toContain('需要你')
-    expect(lanes[1].text()).toContain('认领')
+    // 批 35-B：原断言 '认领' —— 该动作的端点已撤除，文案改指「在代码里改」。
+    expect(lanes[1].text()).toContain('代码里改')
     // 系统已在跑 ≠ 你没事干：这个组合下「需要你」必须高亮（判别性所在）
     expect(lanes[1].classes()).toContain('need')
   })
@@ -291,7 +292,24 @@ describe('现在轮谁（批 30）', () => {
     )
     const lanes = w.findAll('.lane')
     expect(lanes[0].text()).toContain('回归未通过')
-    expect(lanes[1].text()).toContain('重推')
+    // 批 35-B：原断言 '重推' —— 该动作的端点已撤除，文案改指「在代码里改」。
+    expect(lanes[1].text()).toContain('代码里改')
     expect(lanes[1].classes()).toContain('need')
+  })
+
+  // 批 38（用户提出）：`mine=false` 的簇，那行只会写「无需操作」= 纯噪音 ⇒ 整行不渲染。
+  // 判别性：去掉模板上的 `v-if="lanes?.mine"` 即红（会渲染出 2 行）。
+  it('无需你操作的簇（已修复）：只渲染系统那条线，不渲染「需要你」', async () => {
+    const w = await mountWith(mk({ status: 'fixed', link: link({ offline_status: 'active' }) }))
+    const lanes = w.findAll('.lane')
+    expect(lanes).toHaveLength(1)
+    expect(lanes[0].text()).toContain('系统自动')
+    expect(w.text()).not.toContain('需要你')
+  })
+
+  it('对照：同一页面在 open 态仍渲染两行（条件渲染没把该显示的一起藏掉）', async () => {
+    const w = await mountWith(mk({ status: 'open', link: link({ offline_status: 'assembled' }) }))
+    expect(w.findAll('.lane')).toHaveLength(2)
+    expect(w.text()).toContain('需要你')
   })
 })

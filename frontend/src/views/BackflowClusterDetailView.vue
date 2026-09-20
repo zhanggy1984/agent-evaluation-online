@@ -183,13 +183,19 @@ const convRows = computed(() =>
     <template v-if="!loading && detail">
       <!-- 「现在轮谁」两条车道（批 30）：本页最该早看到的一句话。
            **两行并列是刻意的** —— 上一条线（系统自动）根本不等你，下一条线才是你要做的；
-           只给一句「等 offline 回归」会让人以为那期间自己没事干，而事实是两条线并行。 -->
+           只给一句「等 offline 回归」会让人以为那期间自己没事干，而事实是两条线并行。
+           ⚠️ 批 38（用户提出）：**「需要你」行改为条件渲染** —— `mine=false` 的簇（已修复 /
+           已忽略 / 等系统收口）那行只会写「无需操作」，是纯噪音。
+           **但不整块删掉**：`open` 态那行是页面上**唯一**说明「得有人去改代码」的地方 ——
+           簇变 fixed 只有一条路（offline 回推回归连续通过 K 次），而回归过不过取决于那个
+           bug 有没有被改。删了它页面就只剩「系统会自动…」，正是批 30 的病根
+           （用户等一个不会来的结果）。 -->
       <section class="lanes">
         <div class="lane">
           <span class="lane-tag">系统自动</span>
           <span class="lane-text">{{ lanes?.auto }}</span>
         </div>
-        <div class="lane" :class="{ need: lanes?.mine }">
+        <div v-if="lanes?.mine" class="lane need">
           <span class="lane-tag">需要你</span>
           <span class="lane-text">{{ lanes?.human }}</span>
         </div>

@@ -8,12 +8,18 @@
 
 ## 一、改完「没生效」时先看这张表
 
-**两个容器的失效机制不同，别套用同一条结论。**
+**三个容器的失效机制不同，别套用同一条结论。**
+
+⚠️ **2026-09-20 批 37 踩到：worker 是独立容器 `obs-worker`（不是 backend 里的一段）** ——
+重启 `backend` 对 worker 里跑的 job **零作用**；而**日志也分容器**（`docker compose logs backend`
+里只有 HTTP 访问日志、**一条 job 日志都没有**，那正是「worker 不在这个容器里」的判据）。
+批 37 为此白跑一轮取证（以为「改了没生效」）。
 
 | 改了什么 | 为什么没生效 | 正确动作 |
 |---|---|---|
 | 前端 | `obs-frontend` 是**多阶段构建的 baked 镜像**（`docker inspect -f '{{.Mounts}}' obs-frontend` ⇒ `[]`，**无 bind mount**）⇒ 宿主 build 不出现在容器里 | `docker compose build frontend && docker compose up -d --force-recreate frontend`；也可 `docker cp` 产物进容器（批 6 用过） |
-| 后端 | `obs-backend` **有** bind mount（`./backend:/app`），但 uvicorn **没带 `--reload`** ⇒ **文件是新的、进程跑的是旧代码** | 重启进程：`docker compose restart backend`。⚠️ 「文件在容器里」**不等于**「改动生效」 |
+| 后端 API | `obs-backend` **有** bind mount（`./backend:/app`），但 uvicorn **没带 `--reload`** ⇒ **文件是新的、进程跑的是旧代码** | 重启进程：`docker compose restart backend`。⚠️ 「文件在容器里」**不等于**「改动生效」 |
+| 后端 **job**（worker/*.py） | 跑在**另一个容器** `obs-worker` 里（同 bind mount、同样无 `--reload`） | `docker compose restart worker`。⚠️ **`docker compose ps` 先看有几个 service**，别默认「后端 = 一个容器」 |
 | 真机取证 | **旧标签页的模块级单例早已加载**（如 `useAgents` 的 `displayMap`）⇒ 在旧页上看等于没验 | **必须新开标签页**再验 |
 
 ## 二、真机取证的纪律（本项目反复踩过）

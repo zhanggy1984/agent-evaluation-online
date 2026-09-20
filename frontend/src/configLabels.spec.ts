@@ -9,6 +9,7 @@ import { CONFIG_KEY_INFO, configKeyDesc, configKeyInfo, configKeyIsDead } from '
 const LIVE_KEYS = [
   'claim_ttl_days',
   'auto_fixed_k_default',
+  'auto_requeue_max_default',
   'rollup_late_k_h',
   'keyword_search_days',
   'trace_query_timeout_ms',
@@ -25,7 +26,9 @@ const DEAD_KEYS = [
 ]
 
 describe('CONFIG_KEY_INFO', () => {
-  it('键集全等：覆盖 seed 的 13 个全局键，不多不少', () => {
+  // ⚠️ 本断言比的是**本文件写死的两张表**，不是真去读 seed.py ⇒ 后端加键而此处没加**不会红**。
+  // 它是「我写完两张表后自洽」的证据，不是「两边同步」的证据（数已随批 37 由 13 → 14）。
+  it('键集全等：覆盖 seed 的 14 个全局键，不多不少', () => {
     expect(Object.keys(CONFIG_KEY_INFO).sort()).toEqual([...LIVE_KEYS, ...DEAD_KEYS].sort())
   })
 

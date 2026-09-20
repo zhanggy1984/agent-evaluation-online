@@ -48,6 +48,9 @@ GLOBAL_DEFAULTS: dict[str, object] = {
     "cluster_window_days": 7,
     "claim_ttl_days": 14,
     "auto_fixed_k_default": 2,
+    # 自动重推上限（批 37）：invalidated(online_content_gap) 的 link 最多自动复位几次，
+    # 超过则停手转人工（R-7「疑似不可自愈」）。与前端 SUSPECT_REQUEUE_THRESHOLD 同值不同物。
+    "auto_requeue_max_default": 2,
     "llm_call_observe_window_min": 1440,  # 24h，§8.5.1 观察窗（key 以分钟计）
     "llm_call_observe_threshold": 10,
     "trace_judge_window_s": 60,

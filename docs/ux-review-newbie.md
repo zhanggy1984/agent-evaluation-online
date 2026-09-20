@@ -2184,7 +2184,7 @@ CSS：`.op-hint em.warn`（`font-style: normal` + `var(--error)`，红色，因�
   | 字面星号 | **无**（`indexOf('**') < 0`） |
   | `em.warn` | 1 个，`rgb(217, 48, 37)`（红） |
   | 高度 | 87px（约 4–5 行） |
-  | 两条车道 | 仍在：`系统自动 → payload 已被 offline 拉走，正在跑回归` / `需要你 → 认领这一簇，填写修复版本` |
+  | 两条车道 | 仍在：`系统自动 → payload 已被 offline 拉走，正在跑回归` / `需要你 → 认领这一簇，填写修复版本`（⚠️ **本行是批 34 当刻的读数**；「需要你」那半段已由批 36 改写，见 §三十一） |
 
 🔴 **本批自己制造的一处缺陷（写模板时当场发现并改掉）**：第一版在 HTML 模板里写了 Markdown 语法的
 `**不等你点**` —— **在 `.vue` 模板里它不是加粗，会原样渲染成星号**。这正是「我在写文档的位置写代码」。
@@ -2193,3 +2193,300 @@ CSS：`.op-hint em.warn`（`font-style: normal` + `var(--error)`，红色，因�
 ⚠️ **已知代价（问询时已预告）**：现在**两条车道的「需要你」与按钮后果句说的是同一件事**（重复）。
 用户选了「只改文案」，故此重复**是接受的代价**，不是疏漏。若日后嫌啰嗦，应先删车道那句、保留按钮这句
 （离动作更近），而不是反过来。
+
+## 三十、批 35-B（2026-09-20）：online 撤除人工处置写面（需求③）
+
+用户需求③原话：**「移除所有在线按钮操作，online 只展示，处置全自动」**。
+本批是它在代码上的落地；规格决策（准入判定与 claim 解耦）已在批 35-A 完成。
+
+### 35-B.1 改了什么
+
+**后端** —— 删 9 个人工处置端点：`clusters/{id}/claim`、`/ignore`、`/reopen`、
+`/needs-review-resolve`、`needs-review-batches/{id}/resolve`、`clusters/{id}/fixed-review`、
+`links/requeue-batch`、`links/{id}/invalidate`、`links/{id}/requeue`。
+`requeue.py` 只留 `requeue_counts`（重推**计数**仍被详情页「可愈性」读，属读面）、
+`claim.py` 只留系统侧写面（`_mark_pending_links` / `_apply_auto_fixed` / `_apply_verify_reopen`）。
+顺带清掉 4 个**因守卫链消失而零引用**的常量（`REQUEUE_DEBOUNCE_MINUTES` /
+`REQUEUE_ALLOWED_CLUSTER` / `CAP_GAP_REASON` / `K_RANGE`）—— 留着会被后人读成「防抖 5 分钟
+这条规则还在」，而它已无代码承载。
+
+**前端** —— `api/backflow.ts` 只留 3 个读函数；详情页删操作区 / 认领表单 / `runAction` 及
+11 个动作函数 / 失效+重推行内按钮，连带删除已无使用者的 CSS 规则
+（`.ops` / `.op` / `.op-hint` / `.claim-form` / `.w-240|200|80` / `input,.sel` / `.ok-text`）。
+
+**提交** = `e4070c5`（15 files, +188 / −2298）。
+
+### 35-B.2 验证（判据分两侧，互不代替）
+
+| 层 | 判据 | 读数 |
+|---|---|---|
+| 后端单测 | 9 端点全 404，**并带对照组** | 9/9 = 404；`GET /overview` = **401**（路由在、被鉴权拦下） |
+| 后端全套 | pytest | 476 passed |
+| 前端 | vitest / build（含 `vue-tsc --noEmit`） | 217 passed / 16 files；build 通过 |
+| **真机** | 容器内打 9 端点（证明**重启生效**，不是进程跑旧码） | 9/9 = 404；对照 `/overview` = **401** |
+| **真机** | 前端产物真的换新 | 容器内 `assets/` 哈希 == 宿主 `dist`（`index-D54AjMBy.js`） |
+| **真机** | 新标签页读 DOM | 按钮仅 `退出 / ←错误闭环 / 刷新`；`.panel.ops` 计数 **0**；console 零 error |
+
+**对照组不是装饰**：只断言 404 的话，把整个 backflow 路由摘掉也会全绿 —— 401 与 404 的差别
+才是本用例的判别力所在（与 `test_backflow.py::test_backflow_write_face_is_gone_but_read_face_survives`
+同一判据，两侧各钉一半）。
+
+### 35-B.3 🔴 本批**暴露**的缺口（已登记，**未修**）：`online_content_gap` 的驳回没有自动出口
+
+> ⚠️ **这不是本批制造的缺陷，是本批把遮着它的人工按钮拿掉后露出来的洞**。归因必须说准：
+> 若该缺口成立，它在 35-B 之前就存在，只是当时「重推」按钮是唯一出口。
+
+**观测 A（可复跑）** —— `open` / `claim` 簇中**无任何在用 link** 的共 9 条，其中 **8 条挂
+`invalidated`**，按原因分：`online_content_gap` **6** 条、`offline_cap_gap` **2** 条
+（另 1 条 `#3839` 是无 link 的 claim 簇，属另一回事）。
+
+```bash
+# 复跑（在 online 仓根；容器内跑，避免宿主端口/口令问题）
+docker compose exec -T backend python - <<'PY'
+import asyncio
+from sqlalchemy import text
+from app.core.config import Settings
+from app.core.db import create_engine
+async def main():
+    eng = create_engine(Settings())
+    async with eng.connect() as c:
+        r = await c.execute(text("""
+            SELECT c.id, c.status, l.offline_status, l.invalidate_reason, l.assembled_ts
+            FROM error_cluster c LEFT JOIN error_case_link l ON l.cluster_id = c.id
+            WHERE c.status IN ('open','claim') ORDER BY c.id"""))
+        for x in r.fetchall(): print(x)
+    await eng.dispose()
+asyncio.run(main())
+PY
+```
+
+**观测 B（两侧代码穷尽 grep）**：
+
+| 驳回原因 | 自动出口 | 证据 |
+|---|---|---|
+| `offline_cap_gap`（2 条） | ✅ 有 | offline 仓 `backend/app/runner/cap_gap_probe.py`：每小时本地重跑自检 + 映射补齐 → 单次 `ack active`（走契约 R2 例外） |
+| `online_content_gap`（6 条） | ❌ **无** | ① online worker 6 个 job（`judge_scan` / `cluster_merge` / `assemble` / `claim_ttl` / `rejudge` / `rollup`）**没有任何一个**复活 invalidated link；② `ack.py` 的 R2 例外**只认** `offline_cap_gap`（`ack.py:37`）；③ `assemble_job.py:5-6` docstring 明写 `invalidated 仍 pending 占位 → 不重组装`；④ 其中 4 条是 `claim` 态、正被 `rejudge_job` 每 60s 扫到，**扫了也没救活**（实测滞留 4~6 天） |
+
+**⚠️ 未取证的部分（不许当成已排除）**：以上是**代码面**穷尽，不是**契约面**穷尽。契约文档里是否
+另有一条出口（例如快照 R-18 补齐后的重扫）**我没有查到，也没排除**。
+
+**风险与「假死项」防范**：若缺口成立，生产上该簇会**静默卡死**——`online_content_gap` 的 link
+既不会被自动组装替代，也不会被任何 job 复活，而且**页面上看不出来**（不在 `result_overdue` /
+`result_gap_suspected` 的判据里）。本条的登记就是为了不让它变成假死项：**复核命令已附在上面，
+任何一次真机巡检都能复跑**。
+
+**为什么登记而不当批内待办**（用户拍板 A）：补出口要定的是**新的自动规则** —— 重推几次？多久
+一次？永久坏载荷要不要设上限？**这是产品规则，不是代码缺陷**；代码严格按契约执行，缺的是契约
+本身没规定「谁来救 `online_content_gap`」。且当前 6 条是测试数据，不影响 35-B 的验收结论。
+
+### 35-B.4 一并记：本批**遗留的过期文案**（由 #32 顺手修）
+
+35-B 删了动作，但**仍在教用户做该动作**的文字留了下来 —— 比「少个功能」更糟，因为它是**承诺**：
+
+- 列表页 操作列 tooltip：`点它进这一簇的详情，在那里认领 / 复核`
+- 列表页「现在轮谁」列：`等你认领`
+
+两条都在 #32 要改的同一处（该列与操作列），故并入 #32 处理，不单独开批。
+
+✅ **2026-09-20 已由批 36 处理完毕**（见 §三十一）。⚠️ 处理时发现本批的两条遗留**不是全部**：
+`backflowLabels.ts` 的 `taskState()` 里还藏着**三条**同类文案（claim 卡死 / needs_review / 详情页
+「需要你」车道），它们的消费者不在列表页，故 35-B.4 当时没搜到 —— 记法教训：
+**「遗留文案」的站点全集要按「话术概念」搜、不能按「本批改过的那个组件」搜**。
+
+## 三十一、批 36（2026-09-20）：任务 #32 收口 —— 删「现在轮谁」列 + 订正撤除动作的文案
+
+对应任务清单 **#32**（需求①：删列表页「现在轮谁」列）。本批 = 该任务的**后半**（前半的删列已在
+35-B 后落盘），再加上 35-B.4 挂过来的**过期文案**——查着查着发现遗留不是 2 处而是 **9 处**。
+
+### 36.1 改了什么
+
+**A. 需求①本体**（`BackflowView.vue` / `.spec.ts`）
+- 删 `<th>现在轮谁</th>` + 行内 `<td>.wheel`：批 33 已加【操作】列作显式入口，两列说的是同一件事。
+- `nth-child` 列宽**整体左移一列**（状态 80 / agent·接口 16% / 次数 56 / 修复版本 96 /
+  offline 态 116 / 操作 96）。⚠️ 漏改的症状是列宽错位 —— **不报错、不红测**。
+- `taskState()` 的 `short` 字段**一并删除**：它的唯一消费者就是那一列，留着会读成「功能在、只是没数据」。
+
+**B. 文案订正 —— 9 个站点，逐个**
+
+| # | 站点 | 原文（误导） | 新文 | 为什么 |
+|---|---|---|---|---|
+| 1 | `BackflowView.vue` 操作列 tooltip | `点它进这一簇的详情，在那里认领 / 复核` | `点它进这一簇的详情` | 认领/复核端点已撤除 |
+| 2 | `taskState` `open` → human | `认领这一簇，填写修复版本` | `去修这一簇的 bug（在代码里改）—— 回归连续通过 K 次，系统自动收口` | 同上；动作从「在页面上点」改成「在代码里修」 |
+| 3 | `taskState` `claim` 卡死 → human | `重推 payload，或重开这一簇` | failed：`去修这一簇的 bug（在代码里改）`／invalidated：`推送被驳回，系统不会自动重试 —— 需要人工介入（online 侧已无处置入口）` | 两个动作都在 35-B 删掉了；且**不替系统编排日程**（见 36.4） |
+| 4 | `taskState` `needs_review` → human | `复核并决定这一簇怎么处置` | `需要人工判定（online 侧已无处置入口）` | `needs_review_resolve` 已撤除 |
+| 5 | `BACKFLOW_INTRO`（列表页页头） | `点进去认领 → 修复 → 由 offline 侧回归验证` | `点进去看它卡在哪 —— 本页只读，修 bug 在代码里做，再由 offline 侧回归验证` | 页面头一句就在教一个不存在的动作 |
+| 6 | `CLUSTER_INTRO`（详情页页头） | `上面是它的现状与可执行动作` | `上面是它的现状（本页只读）` | 本页已无任何处置按钮 |
+| 7 | `TERM.fixVersion`（表头小字） | `修复版本号，认领时填写` | `修复版本号。早期认领时填写` | 现在没人能填 |
+| 8 | `WATCH_OPTIONS.invalidated` | `已驳回（重推位）` | `已驳回（推送已停）` | 没有「重推位」这个东西了 |
+| 9 | `INVALIDATE_REASON_NOTE.online_content_gap` | `现场已修正，待 admin 重推` | `现场需人工修正；修好后 online 侧不会自动重推` | 原句让人等一个不会来的重推（见 35-B.3 的缺口登记） |
+
+### 36.2 验证
+
+| 项 | 读数 | 怎么取的 |
+|---|---|---|
+| 前端单测 | **218 passed / 16 files** | `npx vitest run`（基线 218；本轮改断言、净增 1 条护栏） |
+| 构建 | 通过（含 `vue-tsc --noEmit`） | `npm run build` |
+| 部署 | 容器 `index-BgBeEtd1.js` == 宿主 `dist` | `docker compose build frontend && up -d --force-recreate` |
+| 真机 · 列表页 | 表头 **7 列无「现在轮谁」**；`td .wheel` = **0**；tooltip = `点它进这一簇的详情`；3 行 `去处理 →`（`need=true`） | **新开标签页**读 DOM（`index-BgBeEtd1.js`） |
+| 真机 · `open`+active（#3872） | 系统：`payload 已被 offline 拉走，正在跑回归`／你：`去修这一簇的 bug（在代码里改）—— 回归连续通过 2 次，系统自动收口` `[need]` | 同上 |
+| 真机 · `open`+invalidated（#3866） | 系统：`推送已暂停`／你：`推送被驳回，系统不会自动重试 —— 需要人工介入（online 侧已无处置入口）` `[need]` | 同上 |
+| 真机 · `claim`+invalidated（#3858） | 同上两条（claim 分支） | 同上 |
+| 真机 · `fixed`（#3861） | `无需操作`，不亮 | 同上 |
+
+### 36.3 🔴 本批订正了一处**批 35-A 自己造成的假话**
+
+`taskState` 的 `open` 分支里原有一句 auto 文案：
+
+> `回归已通过——但本簇没有认领记录，系统不会自动收口`
+
+它描述的是 `_apply_auto_fixed` 准入还是 `claim` 时的行为。**批 35-A 把准入改成了 `open`**
+（`claim.py:65`，调用点 `verify.py:425`）⇒ open 簇 K 满**会**自动收口，这句话变成假话。
+本批一并订正为 `回归已通过一次（需连续通过 K 次才自动收口）`，并把旧断言一起改写
+（`backflowLabels.spec.ts` 里那条还写着「明确『系统不会自动收口』」）。
+
+⚠️ **为什么会漏**：35-A 改后端准入时，前端的对应文案没有任何判据会红 ——
+**后端谓词变更不会让前端文案测试失败**。这类「改了一侧、另一侧的话变假」目前只能靠人回读。
+
+### 36.4 判据复用：human 车道**不替系统编排日程**
+
+站点 #3 的一轮修复里，`claim + failed` 我第一版写成「系统会重新组装再跑一次回归」——
+**在 claim 态不成立**：`assemble_job` 只扫 `status='open'`，claim 簇要先等 TTL 回退
+（`claim_ttl_job` 谓词 `claim_due_ts < now`）才会被重组装。改为只写「你要做什么」。
+沿用批 30 已在 claim 分支立下的那条判据：**K 序列只要断了（失败 / 被驳回）就必须转人工**，
+且 auto 与 human 两条车道**不得互相矛盾**（一处说「推送已停」、另一处说「等系统自动收口」=
+让用户等一个不会来的结果）。
+
+### 36.5 新增护栏：文案不得提及已撤除的动作
+
+`backflowLabels.spec.ts` 加了一条**跨全部分支**的用例：遍历 11 个状态组合，断言
+`human` 不含 `认领 / 重推 / 重开 / 复核`。判别性：把任一分支改回旧文案即红。
+⚠️ 它只覆盖 `taskState()` 的 `human` —— 表头小字、页头 intro（站点 5–9）**在它的覆盖面之外**，
+那 5 处是本轮真机复看时才发现的。**护栏的覆盖面要跟站点全集一起报**，别当成「已全面覆盖」。
+
+### 36.6 登记：三处**本批未改**的同类疑点（不做，或需用户拍板）
+
+1. `OFFLINE_STATUS_TEXT.invalidated` 长句里有「offline 能力补齐/修正现场后**可重推**」。
+   该串是 **detail §9.3 的逐字契约文本**，改它等于改契约 ⇒ **不夹带**，留待与契约同步时一起定。
+2. `REVIEW_REASON_TEXT` 三条含「单点处置 / 批量处置」——指向已撤除的 resolve 端点；
+   但 `needs_review` 现数据下基本不可达，且改动收益低 ⇒ 挂账，未动。
+3. **6 条遗留 `claim` 簇的自动收口会晚 ~8 天**：批 35-A 把收口准入改成 `open` 后，停在 `claim`
+   态的簇 K 满**不会**收口，要等 TTL 回退（实测 `claim_due_ts` = **2026-09-27 ~ 09-29**，
+   `claimed_by=181`，6 条全部非 NULL ⇒ 回退路径存在、只是没到点）。**这是 35-A 的真实副作用**，
+   不是本批引入的；判**不做**（数据是测试数据、且无人工路径可走），但要记下来。
+
+---
+
+## 三十七、批 37（2026-09-20）：自动重推出口 + 上限配置化
+
+**需求来源**：用户提「online 侧应保留一个【重新推送】按钮，这样就不会出现 offline 拒绝以后要人工介入的情况」。
+我给了三个选项，用户选 **A：不要按钮，要纯自动重推**；追加确认「次数可配置化」（我赞成）与
+「实现位置 = 内联 `assemble_job`」（选 A）。
+
+**这一批同时推翻了我自己上一批的结论**（§36.6 的反面）：批 35-B 把 6 条 `online_content_gap`
+登记成「无自动出口、判不做」，理由是「要定的是新的产品规则」。**该前提是假的** —— 规则早就写在
+**offline 契约**里（§5.5 可愈性：`content_gap`/`empty_words` requeue 可愈、`version_drift` 不愈；
+§6.5 重处理谓词按 `assembled_ts` 刷新判「内容已刷新」；§7.4 防抖与上限）。我当时**只读了 online
+一侧就签了判不做**。教训与 [[blocker-claim-also-rots]] 四续同型：**判不做也是关于现实的主张，同样要取证**，
+且假死项比假待办更危险（没人会再翻它）。
+
+### 37.1 实现（六个站点）
+
+| # | 站点 | 改动 |
+|---|---|---|
+| 1 | `backend/app/backflow/requeue.py` | 恢复 `requeue_guard_errors` 纯守卫（cap_gap 禁推 / 状态白名单 / verify pending / 防抖）；新增 `auto_requeue_stuck`；新键 `AUTO_REQUEUE_MAX_KEY` |
+| 2 | `backend/app/worker/assemble_job.py` | 内联 `_auto_requeue_phase`（每轮**先复位、再组装**）；**仍是 6 个 job**，未新增 |
+| 3 | `backend/app/core/seed.py` | `auto_requeue_max_default: 2` |
+| 4 | `frontend/src/backflowLabels.ts` | 新增 `invalidatedText()`（按**原因码 + 已重推次数**分叉）；`open`/`claim` 两分支接线 |
+| 5 | `frontend/src/configLabels.ts` + spec | 新键标签（`live: true`）；键集注释 13→14 |
+| 6 | `backend/app/worker/__init__.py` | 推翻「requeue 不在 worker」**半句**（「勿再加回本清单」半句仍成立） |
+
+**为什么内联而不是第 7 个 job**：先例 = `worker/__init__.py` 记「reentry 无独立 job、归并由
+cluster_job 内联（§7.5 拍板）」；且两者读写**同一批 link 的同一列**（`offline_status`），
+拆两个 job 会各自开事务、无意中竞争。
+
+**为什么复位时必须重填 `payload_json`**：这条路径能救的是「上游数据补齐后**重算**即可通过」的驳回，
+不是「重发旧载荷」。`assembled_ts=now` 是 offline 判定「内容已刷新」的**唯一信号**（§6.5）。
+
+### 37.2 真机验收（`obs-worker` + `obs-backend`，dev.obs）
+
+| 观察 | 结果 |
+|---|---|
+| 复位 | 6 条 `online_content_gap` 全部 `invalidated→assembled`；审计 `自动重推 #N/上限 2（内容以现 cluster+现词表重算）` |
+| 计数口径 | link 2239 记 **`#2`**（它历史已有 1 条 requeue）⇒ 不是从 1 起算，历史计数真的生效 |
+| 对照组 | 2 条 `offline_cap_gap` **原样不动**（不在候选里，且守卫二次兜底） |
+| **真实效果** | 复位后 offline 重拉：**2 条被收下**（簇 3842/3845 → `assembled`、reason 清空），4 条又被驳回 ⇒ **自动重推不是空转**，用户要的「不用人工介入」成立 |
+| 配置落库 | 起先**没有落库**（只有 13 个旧键，靠代码兜底常量 2 生效 ⇒ 管理页列不出来）⇒ 经用户拍板**跑一次 seed** 补上，16:28 复核 **14 个键**、`get_global_int` 读出 `2`（用诱饵默认值 999 反证不是走兜底） |
+
+### 37.3 未验收项（不许被整批的绿盖住）
+
+1. **「达上限停手」真机未验**（单测 `test_at_cap_skips_without_cas_or_audit` 覆盖）——
+   需等第二轮（防抖 5min 后）才有 `n>=cap` 的现场。其中 2239 已用满（`#2/上限 2`），
+   第二轮它**应当被跳过**。**判据**：审计行不再增长 + 日志 `自动重推已达上限，转人工`（debug 级）。
+2. **前端 `online_content_gap` 三态文案真机不可见** —— 6 条数据已复位，页面上只剩 `offline_cap_gap`
+   分支。第二轮把它们打回 invalidated 且 `requeue_count=2` 后，才能看「已自动重推 2 次仍被驳回 —— 系统已停手」。
+
+### 37.4 判据与自伤（三条，都是本轮实测）
+
+1. **`not.toContain('会自动重推')` 判不了「不会自动重推」** —— 后者是前者的**超串**，那样写恒红。
+   否定式断言必须**连否定词一起写死**（`toContain('不会自动重推')`）。
+2. **注释里写「每次现读配置、不缓存」是假话** —— `get_global_int` 自带 **60s 进程内缓存**。
+   已订正为「每轮现读 + 60s 缓存；经 admin 写入即时生效、直接改库最迟 60s」。
+3. **`configLabels.spec.ts` 的「键集全等」断言比的是它自己写死的两张表**，不是真去读 `seed.py`
+   ⇒ 后端加键而前端没加**不会红**。已在该断言上方写明它证的是什么、证不了什么。
+
+### 37.5 本轮新增的机制坑（已写进 `CLAUDE.md` 第一节）
+
+**`obs-worker` 是独立容器**，不是 backend 里的一段。我只重启了 `backend` ⇒ 改动零生效、白跑一轮取证。
+判据：`docker compose logs backend` 里**只有 HTTP 访问日志、一条 job 日志都没有** —— 那正是
+「worker 不在这个容器里」。CLAUDE.md 那张表原先只列了前端/后端，现补为**三个容器**。
+
+---
+
+## 三十八、批 38（2026-09-20）：用户两问 —— 「需要你」行 + 状态枚举
+
+**用户原话**：「详情页面上的这一块，是不是可以删除掉了？目前不需要用户做任何操作。
+还有，online 侧的『未处置』等状态，是否也可以去掉或调整？」
+
+### 38.1 「需要你」行：**条件渲染，不整块删**（用户选）
+
+用户主张删掉整个两车道区块。我给的反证：`open` 态那一行写的是「去修这一簇的 bug（在代码里改）」——
+**这是页面上唯一一处说明「得有人去改代码」的地方**。簇变 `fixed` 只有一条路（offline 回推回归连续
+通过 K 次），而回归过不过取决于那个 bug 有没有被改。删了它，页面只剩「系统会自动组装 / 等 offline
+拉取」⇒ 正是批 30 的病根（用户等一个不会来的结果）。
+
+用户的观察有一半是对的：`fixed`/`inactive`/等系统收口这些态，那行只写「无需操作」= 纯噪音。
+⇒ 处置 = `v-if="lanes?.mine"`（`BackflowClusterDetailView.vue:187-200`）。
+
+| 真机读数 | 结果 |
+|---|---|
+| 簇 3868（`mine=true`） | 两行：「已自动重推 2 次仍被驳回 —— 系统已停手」/「需要人工介入：查 offline 驳回的是哪一处内容缺口」 |
+| 簇 3840（`fixed`，`mine=false`） | **只 1 行**「已修复收口，回归序列结束」，页面无「需要你」 |
+
+### 38.2 online 侧状态：**5 个里 3 个是死的**（全仓 grep + 库内实测）
+
+先修正了我自己第一版口径：三个死值**性质不同**，不能一起处理。
+
+| 状态 | 写点（2026-09-20 全 `app/` grep） | 库内 | 处置 |
+|---|---|---|---|
+| `open` | `cluster.py:127` 新建 + `claim_ttl_job.py:69` TTL 回退 | 7 | 下拉保留 |
+| `fixed` | `claim.py:66` 自动收口 | 10 | 下拉保留 |
+| `claim` | **0**（认领端点随批 35-B 撤除） | **6**（真数据） | **删出下拉**，但徽标保留 |
+| `inactive` | **0**（全仓只出现在 `models/error_flow.py:44` 的枚举定义） | 0 | 删出下拉 |
+| `needs_review` | **0**（批 35-A 明确停用，见 `verify.py:337-347` 注释） | 0 | 删出下拉 |
+
+⚠️ 阳性对照：同一谓词 `fixed` 命中了 `claim.py:66` ⇒ 「0 写点」不是我搜错词导致的假阴性。
+
+**用户选「三个都删」**。已确认的代价：那 6 条 `claim` 簇**暂时只能不加状态筛选地翻列表**
+（`claim_ttl_job` 退回路径是活的，`claim_due_ts` 实测 2026-09-27~29，一周内自愈）。
+
+⚠️ **后端枚举 / DDL / API 的 `status` Literal 一律不动** —— 动它就是改契约，且历史数据会出现渲染不了的裸值。
+`CLUSTER_STATUS_LABEL` 也**不动**：徽标要照实渲染那 6 条历史簇（真机确认列表里 `复核中` 仍显示）。
+
+真机读数：状态下拉 = `全部状态 | 未处置 | 已修复`；徽标集合含 `复核中` —— 两个不变量同时成立。
+
+### 38.3 判据
+
+`backflowLabels.spec.ts` 里那条断言**反向重写**：原为「下拉项 == 标签表键集（不漏状态）」，
+前提是「枚举里的值都能筛」。该前提在批 35-B/35-A 之后已不成立 ⇒ 现钉相反的不变量：
+**下拉只列活值（`['fixed','open']`）**，且**三个死值的标签必须仍在**（徽标覆盖不缩水）。
+判别性：有人把死值加回下拉、或把标签表裁成只剩活值，即红。

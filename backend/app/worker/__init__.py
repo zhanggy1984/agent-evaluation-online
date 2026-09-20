@@ -2,7 +2,11 @@
 周期常量见 main.py:34-45；detail §1.3 分布式单飞 CAS 锁；§4.3/§6/§7）。
 
 三处易误列，勿再加回本清单：
-- requeue 不在 worker —— 它由 admin/offline 请求驱动（app/backflow/requeue.py），不设周期；
+- ~~requeue 不在 worker~~ ⚠️ **2026-09-20 批 37 推翻**：人工 requeue **端点**已随批 35-B 撤除，
+  但同一能力改由 **assemble_job 内联的自动重推阶段**周期驱动
+  （`requeue.py::auto_requeue_stuck`，用户拍板「出口要自动、不要按钮」）。
+  **本清单仍是 6 个 job**——没有新增第 7 个，故「勿再加回本清单」这半句仍成立；
+  但「requeue 不在 worker」这半句**已成假话**，别再照它推断「失效 link 无人复活」。
 - reentry 无独立 job —— 同键再现的复发归并由 cluster_job 内联（§7.5；T-3.5/2026-09-09 拍板，
   不落 reentry_job.py，独立 job 会与 cluster_job 双消费冲突）；
 - **回查判定（原 recheck_job）已不是拉取型 job** —— v1.23 第 3 刀起 offline 主动推结果，判定

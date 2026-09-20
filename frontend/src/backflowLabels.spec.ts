@@ -8,7 +8,7 @@ import {
   STATUS_OPTIONS, VERIFY_STATUS_TEXT, WATCH_OPTIONS, conversionActionLabel,
   conversionDetailText, reentryCaption, taskState,
 } from './backflowLabels'
-import type { BackflowCluster } from './api/types'
+import type { BackflowCluster, BackflowLink } from './api/types'
 
 // 后端写面的真实值域（自 backend/ 源码 grep 核对，2026-09-10）
 const BACKEND_WRITTEN_ACTIONS = [
@@ -60,9 +60,20 @@ describe('CLUSTER_STATUS_LABEL', () => {
     }
   })
 
-  it('与 STATUS_OPTIONS 下拉项一致（列表筛选不漏状态）', () => {
+  // ⚠️ 批 38 本条**反向重写**：原断言是「下拉项 == 标签表键集（不漏状态）」，
+  // 前提是「枚举里的值都能筛」。该前提在批 35-B/35-A 之后**已不成立** ——
+  // claim/inactive/needs_review 三个值都没有写点了，选中必然空结果。
+  // 现在钉的是相反的不变量：**下拉只列活值，且徽标仍照实覆盖全部 5 值**。
+  // 判别性：有人把死值加回下拉（或把标签表裁成只剩活值）即红。
+  it('下拉只列活值；徽标仍覆盖全部枚举值（两者刻意不等）', () => {
     const optValues = STATUS_OPTIONS.map(o => o.value).filter(Boolean).sort()
-    expect(optValues).toEqual(Object.keys(CLUSTER_STATUS_LABEL).sort())
+    expect(optValues).toEqual(['fixed', 'open'])
+    // 三个死值必须**不在**下拉里
+    for (const dead of ['claim', 'inactive', 'needs_review']) {
+      expect(optValues, dead).not.toContain(dead)
+      // 但标签必须还在 —— 库内 6 条历史 claim 簇要照实渲染徽标
+      expect(CLUSTER_STATUS_LABEL[dead], dead).toBeTruthy()
+    }
   })
 })
 
@@ -192,10 +203,10 @@ describe('reentryCaption', () => {
 // 根因 = 两条互不等待的车道并行，而页面上一个字都没写。本组用例穷尽 5 个簇状态 ×
 // 关键 link 组合，并把「漏配新枚举」做成机械可检的（最后一条元测试）。
 describe('taskState（批 30：两条车道）', () => {
-  const link = (off: string, ver: string) => ({
+  const link = (off: string, ver: string, over: Partial<BackflowLink> = {}) => ({
     link_id: 1, payload_id: 'p', case_id: 'c', case_type: 'regression_error',
     offline_status: off, verify_status: ver, assembled_ts: null,
-    invalidate_reason: null, requeue_count: 0,
+    invalidate_reason: null, requeue_count: 0, ...over,
   })
   const cl = (over: Partial<BackflowCluster> = {}): BackflowCluster =>
     ({
@@ -206,36 +217,88 @@ describe('taskState（批 30：两条车道）', () => {
       claim_k: 2, needs_review_reason: null, link: null, ...over,
     }) as BackflowCluster
 
-  it('open 无 link：等系统自动组装，同时也要你认领（两条车道并存）', () => {
+  // 批 35-B：以下断言原为「列表页短句 `short`」，该字段随「现在轮谁」列一并删除
+  // ⇒ 判据改挂到 `human` / `auto` 上，判别力不变（同一个 switch 产出）。
+  it('open 无 link：等系统自动组装，同时也要你修（两条车道并存）', () => {
     const r = taskState(cl())
-    expect(r.short).toBe('等你认领')
+    expect(r.human).toContain('代码里改')
     expect(r.mine).toBe(true)
     expect(r.auto).toContain('60 秒')   // 组装是 worker 周期扫描，不是实时
   })
 
-  it('open + offline 已拉走：系统侧说进程，你侧仍要认领（**并行**，不是二选一）', () => {
+  it('open + offline 已拉走：系统侧说进程，你侧仍要修（**并行**，不是二选一）', () => {
     const r = taskState(cl({ link: link('active', 'pending') }))
     expect(r.auto).toContain('offline 拉走')
     expect(r.mine).toBe(true)           // ⚠️ 关键：系统在跑 ≠ 你没事干
-    expect(r.short).toBe('等你认领')
+    expect(r.human).toContain('代码里改')
   })
 
   it('open + payload 被驳回：说清是驳回、不是失败', () => {
     expect(taskState(cl({ link: link('invalidated', 'pending') })).auto).toContain('驳回')
   })
 
-  it('open + 回归已 passed：明确「没有认领记录 ⇒ 系统不会自动收口」（用户报的那一幕）', () => {
-    // 成因：offline 把**没人认领**的簇跑绿了，但 _apply_auto_fixed 要求 status='claim'
-    // （claim.py:267 `.where(status == "claim")`）⇒ 它停在 open 不收口。
-    // 当前库内尚不可达（open 的 link 全 pending），但因果上必然可达 ⇒ 必须能解释。
-    const r = taskState(cl({ link: link('active', 'passed') }))
-    expect(r.auto).toContain('没有认领记录')
-    expect(r.short).toBe('等你认领')
+  it('open + payload 被驳回：human **不得**承诺自动收口（推送已停，回归不会发生）', () => {
+    // 与 claim 分支同一条判据（K 序列断了 ⇒ 必须转人工）。
+    // 判别性：`open` 分支若照抄通用文案「…系统自动收口」，本条即红 —— 那正是
+    // 批 30 在 claim 分支犯过的错（auto 说暂停、human 说等系统，用户等一个不会来的结果）。
+    const r = taskState(cl({ link: link('invalidated', 'pending') }))
+    expect(r.human).not.toContain('自动收口')
+    expect(r.human).toContain('人工介入')
+  })
+
+  // 批 37：后端内联自动重推（requeue.py::auto_requeue_stuck）⇒ invalidated 的文案
+  // 必须**按原因码 + 已重推次数**分叉。批 36 那句「系统不会自动重试」本次当场变假。
+  // ⚠️ 这一族测试测的是「我写的串还在不在」，不是「这句话对后端还成不成立」——
+  // 后端改谓词不会让它们变红，只能靠改后端的人回读（§三十六的教训）。
+  it('invalidated + online_content_gap 且未达上限：说会自动重推（不承诺一定成功）', () => {
+    const r = taskState(cl({
+      link: link('invalidated', 'pending',
+        { invalidate_reason: 'online_content_gap', requeue_count: 0 }),
+    }))
+    expect(r.auto).toContain('会自动重推')
+    expect(r.auto).toContain('0 次')
+    expect(r.auto).not.toContain('不会')   // 旧假话的判别性断言
+  })
+
+  it('invalidated + 已达上限：说清系统已停手、转人工', () => {
+    const r = taskState(cl({
+      link: link('invalidated', 'pending',
+        { invalidate_reason: 'online_content_gap', requeue_count: 2 }),
+    }))
+    expect(r.auto).toContain('已停手')
+    expect(r.auto).toContain('2 次')
+    expect(r.human).toContain('人工介入')
+  })
+
+  it('invalidated + 非内容缺口原因：不得顺着上一支说会重推（它不在候选里）', () => {
+    for (const reason of ['offline_cap_gap', 'manual_invalidate']) {
+      const r = taskState(cl({
+        link: link('invalidated', 'pending', { invalidate_reason: reason }),
+      }))
+      // ⚠️ 不能写 not.toContain('会自动重推') —— '不会自动重推' 是它的**超串**，
+      // 那样写恒红（本次实测踩到）；否定式断言必须连否定词一起写死。
+      expect(r.auto, reason).toContain('不会自动重推')
+    }
+  })
+
+  it('claim + online_content_gap 驳回：与 open 分支同一套文案（抽一处不漂移）', () => {
+    const lk = link('invalidated', 'pending', { invalidate_reason: 'online_content_gap' })
+    expect(taskState(cl({ status: 'claim', link: lk })).auto)
+      .toBe(taskState(cl({ link: lk })).auto)
+  })
+
+  it('open + 回归已 passed：说清还需连续 K 次（批 35-A 后 K 满**会**自动收口）', () => {
+    // ⚠️ 本条被订正过：旧断言是「明确『没有认领记录 ⇒ 系统不会自动收口』」，
+    // 描述的是 `_apply_auto_fixed` 准入还是 `claim` 时的行为。批 35-A 把准入改成
+    // `open`（claim.py:65）后，open 簇 K 满**会**收口 ⇒ 旧文案已成假话，断言随之改写。
+    const r = taskState(cl({ link: link('active', 'passed'), claim_k: 3 }))
+    expect(r.auto).toContain('3 次')
+    expect(r.auto).toContain('自动收口')
   })
 
   it('claim + pending：系统在等回归，你无需操作（mine=false）', () => {
     const r = taskState(cl({ status: 'claim', link: link('active', 'pending'), claim_k: 3 }))
-    expect(r.short).toBe('等 offline 回归')
+    expect(r.human).toBe('无需操作，等系统收口')
     expect(r.mine).toBe(false)
     expect(r.auto).toContain('3 次')    // K 取 cluster.claim_k，不是写死的 2
   })
@@ -247,16 +310,17 @@ describe('taskState（批 30：两条车道）', () => {
     expect(r.mine).toBe(false)
   })
 
-  it('claim + failed：转人工（mine=true），且短句不写成「等 offline」', () => {
+  it('claim + failed：转人工（mine=true），且 human 指向代码、不是「等 offline」', () => {
     const r = taskState(cl({ status: 'claim', link: link('active', 'failed') }))
     expect(r.mine).toBe(true)
-    expect(r.short).toContain('处置')
+    expect(r.human).toContain('代码里改')
+    expect(r.human).not.toContain('等系统')
   })
 
-  it('needs_review：等你复核', () => {
+  it('needs_review：转人工，但不指向已撤除的「复核」动作', () => {
     const r = taskState(cl({ status: 'needs_review' }))
     expect(r.mine).toBe(true)
-    expect(r.short).toBe('等你复核')
+    expect(r.human).toContain('人工判定')
   })
 
   it('fixed / inactive：已结束，均无需你操作', () => {
@@ -265,12 +329,10 @@ describe('taskState（批 30：两条车道）', () => {
       expect(r.mine).toBe(false)
       expect(r.human).toBe('无需操作')
     }
-    expect(taskState(cl({ status: 'fixed' })).short).toBe('已收口')
   })
 
-  it('未知 status：兜底中性短句 + 详情页带出原值（不裸渲染、不静默吞）', () => {
+  it('未知 status：auto 带出原值（不裸渲染、不静默吞）', () => {
     const r = taskState(cl({ status: 'brand_new' }))
-    expect(r.short).toBe('状态未识别')
     expect(r.auto).toContain('brand_new')
     expect(r.mine).toBe(false)
   })
@@ -284,7 +346,6 @@ describe('taskState（批 30：两条车道）', () => {
   it('claim + payload 被驳回：必须转人工（K 序列已断，等不到自动收口）', () => {
     const r = taskState(cl({ status: 'claim', link: link('invalidated', 'pending') }))
     expect(r.mine).toBe(true)
-    expect(r.short).toContain('处置')
     expect(r.human).not.toContain('无需操作')
     expect(r.auto).toContain('驳回')
   })
@@ -299,7 +360,28 @@ describe('taskState（批 30：两条车道）', () => {
 
   it('后端 cluster_status 全部取值都被 switch 显式覆盖（漏配即红）', () => {
     for (const s of Object.keys(CLUSTER_STATUS_LABEL)) {
-      expect(taskState(cl({ status: s })).short).not.toBe('状态未识别')
+      expect(taskState(cl({ status: s })).auto).not.toContain('未识别')
+    }
+  })
+
+  // ⚠️ 需求③的回归护栏：批 35-B 撤除了 online 侧**全部**人工处置写面
+  // （认领 / 重推 / 重开 / 复核 9 个端点）。文案若还提这些动作，就是在教用户
+  // 点一个不存在的按钮 —— 而这类假承诺**不会让任何测试变红**，只会在真机上把人卡住。
+  // 判别性：把任一分支的 human 改回「认领这一簇，填写修复版本」即红。
+  it('human 不得提及已撤除的页面动作（认领/重推/重开/复核）', () => {
+    const BANNED = ['认领', '重推', '重开', '复核']
+    const states = [
+      cl(), cl({ link: link('active', 'pending') }), cl({ link: link('invalidated', 'pending') }),
+      cl({ link: link('active', 'passed') }), cl({ link: link('active', 'failed') }),
+      cl({ status: 'claim', link: link('active', 'pending') }),
+      cl({ status: 'claim', link: link('active', 'failed') }),
+      cl({ status: 'claim', link: link('invalidated', 'pending') }),
+      cl({ status: 'needs_review' }), cl({ status: 'fixed' }), cl({ status: 'inactive' }),
+    ]
+    for (const c of states) {
+      for (const word of BANNED) {
+        expect(taskState(c).human, `${c.status}/${word}`).not.toContain(word)
+      }
     }
   })
 })

@@ -4,7 +4,8 @@
 //
 // 语义一律**回查后端读取点**确定，不凭键名猜（读取点全集 = `get_global_int` / `get_global_config`
 // 的调用方，2026-09-18 grep `backend/` 整仓）：
-//   8 个有读取点：claim_ttl_days / auto_fixed_k_default / rollup_late_k_h / keyword_search_days /
+//   9 个有读取点：claim_ttl_days / auto_fixed_k_default / auto_requeue_max_default /
+//                 rollup_late_k_h / keyword_search_days /
 //                 trace_query_timeout_ms / metric_agg_cache_ttl_s / metric_agg_timeout_ms /
 //                 trace_judge_purge_days
 //   5 个零读取点：cluster_window_days / llm_call_observe_window_min / llm_call_observe_threshold /
@@ -25,6 +26,10 @@ export interface ConfigKeyInfo {
 export const CONFIG_KEY_INFO: Record<string, ConfigKeyInfo> = {
   claim_ttl_days: { desc: '认领后超期自动退回「未处置」的时限（天）', live: true },
   auto_fixed_k_default: { desc: '连续 N 次回归通过后自动置「已修复」（次，取值 1–2）', live: true },
+  auto_requeue_max_default: {
+    desc: '推送被 offline 驳回后最多自动重推几次，超过则转人工（次；批 37 新增）',
+    live: true,
+  },
   rollup_late_k_h: { desc: '整点汇总回填最近 N 个已完成小时（小时）', live: true },
   keyword_search_days: { desc: '关键词检索回溯天数（天）', live: true },
   trace_query_timeout_ms: { desc: '链路查询超时（毫秒）', live: true },

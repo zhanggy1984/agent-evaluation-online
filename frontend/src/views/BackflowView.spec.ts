@@ -315,7 +315,7 @@ describe('字段与边界', () => {
     })
     const t = w.text()
     expect(t).toContain('待 offline 拉取') // assembled
-    expect(t).toContain('已驳回（重推位）') // invalidated
+    expect(t).toContain('已驳回（推送已停）') // invalidated（批 36：原「重推位」指向已撤除的重推动作）
     expect(t).not.toContain('现行 link')   // 页脚那句误导已删
   })
 
@@ -363,27 +363,11 @@ describe('字段与边界', () => {
     expect(t).not.toContain('已失效')  // invalidated 不可达且为 0 ⇒ 不占位
   })
 
-  // 批 30：「现在轮谁」列。病根见 backflowLabels.taskState 注释。
-  // 判别性：若高亮不分状态恒真（或恒假），下面两条必有一条红。
-  it('现在轮谁列：短句随簇状态变，且只有需人动手的才高亮', async () => {
-    const w = await mountView({
-      items: [row({ cluster_id: 1, status: 'open' }), row({ cluster_id: 2, status: 'fixed' })],
-    })
-    const cells = w.findAll('td .wheel')
-    expect(cells).toHaveLength(2)
-    expect(cells[0].text()).toBe('等你认领')
-    expect(cells[0].classes()).toContain('need')      // 等你动手 ⇒ 高亮
-    expect(cells[1].text()).toBe('已收口')
-    expect(cells[1].classes()).not.toContain('need')  // 系统推进中/已结束 ⇒ 不高亮
-  })
-
-  it('系统已推给 offline 但没人认领时，仍然显示「等你认领」', async () => {
-    // 这正是用户报的那一幕：offline 那条线不等你，但**你这条线也没被替代**。
-    const w = await mountView({
-      items: [row({ status: 'open', link: mkLink(1, 'active') })],
-    })
-    const cell = w.find('td .wheel')
-    expect(cell.text()).toBe('等你认领')
-    expect(cell.classes()).toContain('need')
+  // 批 35-B（需求①）：删「现在轮谁」列（批 30 引入）。原两条用例随列删除 ——
+  // 「等你认领」在写面撤除后已是**假承诺**（online 侧没有认领这个动作了），不是回归。
+  it('「现在轮谁」列已删除：表头不含该列，行内无 .wheel', async () => {
+    const w = await mountView({ items: [row({ cluster_id: 1, status: 'open' })] })
+    expect(w.text()).not.toContain('现在轮谁')
+    expect(w.findAll('td .wheel')).toHaveLength(0)
   })
 })

@@ -284,10 +284,9 @@ function agentCounts(): BackflowByAgent[] {
         <thead>
           <tr>
             <th>状态</th>
-            <!-- 批 30：此前「这簇上系统在自动干什么、要不要我动手」全页零呈现 ——
-                 用户照出的实例是「我没点确认，offline 怎么已经跑过 run 了」。
-                 与「状态」相邻，因为它是状态的自然延伸（状态=在哪一步，本列=下一步谁动）。 -->
-            <th>现在轮谁<span class="th-sub">系统在自动跑哪一步、要不要你动手</span></th>
+            <!-- 批 35-B（需求①）：删「现在轮谁」列。批 33 已加【操作】列作显式入口，
+                 两列说的是同一件事；且 35-B 撤除写面后「要不要你动手」在 online 侧
+                 已无事可做，留着会把用户引向一个不存在的动作（假承诺）。 -->
             <th>agent / 接口</th>
             <th>错误</th>
             <th>次数<span class="th-sub">同类失败出现几次</span></th>
@@ -296,7 +295,7 @@ function agentCounts(): BackflowByAgent[] {
                  改前能选不能见，选完了页面上无处对照（与 L1/L2 同病）。 -->
             <th>offline 态<span class="th-sub">{{ TERM.offlineStatus }}</span></th>
             <!-- 批 33：本列是用户两次反馈后加的**显式入口**。成因见 toDetail 上方注释。 -->
-            <th>操作<span class="th-sub">点它进这一簇的详情，在那里认领 / 复核</span></th>
+            <th>操作<span class="th-sub">点它进这一簇的详情</span></th>
           </tr>
         </thead>
         <tbody>
@@ -304,9 +303,6 @@ function agentCounts(): BackflowByAgent[] {
             <td>
               <span class="status" :class="statusCls(row.status)">{{ statusLabel(row.status) }}</span>
               <span class="muted small" v-if="row.generation > 1">gen{{ row.generation }}</span>
-            </td>
-            <td>
-              <span class="wheel" :class="{ need: taskState(row).mine }">{{ taskState(row).short }}</span>
             </td>
             <td>
               <div>{{ agentDisplay(row.agent) }}</div>
@@ -487,7 +483,8 @@ function agentCounts(): BackflowByAgent[] {
 
 /* 批 33：行内**显式入口**。此前整行的可点击性只由 `cursor: pointer` 表达，
    肉眼不可见 ⇒ 用户找不到进簇详情的门（两次反馈）。本按钮是那扇门的可见形态。
-   `.need` 与「现在轮谁」列同色，把「这行该你动」和「点这里去动」连成一条视线。 */
+   ⚠️ 批 35-B：上游的「现在轮谁」列已删，`.need`（红字）现在**只**靠 `.go` 自己表达
+   「这一簇还等着人修」；原注释里「与列同色连成一条视线」的说法随之作废。 */
 .go {
   border: 1px solid var(--border);
   background: none;
@@ -516,15 +513,15 @@ table {
   table-layout: fixed;
 }
 
-/* 批 33：删「入参指纹 / 代表 trace / 首现·最新」三列、加「操作」列 ⇒ 编号整体前移，
-   此处**必须同步改**；漏改的症状是列宽错位（宽度还在，只是套到了别的列上），不会报错。 */
+/* ⚠️ 改列 = 改这张表。批 33（删 3 列 + 加「操作」）与批 35-B（删「现在轮谁」）都动过它，
+   每次都**必须同步改编号**；漏改的症状是列宽错位（宽度还在，只是套到了别的列上），
+   **不报错、不红测**，只能靠眼睛看出来。 */
 th:nth-child(1) { width: 80px; }    /* 状态 */
-th:nth-child(2) { width: 132px; }   /* 现在轮谁 */
-th:nth-child(3) { width: 16%; }     /* agent / 接口 */
-th:nth-child(5) { width: 56px; }    /* 次数 */
-th:nth-child(6) { width: 96px; }    /* 修复版本 */
-th:nth-child(7) { width: 116px; }   /* offline 态 */
-th:nth-child(8) { width: 96px; }    /* 操作 */
+th:nth-child(2) { width: 16%; }     /* agent / 接口 */
+th:nth-child(4) { width: 56px; }    /* 次数 */
+th:nth-child(5) { width: 96px; }    /* 修复版本 */
+th:nth-child(6) { width: 116px; }   /* offline 态 */
+th:nth-child(7) { width: 96px; }    /* 操作 */
 
 th, td {
   text-align: left;
@@ -580,23 +577,7 @@ tbody tr:hover {
 .st-inactive { background: #e8eaf0; color: #6b7280; }
 .st-needs_review, .st-invalidated { background: var(--hl-red); color: var(--error); }
 
-/* 「现在轮谁」（批 30）：与 .status 同形（同字号/同圆角），靠颜色区分「要不要你动手」——
-   只有 `mine` 为真才高亮；系统自动推进的簇保持中性，不与状态列抢视线。
-   高亮用红色系（同 st-needs_review）是刻意的：这一列的全部价值就是让你一眼找到「该我动手了」。 */
-.wheel {
-  font-size: 12px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  white-space: nowrap;
-  background: #e8eaf0;
-  color: #4b5563;
-}
-
-.wheel.need {
-  background: var(--hl-red);
-  color: var(--error);
-  font-weight: 600;
-}
+/* 批 35-B：`.wheel` / `.wheel.need` 随「现在轮谁」列一并删除 —— 模板已无使用者。 */
 
 .foot {
   display: flex;
