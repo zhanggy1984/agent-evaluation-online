@@ -1036,6 +1036,16 @@ TTL 一过又好了，属于最难查的一类。故 key 改为 `f"interfaces|{s
 **判不做也是关于现实的主张，同样要取证**；假死项比假待办更危险：**没有任何东西会再把它翻出来**。
 见 memory `blocker-claim-also-rots`（四续）。
 
+**✅ 批 23 另一项未取证同批结清（2026-09-20）：真实点击筛选后的请求参数。**
+原登记：「`dispatchEvent` 触发的那次**未产生网络请求**，**成因未查明**」。
+成因一步查明 —— **不是异常，是 `MetricFilterBar` 的设计**：`pickAgent()`（`:30-32`）只写
+`filter.agent = v` **不发请求**，查询由**单独的按钮**触发（`:72 @click="$emit('refresh')"`）。
+⇒ 正确取证动作 = **改 select + 点「刷新」**，两步。
+真机实测：`/interfaces` 选「合同校验」后点刷新 ⇒ 实际请求
+**`/api/v1/metrics/interfaces?agent=contract-check&window=7d`** —— 参数是**英文内部 key**，
+**中文名未污染查询参数**；且 `option.value` 实测为 `contract-check`（`text` 才是中文）。
+⇒ **P1-18 两项未取证至此全部结清。**
+
 ⚠️ **教训**：这条注释之所以危险，是因为**它论证得越严密，后人越不会重验它的前提**。见 memory `stale-rationale-outlives-its-data`。
 
 ### P1-13 为什么只改一半
