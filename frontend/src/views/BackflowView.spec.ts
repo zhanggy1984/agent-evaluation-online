@@ -39,7 +39,7 @@ function row(over: Partial<BackflowCluster> = {}): BackflowCluster {
     input_truncated: 0, generation: 1, count: 2, status: 'open',
     first_ts: '2026-09-01T00:00:00', latest_ts: '2026-09-10T00:00:00',
     fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
-    claim_k: 2, needs_review_reason: null, link: null, ...over,
+    claim_k: 2, seq: 0, needs_review_reason: null, link: null, ...over,
   }
 }
 
@@ -295,6 +295,17 @@ describe('字段与边界', () => {
     expect(gos[0].classes()).toContain('need')       // open 态 = 还没修完 ⇒ 红字
     expect(gos[1].classes()).not.toContain('need')
     expect(w.text()).not.toContain('去处理')
+  })
+
+  // 批 40：上一条说 `.need` 表达「这簇还等着人在**代码里**修」—— 这句在「已 pass 过、
+  // 只是还没凑够 K」的簇上**是假的**：run 已经通过，代码里的 bug 已经改好了，
+  // 人等的是 offline 推送下一版结果。此时红字必须灭。
+  // 与详情页「需要你」行**同一条判据**（`taskState().mine`），两页不许给出相反信号。
+  it('open 但已通过 1 次未达 K：红字灭', async () => {
+    const w = await mountView({
+      items: [row({ cluster_id: 1, status: 'open', seq: 1, claim_k: 2 })],
+    })
+    expect(w.find('td button.go').classes()).not.toContain('need')
   })
 
   // ─── 批 39：四卡「单位 + 关系」（用户报「四个数对不上」）─────────────────────

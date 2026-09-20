@@ -224,7 +224,7 @@ describe('taskState（批 30：两条车道）', () => {
       error_msg: null, input_hash: 'h', first_trace_id: null, input_truncated: 0,
       generation: 1, count: 1, status: 'open', first_ts: null, latest_ts: null,
       fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
-      claim_k: 2, needs_review_reason: null, link: null, ...over,
+      claim_k: 2, seq: 0, needs_review_reason: null, link: null, ...over,
     }) as BackflowCluster
 
   // 批 35-B：以下断言原为「列表页短句 `short`」，该字段随「现在轮谁」列一并删除
@@ -304,6 +304,40 @@ describe('taskState（批 30：两条车道）', () => {
     const r = taskState(cl({ link: link('active', 'passed'), claim_k: 3 }))
     expect(r.auto).toContain('3 次')
     expect(r.auto).toContain('自动收口')
+  })
+
+  // ─── 批 40：未达 K 的簇 ────────────────────────────────────────────────
+  // 真机症状（#3872/3873/3874）：簇 `open`、link `pending`+`active`、run 已 pass 一次。
+  // 旧文案两条车道都在说假话 —— human 叫「去代码里改」（可回归已经 pass，没 bug 可修）、
+  // auto 说「正在跑回归」（可 run 早跑完了）。**这才是本批的主伤害**。
+  it('open + 已通过 1 次未达 K：不再叫人去改代码，且那行整行消失（mine=false）', () => {
+    const r = taskState(cl({ link: link('active', 'pending'), seq: 1, claim_k: 2 }))
+    expect(r.auto).toContain('已连续通过 1 次')
+    expect(r.auto).toContain('2 次')          // K 取 cluster.claim_k，不是写死的
+    expect(r.auto).not.toContain('正在跑回归')  // run 跑完了，不许再说在跑
+    expect(r.human).not.toContain('代码里改')
+    expect(r.mine).toBe(false)
+  })
+
+  it('反假绿对照：同组合 seq=0（一次都没通过）仍是「要去代码里改」', () => {
+    // 没有这条，上一条在「open 分支恒 mine=false」的错实现下也会绿。
+    const r = taskState(cl({ link: link('active', 'pending'), seq: 0, claim_k: 2 }))
+    expect(r.human).toContain('代码里改')
+    expect(r.mine).toBe(true)
+  })
+
+  it('open + failed 不套「已通过 N 次」：seq 在 reopen 时不清零，判据必须挡 failed', () => {
+    // decide_k 遇 reopen 只把 prev_pure 置假、**seq 原样保留** ⇒ open + failed 完全可能
+    // 带着 seq>=1。判据漏写 `ver !== 'failed'` 时这条会红（那种情况确实要人去改代码）。
+    const r = taskState(cl({ link: link('active', 'failed'), seq: 1, claim_k: 2 }))
+    expect(r.auto).toContain('未通过')
+    expect(r.mine).toBe(true)
+  })
+
+  it('seq 为 null（后端不适用）按「还没通过过」处理，不是「进度 0 所以没事」', () => {
+    const r = taskState(cl({ link: link('active', 'pending'), seq: null, claim_k: 2 }))
+    expect(r.mine).toBe(true)
+    expect(r.human).toContain('代码里改')
   })
 
   it('claim + pending：系统在等回归，你无需操作（mine=false）', () => {

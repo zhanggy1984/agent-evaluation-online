@@ -269,6 +269,9 @@ export interface BackflowCluster {
   claimed_at: string | null
   claim_due_ts: string | null
   claim_k: number
+  // K 进度：现行 link 已连续通过的次数（详情/列表**两页都给**）。null = 不适用
+  // （无现行 link / link 非 pending / 无 case_id），**不是「进度为 0」**。
+  seq: number | null
   needs_review_reason: string | null
   link: BackflowLink | null
 }

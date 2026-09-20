@@ -323,6 +323,24 @@ export function taskState(c: BackflowCluster): TaskState {
         const t = invalidatedText(c)
         return { auto: t.auto, human: t.human, mine: true }
       }
+      // ⚠️ 批 40（本处）：**已通过 seq 次、还没到 K** 的簇，此前两条车道都在说假话 ——
+      // human 写「去修这一簇的 bug（在代码里改）」，可回归**已经 pass 过了**，没有 bug 可修；
+      // auto 写「正在跑回归」，可 run 早就跑完并 pass 了。用户照着做只会白翻一遍代码。
+      // 这是本批的主伤害（不是「看不到进度」那条）。
+      // `seq ?? 0`：后端未给（无现行 link / 非 pending / 无 case_id）时按「还没通过过」处理
+      // —— 那时「可能真有 bug 要修」，mine 留 true 是安全向。
+      // 判据排在 failed 之后：回归未通过是**另一种**现场，那种情况确实要人去改代码。
+      const seq = c.seq ?? 0
+      if (ver !== 'failed' && seq >= 1 && seq < c.claim_k) {
+        return {
+          auto: `回归已连续通过 ${seq} 次（需连续 ${c.claim_k} 次才自动收口），`
+            + '等 offline 推送下一版结果',
+          // mine=false ⇒ 本行整行不渲染（批 38 的条件渲染）。这是对的：确实没事要你做，
+          // 而「需要你」标签配「无需操作」文案是自相矛盾的。列表页红字 `.need` 同源同灭。
+          human: '无需操作，等下一版回归结果',
+          mine: false,
+        }
+      }
       let auto: string
       if (ver === 'passed') auto = `回归已通过一次（需连续通过 ${c.claim_k} 次才自动收口）`
       else if (ver === 'failed') auto = '回归未通过，系统会自动重组装再跑一次'

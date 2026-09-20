@@ -229,31 +229,31 @@ _OUTCOME_MAP = {
 TERMINAL_OUTCOMES = frozenset(_OUTCOME_MAP.values())
 
 
-async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
-    """单 claim 全周期回查（async 集成层；v1.23 第 3 刀起数据源 = 本 link 已收结果行集）。
+async def _replay_k(session: AsyncSession, *, cluster, link) -> dict:
+    """K 序列**全链重放**（判定内核）。**本函数不做任何写操作。**
 
-    前置：cluster.status == claim ∧ 现行 pending link 承载（case_id 非空）——无 case_id 的
-    claim 由 assemble_job 待补 link 后由后续推送再来，不硬报错。调用方负责事务边界：本函数只
-    用传进来的 session（推送端点单事务 commit，判定与落库原子）。
+    存在的理由 = **判据只留一份**：写路径 `judge_link` 与详情读路径 `link_k_progress`
+    都从这里取数。在读面另抄一份判定（在 TS 里数 pass 行 / 在 API 层重写循环）就等着
+    两处漂移——同 `link_gap_version` 的先例。
 
-    返回汇总：{outcome, reason?, seq?, gap_version?}
-    - outcome: fixed_auto / reopened / needs_review / unclean_batch / pending / gap /
-      no_progress
+    ⚠️ **副作用绝不进本函数**：详情接口每次翻页都会调它，一旦在此写 unclean 批，
+    就会把人工已 resolve 的同 key 批重开（代价见 `judge_link` 内 unclean 闸的注释）。
+    调用方按返回的 `unclean_hit` / `needs_review` 自行施加副作用。
+
+    前置：`link` 非 None 且 `link.case_id` 非空（调用方判，本函数不重复守）。
+
+    返回：
+    - `empty`: 本 link 尚无任何已收结果（此时 seq=0，其余字段全空）
+    - `seq`: 相邻版本连续纯净 pass 计数（R-17）
+    - `outcome` / `terminal_ver`: decide_k 判出的终态及其版本（None = 本 cycle 无终态）
+    - `gap_version` / `unjudgeable_ver`: 两种中断现场（互斥）
+    - `unclean_hit`: {version, run_id, error_type}，**仅当触发记录**（最后一条推送）命中
+    - `needs_review`: [{version, reason}] 逐条列出（不改状态、不计 K，调用方只打日志）
     """
-    cid = cluster.id
-    case_id = link.case_id if link is not None else None
-    if not case_id:
-        return {"outcome": "no_progress", "reason": "缺现行 pending case_id"}
-    if link.verify_status != "pending":
-        # E-10 终态只读显式守卫（P2-5）：pending 是唯一可判定态，passed/failed/
-        # invalidated/superseded 均不可覆写（迟到 run 不追加不改写，重开另起新 link）。
-        # 此守卫把"终态只读"固化为 judge_link 局部不变量，防调用方（推送端点/未来新路径）
-        # 直接对终态 link 误触判定链路。
-        return {"outcome": "no_progress",
-                "reason": "link 非 pending（终态只读，迟到 run 不覆写）"}
     claim_k = int(cluster.claim_k or 2)
     truncated = bool(cluster.input_truncated)
     link_id = link.id
+    case_id = link.case_id
 
     rec_rows = list((await session.scalars(
         select(VerifyRunRecord)
@@ -261,12 +261,12 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
         .order_by(VerifyRunRecord.id)
     )).all())
     if not rec_rows:
-        # 无任何已收结果：不是 gap（没有「缺失」的证据），只是本 link 还没收到推送
-        return {"outcome": "pending", "seq": 0,
-                "reason": "本 link 尚无已收结果（等 offline 首次结果推送）"}
+        return {"empty": True, "seq": 0, "outcome": None, "terminal_ver": None,
+                "gap_version": None, "unjudgeable_ver": None,
+                "unclean_hit": None, "needs_review": []}
     # 批 35-A：原「发版水位」闸整条删除。它的语义是「fix_version 还没被 offline 跑到 → 不判」，
     # 即**等一个人声明的版本**；online 只读化后无人声明版本，等它就等于永不推进。
-    # 代价：不再有「排除修复前历史」的能力（见 judge_link 循环下界的同名说明）。
+    # 代价：不再有「排除修复前历史」的能力（见下方循环下界的同名说明）。
 
     # 同版多 run：取**最后推送**的一条（id 最大 = 迟到回写的最新真相）。推送源只有终态 run
     # （offline 侧保证），故原 `_pick_run` 的「completed 优先」是死代码——已删。
@@ -282,7 +282,8 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
     terminal_ver: str | None = None
     gap_version: str | None = None
     unjudgeable_ver: str | None = None
-    unclean_registered = False
+    unclean_hit: dict | None = None
+    needs_review: list[dict] = []
     # agent 级版本全集惰性缓存：仅当真的出现「≥ fv 的前序」时才查一次（常见路径零查询）
     seen_versions: set[str] | None = None
 
@@ -325,49 +326,123 @@ async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
             # 为什么限定触发记录：判定每次都是对全链重放，已入过批的历史行再调一次会**重开
             # 人工已 resolve 的同 key 批**（batches.ensure_unclean_batch 对非 open 批会置回
             # open 并清 resolve 审计）——那不是新污染，是重放副作用。
-            from app.backflow import batches
-            await batches.ensure_unclean_batch(
-                session, run_id=rec.run_id, agent=cluster.agent, bound_version=V,
-                error_type=_primary_env_na(run_env),
-                cluster_id=cid, link_id=link_id, case_id=case_id,
-            )
-            unclean_registered = True
+            # ⇒ 本函数**只记录现场**，写批由 judge_link 执行（读面不得触发，见本函数 docstring）。
+            unclean_hit = {"version": V, "run_id": rec.run_id,
+                           "error_type": _primary_env_na(run_env)}
 
         if decision["action"] == "needs_review":
             # 批 35-A：needs_review 不再是状态（唯一出口是人工，全自动下会永久卡死），也不再
             # 打 conv —— conv 是业务流水且判定每次都是**全链幂等重放**，打 conv 会被 rejudge
             # 每 60s 重放刷爆。改记日志：三类 reason（na / input_truncated）信息不丢，且日志
             # 天然容忍重复。状态机不动，本版不累计也不清零（decide_k 已并入 unclean 档）。
-            logger.warning(
-                "判定不可信（needs_review，不迁移状态、不计 K）: "
-                "cluster=%s link=%s version=%s reason=%s truncated=%s",
-                cid, link_id, V, decision.get("reason") or "na", truncated,
-            )
+            needs_review.append({"version": V, "reason": decision.get("reason") or "na"})
 
         seq, prev_pure, outcome = decide_k(seq, prev_pure, decision, claim_k)
         if outcome is not None:
             terminal_ver = V
             break
 
-    summary: dict = {"seq": seq}
-    if outcome is not None:
-        await _apply_terminal(session, cluster, outcome, terminal=terminal_ver)
-        summary["outcome"] = _OUTCOME_MAP[outcome["outcome"]]
-        summary["reason"] = outcome.get("reason")
+    return {"empty": False, "seq": seq, "outcome": outcome, "terminal_ver": terminal_ver,
+            "gap_version": gap_version, "unjudgeable_ver": unjudgeable_ver,
+            "unclean_hit": unclean_hit, "needs_review": needs_review}
+
+
+async def link_k_progress(session: AsyncSession, cluster, link) -> int | None:
+    """本 link 的 K 进度 seq（**详情读面专用，零副作用**）；不适用时 None。
+
+    用途 = 详情页显示「回归已连续通过 seq/K 次」——未达 K 的簇此前**看不到任何进度**
+    （页面只显示 run 级 pass，与「这簇到哪一步了」是两回事）。
+
+    为什么读路径不能直接调 `judge_link`：内核每次重放都会对**触发记录**重新入 unclean 批，
+    而 `batches.ensure_unclean_batch` 对非 open 批会**置回 open 并清 resolve 审计**
+    ⇒ 每翻一次页就重开一次人工已 resolve 的批。故这里只调无副作用的 `_replay_k`。
+
+    与内核**同源**、不另抄判据（同 `link_gap_version` 的写法）。
+
+    None 的三种情形各由别的可见面承载，**不是「进度为 0」**：
+    无现行 link / link 非 pending（终态只读，K 序列已结束）/ 无 case_id（assemble_job 待补 link）。
+    """
+    if link is None or link.verify_status != "pending" or not link.case_id:
+        return None
+    return (await _replay_k(session, cluster=cluster, link=link))["seq"]
+
+
+async def judge_link(session: AsyncSession, *, cluster, link) -> dict:
+    """单 claim 全周期回查（async 集成层；v1.23 第 3 刀起数据源 = 本 link 已收结果行集）。
+
+    前置：cluster.status == claim ∧ 现行 pending link 承载（case_id 非空）——无 case_id 的
+    claim 由 assemble_job 待补 link 后由后续推送再来，不硬报错。调用方负责事务边界：本函数只
+    用传进来的 session（推送端点单事务 commit，判定与落库原子）。
+
+    返回汇总：{outcome, reason?, seq?, gap_version?}
+    - outcome: fixed_auto / reopened / needs_review / unclean_batch / pending / gap /
+      no_progress
+    """
+    cid = cluster.id
+    case_id = link.case_id if link is not None else None
+    if not case_id:
+        return {"outcome": "no_progress", "reason": "缺现行 pending case_id"}
+    if link.verify_status != "pending":
+        # E-10 终态只读显式守卫（P2-5）：pending 是唯一可判定态，passed/failed/
+        # invalidated/superseded 均不可覆写（迟到 run 不追加不改写，重开另起新 link）。
+        # 此守卫把"终态只读"固化为 judge_link 局部不变量，防调用方（推送端点/未来新路径）
+        # 直接对终态 link 误触判定链路。
+        return {"outcome": "no_progress",
+                "reason": "link 非 pending（终态只读，迟到 run 不覆写）"}
+    link_id = link.id
+    # 判据全在 _replay_k（本调用**零写**）；本函数只负责「按内核结果施加副作用」。
+    # ⚠️ 拆分的顺序差异：原实现在循环内「扫到 unclean 就写批」，现改为「重放完再写」。
+    # 二者可观测行为等价——ensure_unclean_batch 只写 NeedsReviewBatch（batches.py:30+），
+    # 而重放期唯一的额外读 _agent_versions 只查 verify_run_record（不读该表）
+    # ⇒ 写批不会影响重放结果，写到早写晚无差别。
+    r = await _replay_k(session, cluster=cluster, link=link)
+
+    for nr in r["needs_review"]:
+        logger.warning(
+            "判定不可信（needs_review，不迁移状态、不计 K）: "
+            "cluster=%s link=%s version=%s reason=%s truncated=%s",
+            cid, link_id, nr["version"], nr["reason"], bool(cluster.input_truncated),
+        )
+
+    if r["unclean_hit"] is not None:
+        # 新 run 判定产物：入 unclean 批（uk_batch_agg 幂等追加本 cluster 引用）。
+        # 为什么由内核限定**触发记录**：判定每次都是对全链重放，已入过批的历史行再调一次会
+        # **重开人工已 resolve 的同 key 批**（ensure_unclean_batch 对非 open 批会置回 open
+        # 并清 resolve 审计）——那不是新污染，是重放副作用。**详情读面因此不得走本路径**
+        # （见 _replay_k docstring），它只取 seq、从不写批。
+        from app.backflow import batches
+        await batches.ensure_unclean_batch(
+            session, run_id=r["unclean_hit"]["run_id"], agent=cluster.agent,
+            bound_version=r["unclean_hit"]["version"],
+            error_type=r["unclean_hit"]["error_type"],
+            cluster_id=cid, link_id=link_id, case_id=case_id,
+        )
+
+    if r["empty"]:
+        # 无任何已收结果：不是 gap（没有「缺失」的证据），只是本 link 还没收到推送
+        return {"outcome": "pending", "seq": 0,
+                "reason": "本 link 尚无已收结果（等 offline 首次结果推送）"}
+
+    summary: dict = {"seq": r["seq"]}
+    if r["outcome"] is not None:
+        await _apply_terminal(session, cluster, r["outcome"], terminal=r["terminal_ver"])
+        summary["outcome"] = _OUTCOME_MAP[r["outcome"]["outcome"]]
+        summary["reason"] = r["outcome"].get("reason")
         return summary
-    if gap_version is not None:
-        return {**summary, "outcome": "gap", "gap_version": gap_version,
+    if r["gap_version"] is not None:
+        return {**summary, "outcome": "gap", "gap_version": r["gap_version"],
                 "reason": "上一笔结果推送缺失（prev_terminal_version 本地无记录，"
                           "防跨缺版假连续）"}
-    if unjudgeable_ver is not None:
+    if r["unjudgeable_ver"] is not None:
         logger.warning(
             "判定不可判：留档载荷无 cases 键（第 2 刀期老格式行），保持 pending —— "
-            "cluster=%s link=%s version=%s", cid, link_id, unjudgeable_ver,
+            "cluster=%s link=%s version=%s", cid, link_id, r["unjudgeable_ver"],
         )
-        return {**summary, "outcome": "pending", "unjudgeable_version": unjudgeable_ver,
-                "reason": f"载荷无 cases 键（老格式行 version={unjudgeable_ver}）不可判，"
+        return {**summary, "outcome": "pending",
+                "unjudgeable_version": r["unjudgeable_ver"],
+                "reason": f"载荷无 cases 键（老格式行 version={r['unjudgeable_ver']}）不可判，"
                           f"保持 pending 待人工/迁移（不判 missing）"}
-    if unclean_registered:
+    if r["unclean_hit"] is not None:
         return {**summary, "outcome": "unclean_batch",
                 "reason": "同 run 环境级 na 污染已入批，cluster 保持 claim 待 resolve/TTL"}
     return {**summary, "outcome": "pending",

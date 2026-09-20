@@ -40,7 +40,12 @@ from app.backflow.claim import (
     CLAIM_TTL_DEFAULT_DAYS,
     CONV_DETAIL_MAX,
 )
-from app.backflow.verify import TERMINAL_OUTCOMES, judge_link, link_gap_version
+from app.backflow.verify import (
+    TERMINAL_OUTCOMES,
+    judge_link,
+    link_gap_version,
+    link_k_progress,
+)
 from app.core.db import get_session
 from app.core.dict_config import get_global_int
 from app.core.errors import AppError
@@ -130,7 +135,11 @@ async def _load_cluster(session: AsyncSession, cluster_id: int) -> ErrorCluster:
 
 
 def _cluster_item(cluster: ErrorCluster, link: dict | None) -> dict:
-    """cluster 列表项序列化（字段级钉死，P2-6 前端逐字段消费）。"""
+    """cluster 列表项序列化（字段级钉死，P2-6 前端逐字段消费）。
+
+    ⚠️ `seq`（K 进度）**不在这里**：它要 await 查库，本函数是同步纯序列化。两个调用方
+    （列表端点、详情端点）各自算好后 `item["seq"] = …` 补上 —— 两处都必须补，前端
+    `taskState` 两页共用，缺一处就出现「列表说还等着人修、详情说没事」的矛盾。"""
     return {
         "cluster_id": cluster.id, "agent": cluster.agent,
         "interface": cluster.interface, "layer": cluster.layer,
@@ -158,8 +167,15 @@ def _link_item(link: ErrorCaseLink, requeue_count: int = 0) -> dict:
     }
 
 
-async def _cluster_links(session: AsyncSession, cluster_ids: list[int]) -> dict[int, dict]:
-    """批量取 cluster 现行 link 摘要：pending 优先，无则最新（id 最大）。"""
+async def _cluster_link_reps(
+    session: AsyncSession, cluster_ids: list[int]
+) -> dict[int, ErrorCaseLink]:
+    """批量取 cluster **现行 link 对象**：pending 优先，无则最新（id 最大）。
+
+    「现行 link」= 页面上说「这一簇现在到哪一步」所指的那一条，**选取规则只有这一份**：
+    `_cluster_links`（要序列化摘要）与 clusters 列表端点（要 ORM 喂判定内核）都从这里取，
+    各写一份就等着两处漂移（详情端点是另一种取法：按 id 降序取 links[0]）。
+    """
     if not cluster_ids:
         return {}
     rows = (await session.scalars(
@@ -170,13 +186,29 @@ async def _cluster_links(session: AsyncSession, cluster_ids: list[int]) -> dict[
     out: dict[int, list[ErrorCaseLink]] = {}
     for link in rows:
         out.setdefault(link.cluster_id, []).append(link)
-    reps = []
-    for links in out.values():
+    reps = {}
+    for cid, links in out.items():
         current = next((lk for lk in links if lk.verify_status == "pending"), None)
-        reps.append(current if current is not None else links[-1])
-    # R-7 可愈性标注：本屏所有 link 的重推次数一次成批取（逐项单查即 N+1）
-    counts = await requeue_flow.requeue_counts(session, [rep.id for rep in reps])
-    return {rep.cluster_id: _link_item(rep, counts.get(rep.id, 0)) for rep in reps}
+        reps[cid] = current if current is not None else links[-1]
+    return reps
+
+
+async def _serialize_links(
+    session: AsyncSession, reps: dict[int, ErrorCaseLink]
+) -> dict[int, dict]:
+    """现行 link 对象 → 序列化摘要（requeue_count 成批取，勿逐项单查 → N+1）。"""
+    # R-7 可愈性标注：本屏所有 link 的重推次数一次成批取
+    counts = await requeue_flow.requeue_counts(session, [r.id for r in reps.values()])
+    return {cid: _link_item(r, counts.get(r.id, 0)) for cid, r in reps.items()}
+
+
+async def _cluster_links(session: AsyncSession, cluster_ids: list[int]) -> dict[int, dict]:
+    """批量取 cluster 现行 link **摘要**（序列化 dict）。
+
+    ⚠️ 要 ORM 对象（如喂判定内核 `link_k_progress`）用 `_cluster_link_reps` ——
+    本函数返回的 `link` 是 dict，取属性会 AttributeError。
+    """
+    return await _serialize_links(session, await _cluster_link_reps(session, cluster_ids))
 
 
 async def _open_batches(session: AsyncSession, cluster_id: int) -> list[dict]:
@@ -423,8 +455,18 @@ async def list_clusters(
         base.order_by(ErrorCluster.first_ts.desc())
         .offset((page - 1) * page_size).limit(page_size)
     )).all())
-    link_map = await _cluster_links(session, [c.id for c in clusters])
-    items = [_cluster_item(c, link_map.get(c.id)) for c in clusters]
+    # 现行 link 一次取：序列化摘要给页面、ORM 对象喂判定内核（勿分两次查同一批行）
+    reps = await _cluster_link_reps(session, [c.id for c in clusters])
+    link_map = await _serialize_links(session, reps)
+    # K 进度：详情页与列表页共用前端 `taskState`（`mine` 决定「需要你」行与红字 `.need`），
+    # 两页必须拿到同一个数 —— 只给详情会让同一簇在列表说「还等着人修」、在详情说「没事」。
+    # 开销随「页内**待回归**簇数」走而非恒定 N：link_k_progress 对非 pending / 无 case_id /
+    # 无 link 的行**在查库之前**就返回 None。
+    items = []
+    for c in clusters:
+        it = _cluster_item(c, link_map.get(c.id))
+        it["seq"] = await link_k_progress(session, c, reps.get(c.id))
+        items.append(it)
     out = {"items": items, "total": total, "page": page, "page_size": page_size}
     logger.debug("backflow clusters 出参: total=%s", total)
     return out
@@ -437,8 +479,10 @@ async def get_cluster_detail(
     """cluster 详情：元数据 + links + verify 时间线 + conversion 审计 + 已待天数 + 复发观察/挂起批。
 
     响应 {…cluster 元数据, links[], verify_runs[], conversions[], waiting_days,
-    result_overdue（«结果未达»标记，§8.7/§9.3）, reentry_observe（claim/fixed 现算复发观察，
-    其余态 None）, open_batches[]}。"""
+    result_overdue（«结果未达»标记，§8.7/§9.3）, result_gap_suspected（缺行中断现场）,
+    seq（**现行 link 的 K 进度**，与 claim_k 配对显示「已连续通过 seq/K 次」；不适用时
+    null —— 见 link_k_progress docstring 的三种情形）, reentry_observe（claim/fixed 现算
+    复发观察，其余态 None）, open_batches[]}。"""
     logger.debug("backflow cluster 详情 入参: viewer=%s cluster_id=%s", user.username, cluster_id)
     cluster = await _load_cluster(session, cluster_id)
     links = list((await session.scalars(
@@ -496,6 +540,12 @@ async def get_cluster_detail(
     open_batches = await _open_batches(session, cluster_id)
     overdue = await _result_overdue(session, cluster, links, runs, convs)
     gap_suspected = await _result_gap_suspected(session, cluster, links)
+    # K 进度（未达 K 的簇此前只显示 run 级 pass，看不到「这簇到哪一步了」）。
+    # 只取**最新 link**：页面 taskState 读的就是 item["link"]（= links[0]，按 id 降序），
+    # 报别的 link 的进度会让一句话混进两个对象的状态。
+    # ⚠️ 必须走 link_k_progress（零副作用），不能走 judge_link —— 本接口每次翻页都调它，
+    # 而 judge_link 会对触发记录重入 unclean 批（把人工已 resolve 的批重开）。
+    k_seq = await link_k_progress(session, cluster, links[0]) if links else None
     # R-7 可愈性标注：本簇全部 link 的重推次数一次成批取（逐项单查即 N+1）
     counts = await requeue_flow.requeue_counts(session, [lk.id for lk in links])
     link_items = [_link_item(lk, counts.get(lk.id, 0)) for lk in links]
@@ -507,6 +557,7 @@ async def get_cluster_detail(
         "waiting_days": waiting_days,
         "result_overdue": overdue,
         "result_gap_suspected": gap_suspected,
+        "seq": k_seq,
         "reentry_observe": None if observe is None
         else {**observe, "since_ts": _iso(observe["since_ts"])},
         "open_batches": open_batches,

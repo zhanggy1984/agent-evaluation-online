@@ -216,7 +216,12 @@ const convRows = computed(() =>
           <span :title="TERM.gen">第 {{ detail.generation }} 代</span>
           <span title="本簇累计发生的次数">发生 {{ detail.count }} 次</span>
           <span :title="TERM.fixVersion">修复版本 {{ detail.fix_version || '未填写' }}</span>
-          <span :title="TERM.claimK">回归阈值 K={{ detail.claim_k }}</span>
+          <!-- 批 40：K 进度。`seq` 为 null = 不适用（无现行 link / 非 pending / 无 case_id），
+               此时退回只报阈值 —— 显示「0/2」会把「还没轮到」误读成「一次都没通过」。 -->
+          <span v-if="typeof detail.seq === 'number'" :title="TERM.claimK">
+            回归已连续通过 {{ detail.seq }}/{{ detail.claim_k }} 次
+          </span>
+          <span v-else :title="TERM.claimK">回归阈值 K={{ detail.claim_k }}</span>
           <span :title="TERM.inputHash">入参指纹 <span class="mono">{{ detail.input_hash }}</span></span>
         </div>
         <div class="meta-row muted small">

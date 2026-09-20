@@ -45,7 +45,7 @@ function mk(over: Partial<BackflowClusterDetail> = {}): BackflowClusterDetail {
     first_trace_id: 't-1', input_truncated: 0, generation: 1, count: 3,
     status: 'open', first_ts: '2026-09-01T00:00:00', latest_ts: '2026-09-10T00:00:00',
     fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
-    claim_k: 2, needs_review_reason: null, link: null,
+    claim_k: 2, seq: 0, needs_review_reason: null, link: null,
     links: [], verify_runs: [], conversions: [], waiting_days: 9,
     reentry_observe: null, open_batches: [], result_gap_suspected: false,
     result_overdue: { hit: false, kind: null, since_ts: null, caption: null }, ...over,
@@ -311,5 +311,36 @@ describe('现在轮谁（批 30）', () => {
     const w = await mountWith(mk({ status: 'open', link: link({ offline_status: 'assembled' }) }))
     expect(w.findAll('.lane')).toHaveLength(2)
     expect(w.text()).toContain('需要你')
+  })
+})
+
+// ─── 批 40：未达 K 的簇「到哪了」─────────────────────────────────────────
+// 真机症状（#3872/3873/3874）：簇 `open`、link `pending`+`active`、run 已 pass 一次，
+// 页面却在叫人「去修这一簇的 bug」——回归都 pass 了，没 bug 可修。本组钉住接线。
+// 映射本体的穷尽性由 backflowLabels.spec.ts 的 taskState 一组覆盖。
+describe('K 进度（批 40）', () => {
+  const activeLink = () => link({ offline_status: 'active', verify_status: 'pending' })
+
+  it('已通过 1 次未达 K：「需要你」行整行消失，且不再叫人改代码', async () => {
+    const w = await mountWith(mk({ status: 'open', seq: 1, claim_k: 2, link: activeLink() }))
+    expect(w.findAll('.lane')).toHaveLength(1)
+    expect(w.text()).not.toContain('需要你')
+    expect(w.text()).not.toContain('代码里改')
+    expect(w.text()).toContain('已连续通过 1 次')
+  })
+
+  it('反假绿对照：同组合 seq=0 仍渲染两行且高亮', async () => {
+    const w = await mountWith(mk({ status: 'open', seq: 0, claim_k: 2, link: activeLink() }))
+    expect(w.findAll('.lane')).toHaveLength(2)
+    expect(w.text()).toContain('需要你')
+  })
+
+  it('meta 行报出进度 seq/K；seq 为 null 时退回只报阈值（不显示误导性的 0/2）', async () => {
+    const w = await mountWith(mk({ status: 'open', seq: 1, claim_k: 2 }))
+    expect(w.text()).toContain('回归已连续通过 1/2 次')
+
+    const w2 = await mountWith(mk({ status: 'fixed', seq: null, claim_k: 2 }))
+    expect(w2.text()).toContain('回归阈值 K=2')
+    expect(w2.text()).not.toContain('0/2')
   })
 })
