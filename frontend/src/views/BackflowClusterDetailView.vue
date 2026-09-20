@@ -21,6 +21,7 @@ import {
 import { ApiError, readStoredUser } from '../api/client'
 import type { BackflowClusterDetail, BackflowLink } from '../api/types'
 import {
+  CLUSTER_INTRO,
   CLUSTER_STATUS_LABEL,
   conversionActionLabel,
   conversionDetailText,
@@ -29,8 +30,10 @@ import {
   OFFLINE_STATUS_TEXT,
   reentryCaption,
   RESULT_GAP_WARN,
+  taskState,
   RESULT_OVERDUE_WARN,
   REVIEW_REASON_TEXT,
+  TERM,
   VERIFY_STATUS_TEXT,
 } from '../backflowLabels'
 import { agentDisplay, useAgents } from '../composables/useAgents'
@@ -64,6 +67,9 @@ const claimExpired = computed(() => isClaim.value && claimDueMs.value !== null &
 
 const st = computed(() => detail.value?.status ?? '')
 const stLabel = computed(() => CLUSTER_STATUS_LABEL[st.value] ?? st.value)
+// 「现在轮谁」两条车道（批 30）：detail 未加载时为 null，模板已在 v-if="detail" 内使用。
+// 映射本体在 backflowLabels.taskState —— 与列表页同源，勿在此另写一套。
+const lanes = computed(() => (detail.value ? taskState(detail.value) : null))
 
 function statusCls(s: string): string {
   return `st-${s}`
@@ -281,6 +287,14 @@ onMounted(() => { void loadDetail(true); void useAgents().load() })
 onUnmounted(() => stopClaimTimers())
 
 const rows = computed(() => detail.value?.conversions ?? [])
+// 批 31：「流转记录」占详情页 **68% 的文字**（真机实测 1097 字 / 24 处术语），
+// 第一屏被审计流水淹没 —— 用户报「整页看不懂」，主因是这一块，不是哪句话写得不好。
+// 顺序 = ts 倒序（真机核对 #3881：13:57 → 13:34）⇒ 取前 N 条即「最近 N 条」。
+const CONV_PREVIEW = 3
+const showAllConv = ref(false)
+const convRows = computed(() =>
+  showAllConv.value ? rows.value : rows.value.slice(0, CONV_PREVIEW),
+)
 </script>
 
 <template>
@@ -289,7 +303,7 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <!-- P1-7①：按钮文字跟随一级菜单名（App.vue MENUS）——菜单改了这里必须同步 -->
       <button class="btn-ghost" type="button" @click="back">← 错误闭环</button>
       <strong class="title">
-        cluster <span class="mono">#{{ clusterId }}</span>
+        错误簇 <span class="mono">#{{ clusterId }}</span>
         <span class="muted" v-if="detail">· {{ agentDisplay(detail.agent) }}{{ detail.interface ? `.${detail.interface}` : '' }}</span>
         <!-- P1-12：本页原为「死胡同」—— 列表页（BackflowView.vue:262）能跳 trace 详情，
              进了详情页反而没有出口。判据与列表页逐字一致（缺 trace_id 或缺 agent 不渲染，
@@ -302,10 +316,28 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <button class="btn-ghost" type="button" :disabled="loading" @click="loadDetail(true)">刷新</button>
     </header>
 
+    <!-- 页头一句话（批 29）：此前进页只有一行 `cluster #123` + 一排裸字段
+         （gen1 / 计数 23 / claim_k 2 …），新用户不知道这一页在讲什么、该从哪读起。 -->
+    <p class="intro">{{ CLUSTER_INTRO }}</p>
+
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
     <p v-if="loading" class="muted">加载中…</p>
 
     <template v-if="!loading && detail">
+      <!-- 「现在轮谁」两条车道（批 30）：本页最该早看到的一句话。
+           **两行并列是刻意的** —— 上一条线（系统自动）根本不等你，下一条线才是你要做的；
+           只给一句「等 offline 回归」会让人以为那期间自己没事干，而事实是两条线并行。 -->
+      <section class="lanes">
+        <div class="lane">
+          <span class="lane-tag">系统自动</span>
+          <span class="lane-text">{{ lanes?.auto }}</span>
+        </div>
+        <div class="lane" :class="{ need: lanes?.mine }">
+          <span class="lane-tag">需要你</span>
+          <span class="lane-text">{{ lanes?.human }}</span>
+        </div>
+      </section>
+
       <!-- 头部元信息 -->
       <section class="panel meta">
         <div class="meta-row">
@@ -314,15 +346,18 @@ const rows = computed(() => detail.value?.conversions ?? [])
           <strong>{{ detail.error_type }}</strong>
           <span class="muted">{{ detail.error_msg }}</span>
         </div>
+        <!-- 批 29：此行原为 `gen1 / 计数 23 / fix - / claim_k 2 / input_hash xxx` 裸字段并列，
+             五个词新用户一个都读不懂（gen 是缩写、fix 是半截词）。改为**白话标签 + 值**，
+             正式术语降为 title（想查的人仍查得到，不再要求新手先 hover 才知道是什么）。 -->
         <div class="meta-row muted small">
-          <span>gen{{ detail.generation }}</span>
-          <span>计数 {{ detail.count }}</span>
-          <span>fix {{ detail.fix_version || '-' }}</span>
-          <span>claim_k {{ detail.claim_k }}</span>
-          <span>input_hash <span class="mono">{{ detail.input_hash }}</span></span>
+          <span :title="TERM.gen">第 {{ detail.generation }} 代</span>
+          <span title="本簇累计发生的次数">发生 {{ detail.count }} 次</span>
+          <span :title="TERM.fixVersion">修复版本 {{ detail.fix_version || '未填写' }}</span>
+          <span :title="TERM.claimK">回归阈值 K={{ detail.claim_k }}</span>
+          <span :title="TERM.inputHash">入参指纹 <span class="mono">{{ detail.input_hash }}</span></span>
         </div>
         <div class="meta-row muted small">
-          <span>已待 {{ detail.waiting_days }} 天</span>
+          <span>已等待 {{ detail.waiting_days }} 天</span>
           <span v-if="detail.claimed_by">认领人 {{ detail.claimed_by }}（{{ fmtTs(detail.claimed_at) }}）</span>
           <span v-if="detail.reentry_observe && detail.reentry_observe.mode === 'claim' && detail.reentry_observe.count > 0">
             自 {{ fmtTs(detail.reentry_observe.since_ts) }} 起复发观察
@@ -358,48 +393,109 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <!-- 分支顺序敏感：claim ∧ admin 必须先于 canIgnore（canIgnore 值域 ⊇ claim，
            排在前面会把复核动作整块吃掉——D-1 即此） -->
       <section v-if="canClaim || canIgnore || canReopen || needsReview" class="panel ops">
+        <!-- 批 32：用户原话「【认领】【驳回】【忽略】这些按钮，到底是做什么用的」。
+             病根三条：① 本区块**没有标题**，按钮凭空出现；② 按钮**随簇状态变**，
+             而页面上没有任何东西告诉他「会变」（他同时提到「驳回」和「忽略」，
+             这两个永不同时出现 —— 说明他正在多个簇之间对比）；
+             ③ **后果不写**：「忽略」= 这簇不修了（终态 inactive），
+             「驳回」= 打回给认领人、还要继续修（回 open）—— 两个都像"否掉"，后果却相反。
+             处置 = 就地补标题 + 每个按钮下面跟一句「点了会怎样」。
+             ⚠️ **行为零改动**：只加文案节点，@click / :disabled / v-if 全部逐字原样。 -->
+        <h3 class="sec">现在能做什么<span class="sec-sub">按钮会随这一簇的状态变化；每个按钮下面写了点下去会发生什么</span></h3>
         <template v-if="canClaim">
-          <button v-if="!claimForm.open" class="btn" type="button" :disabled="busy" @click="openClaimForm">
-            认领并复核
-          </button>
-          <form v-else class="claim-form" @submit.prevent="submitClaim">
-            <input v-model="claimForm.fix_version" placeholder="fix_version（必填，本次修复版本号）" class="w-240" />
-            <select v-model="claimForm.k" class="sel w-80">
-              <option value="2">K=2</option>
-              <option value="1">K=1</option>
-            </select>
-            <input v-model="claimForm.note" placeholder="备注（可选）" class="w-200" />
-            <button class="btn" type="submit" :disabled="busy">{{ busy ? '提交中…' : '提交认领' }}</button>
-            <button class="btn-ghost" type="button" @click="claimForm.open = false">取消</button>
-          </form>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略</button>
+          <div class="op">
+            <button v-if="!claimForm.open" class="btn" type="button" :disabled="busy" @click="openClaimForm">
+              认领并复核
+            </button>
+            <form v-else class="claim-form" @submit.prevent="submitClaim">
+              <input v-model="claimForm.fix_version" placeholder="fix_version（必填，本次修复版本号）" class="w-240" />
+              <!-- 批 29：原来只有 `K=2` / `K=1`，K 是什么全靠猜（= 需连续通过的回归次数，
+                   见 verify.py decide_k）。选项文案带上白话，值不变。 -->
+              <select v-model="claimForm.k" class="sel w-80" title="K = 需连续通过几次回归才判为已修复">
+                <option value="2">连续通过 2 次（K=2，默认）</option>
+                <option value="1">连续通过 1 次（K=1）</option>
+              </select>
+              <input v-model="claimForm.note" placeholder="备注（可选）" class="w-200" />
+              <button class="btn" type="submit" :disabled="busy">{{ busy ? '提交中…' : '提交认领' }}</button>
+              <button class="btn-ghost" type="button" @click="claimForm.open = false">取消</button>
+            </form>
+            <!-- 批 34：用户**第二次**问同一件事——「必须要点过它以后，这个问题才会被推给 offline 吗？」
+                 批 32 这句原文只说「认领会怎样」，**没说「不认领会怎样」**，而他的疑问恰好在后一半。
+                 实测（库直查，2026-09-20）：10 条 `open` 簇里 **9 条 payload 已在 offline 手上**
+                 （`active` / `invalidated`），**没有一条是等认领才推的** —— 推送由 assemble_job
+                 每 60s 自动扫，压根不查认领。
+                 故此处补一句**否定式**说明：先说「它不是什么」，再说「不点会怎样」。 -->
+            <span class="op-hint">
+              你接手这一簇：填本次修复版本号（offline 拿它做回归比对），连续通过 K 次后自动收口。<br />
+              <em class="warn">它不是「推给 offline」的开关</em>——payload 由系统每 60 秒自动组装推送、
+              offline 自己来拉，<b>不等你点</b>；但没认领的话，回归就算全绿也<b>不会自动收口</b>。
+            </span>
+          </div>
+          <div class="op">
+            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略</button>
+            <span class="op-hint">这簇不修了：进「已忽略」终态，不再跟踪，待回查的用例也停掉</span>
+          </div>
         </template>
         <template v-else-if="isClaim && isAdmin">
-          <button class="btn" type="button" :disabled="busy" @click="doFixedReview(true)">通过复核（→fixed）</button>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doFixedReview(false)">驳回（→open）</button>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略（先回退）</button>
+          <div class="op">
+            <button class="btn" type="button" :disabled="busy" @click="doFixedReview(true)">通过复核（→fixed）</button>
+            <span class="op-hint">确认修好了：这一簇直接收口为「已修复」，回归序列结束</span>
+          </div>
+          <div class="op">
+            <button class="btn-ghost" type="button" :disabled="busy" @click="doFixedReview(false)">驳回（→open）</button>
+            <span class="op-hint">打回给认领人：回到「未处置」，还要继续修 —— 不是「不修了」</span>
+          </div>
+          <div class="op">
+            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略（先回退）</button>
+            <span class="op-hint">这簇不修了：先退出复核、再进「已忽略」终态，不再跟踪</span>
+          </div>
         </template>
         <template v-else-if="canIgnore">
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">
-            忽略（复核中，先回退再忽略）
-          </button>
+          <div class="op">
+            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">
+              忽略（复核中，先回退再忽略）
+            </button>
+            <span class="op-hint">这簇不修了：先退出复核、再进「已忽略」终态，不再跟踪</span>
+          </div>
         </template>
         <template v-else-if="canReopen">
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doReopen">重开</button>
+          <div class="op">
+            <button class="btn-ghost" type="button" :disabled="busy" @click="doReopen">重开</button>
+            <span class="op-hint">反悔：回到「未处置」，重新走一遍认领 → 回归</span>
+          </div>
         </template>
         <template v-else-if="needsReview">
-          <button class="btn" type="button" :disabled="busy" @click="doResolveSingle('reopen_cluster')">重开（回到未处置）</button>
-          <button class="btn-ghost" type="button" :disabled="busy" @click="doResolveSingle('escalated')">escalated（仅记录）</button>
-          <button
-            v-if="hasBatch" class="btn" type="button" :disabled="busy"
-            @click="doBatch"
-          >处置整批（batch#{{ openBatch?.batch_id }}，run {{ openBatch?.run_id }}，{{ openBatch?.ref_count }} link）</button>
+          <div class="op">
+            <button class="btn" type="button" :disabled="busy" @click="doResolveSingle('reopen_cluster')">重开（回到未处置）</button>
+            <span class="op-hint">回到「未处置」，重新走一遍认领 → 回归</span>
+          </div>
+          <!-- 批 29：原按钮文案 `escalated（仅记录）` 是**英文枚举直接漏进 UI**，
+               新手既不知道它做什么、也不知道跟左边那个「重开」有什么区别。
+               行为一字未改，只把 action 值（'escalated'）留在代码里、按钮说人话。 -->
+          <div class="op">
+            <button
+              class="btn-ghost" type="button" :disabled="busy"
+              title="不重开也不忽略，只在流转记录里留一笔「已知悉」"
+              @click="doResolveSingle('escalated')"
+            >标记为已知悉（仅记录，不改变状态）</button>
+            <span class="op-hint">什么都不改：只在下面的流转记录里留一笔「已知悉」，状态与用例都不动</span>
+          </div>
+          <div v-if="hasBatch" class="op">
+            <button
+              class="btn" type="button" :disabled="busy"
+              @click="doBatch"
+            >处置整批（batch#{{ openBatch?.batch_id }}，run {{ openBatch?.run_id }}，{{ openBatch?.ref_count }} link）</button>
+            <span class="op-hint">这一簇下的所有用例一起处置，不用一条条点</span>
+          </div>
         </template>
       </section>
 
       <!-- links 表 -->
       <section class="panel">
-        <h3 class="sec">links（{{ detail.links.length }}）</h3>
+        <h3 class="sec">
+          评测用例 link（{{ detail.links.length }}）
+          <span class="sec-sub">{{ TERM.link }}：错误现场被组装成可复现的用例推给 offline 侧</span>
+        </h3>
         <p v-if="detail.links.length === 0" class="muted">暂无 link</p>
         <table v-else>
           <thead>
@@ -442,7 +538,10 @@ const rows = computed(() => detail.value?.conversions ?? [])
 
       <!-- verify_runs 版本×结果时间线 -->
       <section class="panel">
-        <h3 class="sec">回查 run（{{ detail.verify_runs.length }}）</h3>
+        <h3 class="sec">
+          回归验证 run（{{ detail.verify_runs.length }}）
+          <span class="sec-sub">offline 侧用该用例回跑的结果：连续通过 K 次才判「已修复」</span>
+        </h3>
         <p v-if="detail.verify_runs.length === 0" class="muted">
           暂无回归 run——现行 link 待 offline 拉取/回查后由 offline 侧出 run
         </p>
@@ -462,17 +561,32 @@ const rows = computed(() => detail.value?.conversions ?? [])
 
       <!-- conversions 审计时间线 -->
       <section class="panel">
-        <h3 class="sec">流转记录（{{ detail.conversions.length }}）</h3>
+        <h3 class="sec">
+          流转记录（{{ detail.conversions.length }}）
+          <span class="sec-sub">这簇错误被谁在什么时候动过：认领 / 复核 / 重开 / 失效…</span>
+        </h3>
         <p v-if="detail.conversions.length === 0" class="muted">暂无流转记录</p>
         <div v-else class="tl">
-          <div v-for="c in rows" :key="c.record_id" class="tl-row">
+          <div v-for="c in convRows" :key="c.record_id" class="tl-row">
             <span class="act-tag">{{ conversionActionLabel(c.action) }}</span>
-            <span class="muted">操作人 {{ actorName(c) }}</span>
+            <!-- 批 31：原来一律「操作人 xxx」，系统自动动作与人工动作**同形** ——
+                 这正是「系统背着我干了什么」看不出来的原因之一。
+                 判据用 `actor_user_id`，不硬编码 action 名：实测该字段与动作性质
+                 100% 对齐（assemble/auto_fixed/regression_result 全为 null；
+                 claim/config_change/requeue 全有值）。 -->
+            <span class="muted who" :class="{ sys: c.actor_user_id === null }">
+              {{ c.actor_user_id === null ? '系统自动' : `人工 · ${actorName(c)}` }}
+            </span>
             <span class="muted tl-ts">{{ fmtTs(c.ts) }}</span>
             <!-- P1-13：claim 的 detail 是认领表单 JSON 原文，渲染成人话（解析失败回退原文） -->
             <span class="tl-detail">{{ conversionDetailText(c.action, c.detail) }}</span>
           </div>
         </div>
+        <!-- 批 31：一条不删，只是不再让第一屏被流水淹没 -->
+        <button
+          v-if="detail.conversions.length > CONV_PREVIEW"
+          class="btn-ghost more" type="button" @click="showAllConv = !showAllConv"
+        >{{ showAllConv ? '收起' : `展开全部 ${detail.conversions.length} 条` }}</button>
       </section>
     </template>
     <p v-else-if="!loading && !detail" class="muted">该 cluster 不存在或已删除</p>
@@ -480,6 +594,63 @@ const rows = computed(() => detail.value?.conversions ?? [])
 </template>
 
 <style scoped>
+/* 页头一句话（批 29）：新手进页第一眼要知道「这页在讲什么、从哪读起」 */
+.intro {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--brand);
+  background: var(--panel);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #374151;
+}
+
+/* 「现在轮谁」两条车道（批 30）：左标签定宽、两行文案左侧对齐，便于上下对照。
+   高亮**只给「需要你」那条、且仅当 mine**：系统自动那条永远中性 —— 两条都亮等于都没亮。 */
+.lanes {
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.lane {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lane + .lane { border-top: 1px solid var(--border); }
+
+.lane-tag {
+  flex: 0 0 64px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lane-text { color: var(--text); }
+
+.lane.need { background: var(--hl-red); }
+.lane.need .lane-tag { color: var(--error); font-weight: 600; }
+
+/* 批 31：系统自动 / 人工用颜色分开（原来同形） */
+.who.sys { color: var(--timeout); }
+.more { margin-top: 8px; }
+
+/* 区标题下的小字释义（就地、不折叠） */
+.sec-sub {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .bar {
   display: flex;
   gap: 12px;
@@ -552,11 +723,40 @@ const rows = computed(() => detail.value?.conversions ?? [])
 
 .ops {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  gap: 10px 14px;
+  /* 批 32：每个操作是一个「按钮 + 后果小字」的竖列，各列高度不等 ⇒ 顶端对齐才不错位，
+     原来的 center 会让按钮基线随小字行数上下漂。 */
+  align-items: flex-start;
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
+
+/* 批 32：标题必须独占一行 —— .ops 是 flex 容器，不加这条 h3 会跟按钮挤在同一行。 */
+.ops h3.sec { flex-basis: 100%; margin-bottom: 2px; }
+
+.op {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+/* 「点了会怎样」：一句话讲后果，不写教程。限宽防长句把整行撑开。 */
+.op-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 300px;
+}
+
+/* 批 34：否定式说明（「它不是什么」）。比正文重一档，因为它回答的正是用户问的那半。
+   限宽比正文宽——这句天然更长，压到 260px 会折成 4 行。 */
+.op-hint em.warn {
+  font-style: normal;
+  color: var(--error);
+}
+
+.op-hint b { font-weight: 600; }
 
 .claim-form {
   display: flex;

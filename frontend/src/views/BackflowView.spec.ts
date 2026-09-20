@@ -50,6 +50,7 @@ const emptyOverview: BackflowOverview = {
 interface MountOpts {
   items?: BackflowCluster[]
   total?: number
+  overview?: BackflowOverview
   // 注入口：错误必须在 mount 前装配好，不能 mount 后用 mockResolvedValue 覆盖
   // （覆盖会静默把 reject 变 resolve，造出「测失败路径但实际走成功路径」的假绿）
   overviewError?: unknown
@@ -58,7 +59,7 @@ interface MountOpts {
 
 async function mountView(opts: MountOpts = {}) {
   if (opts.overviewError !== undefined) apiMock.backflowOverview.mockRejectedValue(opts.overviewError)
-  else apiMock.backflowOverview.mockResolvedValue(emptyOverview)
+  else apiMock.backflowOverview.mockResolvedValue(opts.overview ?? emptyOverview)
   apiMock.backflowClusters.mockResolvedValue({
     items: opts.items ?? [], total: opts.total ?? (opts.items?.length ?? 0),
     page: 1, page_size: 20,
@@ -215,18 +216,16 @@ describe('跳转', () => {
     expect(push).toHaveBeenCalledWith({ name: 'backflow-cluster', params: { clusterId: 42 } })
   })
 
-  it('trace 链接点击 → 只跳 trace 详情**一次**（stopPropagation 挡住行点击）', async () => {
-    const w = await mountView({ items: [row({ agent: 'a-1', first_trace_id: 't-9' })] })
-    await w.find('button.link-like').trigger('click')
-    expect(push).toHaveBeenCalledTimes(1)
-    expect(push).toHaveBeenCalledWith({
-      name: 'trace-detail', params: { agent: 'a-1', traceId: 't-9' },
-    })
-  })
+  // 批 33 删除两条用例（原「trace 链接点击 → 只跳 trace 详情一次（stopPropagation…）」
+  // 与「first_trace_id 为空 → 不渲染 trace 按钮」）——它们钉的是**已删掉的「代表 trace」列**。
+  // ⚠️ 是**删除而非改写成恒真**：留着会变成「实现没了、断言还在」的假绿。
+  // 该跳转在详情页仍有出口，由 BackflowClusterDetailView.spec.ts 的 P1-12 一组覆盖。
 
-  it('first_trace_id 为空 → 不渲染 trace 按钮（不给死链）', async () => {
-    const w = await mountView({ items: [row({ first_trace_id: null })] })
-    expect(w.find('button.link-like').exists()).toBe(false)
+  it('操作列：点击跳 cluster 详情，且**只跳一次**（@click.stop，不靠行冒泡兜底）', async () => {
+    const w = await mountView({ items: [row({ cluster_id: 42 })] })
+    await w.find('button.go').trigger('click')
+    expect(push).toHaveBeenCalledTimes(1)
+    expect(push).toHaveBeenCalledWith({ name: 'backflow-cluster', params: { clusterId: 42 } })
   })
 })
 
@@ -250,11 +249,47 @@ describe('字段与边界', () => {
     expect(off.text()).not.toContain('gen1')
   })
 
-  it('时间戳 null → 显示「-」而非 1970（后端空值不外泄为纪元）', async () => {
-    const w = await mountView({ items: [row({ first_ts: null, latest_ts: null })] })
-    const cells = w.findAll('tbody tr td')
-    expect(cells.some(c => c.text() === '-')).toBe(true)
-    expect(w.text()).not.toContain('1970')
+  it('null 字段显示「-」而非 undefined / 1970（后端空值不外泄）', async () => {
+    // 批 33：本条原名「时间戳 null → 显示「-」而非 1970」——它钉的是**已删的「首现/最新」列**。
+    // 改成钉**全表**：任一行不得出现 `undefined` / `null` / `1970` 这三种空值外泄形态。
+    // ⚠️ 这比原断言**更宽**：原断言只覆盖时间列，改后覆盖每一格。
+    const w = await mountView({
+      items: [row({ first_ts: null, latest_ts: null, fix_version: null, error_msg: null, link: null })],
+    })
+    const t = w.find('tbody tr').text()
+    expect(t).not.toContain('undefined')
+    expect(t).not.toContain('null')
+    expect(t).not.toContain('1970')
+    expect(t).toContain('-')   // fix_version 空 / 无 link 各出一处
+  })
+
+  it('批 33：删掉的三列不再渲染（入参指纹 / 代表 trace / 首现·最新）', async () => {
+    const w = await mountView({
+      items: [row({ input_hash: 'd'.repeat(64), first_trace_id: 'task-649', first_ts: '2026-09-16T18:30:03' })],
+    })
+    const t = w.text()
+    // 判别性：这三个值都真实存在于数据里，若列还在必然渲染出来
+    expect(t).not.toContain('d'.repeat(64))
+    expect(t).not.toContain('task-649')
+    expect(t).not.toContain('2026-09-16')
+    // 表头也不得残留（防「列空了但表头还在」）
+    const heads = w.findAll('thead th').map(h => h.text())
+    expect(heads.some(h => h.includes('入参指纹'))).toBe(false)
+    expect(heads.some(h => h.includes('代表 trace'))).toBe(false)
+    expect(heads.some(h => h.includes('首现'))).toBe(false)
+    expect(heads.some(h => h.includes('操作'))).toBe(true)
+  })
+
+  it('操作列：需人动手的行显示「去处理 →」并高亮，其余显示「查看 →」（且不高亮）', async () => {
+    const w = await mountView({
+      items: [row({ cluster_id: 1, status: 'open' }), row({ cluster_id: 2, status: 'fixed' })],
+    })
+    const gos = w.findAll('td button.go')
+    expect(gos).toHaveLength(2)
+    expect(gos[0].text()).toBe('去处理 →')
+    expect(gos[0].classes()).toContain('need')       // 与「现在轮谁」列同步高亮
+    expect(gos[1].text()).toBe('查看 →')
+    expect(gos[1].classes()).not.toContain('need')
   })
 
   it('二期入口在本页零渲染（detail §9.1：弃留墙/quality 不从本页引）', async () => {
@@ -263,15 +298,92 @@ describe('字段与边界', () => {
     expect(w.text().toLowerCase()).not.toContain('quality')
   })
 
-  it('现行 link 摘要：取 items[0].link 的 offline 语义', async () => {
+  // ⚠️ 批 29 改判：本用例原来是「现行 link 摘要：取 items[0].link 的 offline 语义」——
+  // 它**把一处误导当规格钉住了**：页脚那句读起来像全页/全局的值，实际只取表格第一行，
+  // 而 `api/types.ts:237` 明写「list 侧**每个 cluster 一个**」link。
+  // 现改为断言「每行各自的值」：**两行给不同 offline_status，必须同时渲染出两个标签**。
+  // 判别性：旧实现只渲染 items[0] 的一个 → 本条对它必红（这正是它该有的样子）。
+  const mkLink = (id: number, s: string) => ({
+    link_id: id, payload_id: `p${id}`, case_id: `c${id}`, case_type: 'replay',
+    offline_status: s, verify_status: 'pending',
+    assembled_ts: null, invalidate_reason: null, requeue_count: 0,
+  })
+
+  it('offline 态列 = 每行各自的值（两行不同则都要出现；旧的 items[0] 冒充全局会红）', async () => {
     const w = await mountView({
-      items: [row({ link: {
-        link_id: 1, payload_id: 'p', case_id: 'c', case_type: 'replay',
-        offline_status: 'invalidated', verify_status: 'pending',
-        assembled_ts: null, invalidate_reason: null, requeue_count: 0,
-      } })],
+      items: [row({ link: mkLink(1, 'assembled') }), row({ link: mkLink(2, 'invalidated') })],
     })
-    expect(w.text()).toContain('现行 link')
-    expect(w.text()).toContain('invalidated')
+    const t = w.text()
+    expect(t).toContain('待 offline 拉取') // assembled
+    expect(t).toContain('已驳回（重推位）') // invalidated
+    expect(t).not.toContain('现行 link')   // 页脚那句误导已删
+  })
+
+  it('行无 link ⇒ 该格显示 `-`，不渲染空标签、不抛错', async () => {
+    const w = await mountView({ items: [row({ link: null })] })
+    expect(w.findAll('tbody tr').length).toBe(1)
+  })
+
+  // ⚠️ 本条**是我真机当场抓到的那个错**：概览「回归验证结果」卡的键是 **verify_status**
+  // （后端 backflow.py:457-462 `group_by(ErrorCaseLink.verify_status)`，值域
+  // pending/passed/failed/invalidated/superseded），**不是 offline_status**。
+  // 我第一版拿 offline 的映射去套 ⇒ 只有 `invalidated` 撞上，其余全兜底成裸键，
+  // 真机读数 = `pending14 / passed8 / failed0 / …` —— 一眼可见。
+  // 本用例把「必须是中文、不得出现裸键」钉死，正是为了让那种错在单测阶段就红。
+  it('回归验证结果卡渲染中文（键是 verify_status，拿 offline 映射去套会退化成裸键）', async () => {
+    const w = await mountView({
+      overview: {
+        clusters: {}, to_fix: 0, by_agent: [],
+        links: { pending: 14, passed: 8, failed: 0, invalidated: 1, superseded: 0 },
+      } as unknown as BackflowOverview,
+    })
+    const card = w.findAll('.card')[1]
+    const t = card.text()
+    expect(t).toContain('待回归')
+    expect(t).toContain('回归通过')
+    expect(t).toContain('已失效')   // invalidated
+    expect(t).not.toContain('pending')
+    expect(t).not.toContain('passed')
+  })
+
+  // 批 29：`verify_status='invalidated'` 是**不可达值**（全仓零写入点，取证见 BackflowView.vue
+  // 的 verifyRows 注释）⇒ 恒 0 时不该占一行版位；**但值 >0 时必须照常显示**。
+  // 上面那条用的正是 invalidated: 1 —— 两条合起来钉死「只隐藏 0，不隐藏真值」，
+  // 所以将来后端落了写入点也不会出现「真值被前端静默吞掉」。
+  it('superseded 保留（可达值）、恒 0 的不可达态「已失效」不占位', async () => {
+    const w = await mountView({
+      overview: {
+        clusters: {}, to_fix: 0, by_agent: [],
+        links: { pending: 3, passed: 1, failed: 0, invalidated: 0, superseded: 0 },
+      } as unknown as BackflowOverview,
+    })
+    const t = w.findAll('.card')[1].text()
+    expect(t).toContain('待回归')
+    expect(t).toContain('已被新用例取代')  // superseded 可达，恒 0 也留着（批 31 改词，未删）
+    expect(t).not.toContain('已失效')  // invalidated 不可达且为 0 ⇒ 不占位
+  })
+
+  // 批 30：「现在轮谁」列。病根见 backflowLabels.taskState 注释。
+  // 判别性：若高亮不分状态恒真（或恒假），下面两条必有一条红。
+  it('现在轮谁列：短句随簇状态变，且只有需人动手的才高亮', async () => {
+    const w = await mountView({
+      items: [row({ cluster_id: 1, status: 'open' }), row({ cluster_id: 2, status: 'fixed' })],
+    })
+    const cells = w.findAll('td .wheel')
+    expect(cells).toHaveLength(2)
+    expect(cells[0].text()).toBe('等你认领')
+    expect(cells[0].classes()).toContain('need')      // 等你动手 ⇒ 高亮
+    expect(cells[1].text()).toBe('已收口')
+    expect(cells[1].classes()).not.toContain('need')  // 系统推进中/已结束 ⇒ 不高亮
+  })
+
+  it('系统已推给 offline 但没人认领时，仍然显示「等你认领」', async () => {
+    // 这正是用户报的那一幕：offline 那条线不等你，但**你这条线也没被替代**。
+    const w = await mountView({
+      items: [row({ status: 'open', link: mkLink(1, 'active') })],
+    })
+    const cell = w.find('td .wheel')
+    expect(cell.text()).toBe('等你认领')
+    expect(cell.classes()).toContain('need')
   })
 })

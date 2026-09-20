@@ -117,7 +117,9 @@ describe('状态门控（§9.4 按钮集合）', () => {
     { status: 'inactive', admin: false, want: ['重开'], forbid: ['认领并复核'] },
     {
       status: 'needs_review', admin: false,
-      want: ['重开（回到未处置）', 'escalated（仅记录）'],
+      // 批 29：该按钮文案由英文枚举 `escalated（仅记录）` 改为中文白话
+      // （行为未变，doResolveSingle('escalated') 原样）⇒ 断言随之更新。
+      want: ['重开（回到未处置）', '标记为已知悉'],
       forbid: ['认领并复核', '通过复核'],
     },
   ]
@@ -593,5 +595,101 @@ describe('P1-12 代表 trace 出口（防死胡同 / 防死链）', () => {
   it('agent 为空 → 不渲染（缺任一个都不给）', async () => {
     const w = await mountStub(mk({ agent: '', first_trace_id: 't-9' }))
     expect(w.find('a.trace-out').exists()).toBe(false)
+  })
+})
+
+// ─── 批 30：「现在轮谁」两条车道 ───────────────────────────────────────────
+// 病根：用户报「我没点确认，offline 怎么就已经跑过 run 了」——系统那条线根本不等你，
+// 而页面上零呈现。本组钉死「两条都渲染 + 高亮只给需要你那条」。
+// 映射本体的穷尽性由 backflowLabels.spec.ts 的 taskState 一组覆盖，此处只管接线。
+describe('现在轮谁（批 30）', () => {
+  it('两条车道都渲染：上条说系统在自动干什么，下条说你要做什么', async () => {
+    const w = await mountWith(
+      mk({ status: 'open', link: link({ offline_status: 'active', verify_status: 'pending' }) }),
+    )
+    const lanes = w.findAll('.lane')
+    expect(lanes).toHaveLength(2)
+    expect(lanes[0].text()).toContain('系统自动')
+    expect(lanes[0].text()).toContain('offline 拉走')   // 系统那条线不等你
+    expect(lanes[1].text()).toContain('需要你')
+    expect(lanes[1].text()).toContain('认领')
+    // 系统已在跑 ≠ 你没事干：这个组合下「需要你」必须高亮（判别性所在）
+    expect(lanes[1].classes()).toContain('need')
+  })
+
+  it('claim + 回归失败：你侧由「无需操作」翻转为「需处置」并高亮', async () => {
+    const w = await mountWith(
+      mk({ status: 'claim', link: link({ offline_status: 'active', verify_status: 'failed' }) }),
+    )
+    const lanes = w.findAll('.lane')
+    expect(lanes[0].text()).toContain('回归未通过')
+    expect(lanes[1].text()).toContain('重推')
+    expect(lanes[1].classes()).toContain('need')
+  })
+})
+
+// 批 32：用户原话「【认领】【驳回】【忽略】这些按钮，到底是做什么用的」。
+// 病根 = 按钮**随状态变**却无人告知 + **后果不写**（「忽略」= 不修了进终态，
+// 「驳回」= 打回给认领人还要继续修 —— 两个都像"否掉"、后果相反）。
+// 下面三条钉两件事：① 每个按钮都必须配一句后果，漏配即红；
+// ② 「忽略」与「驳回」的后果句必须**明确相反**，防止将来被"统一措辞"抹平。
+describe('现在能做什么（批 32：按钮后果自陈）', () => {
+  const hints = (w: ReturnType<typeof mount>) =>
+    w.findAll('.op-hint').map(h => h.text().replace(/\s+/g, ' ').trim())
+
+  it('open 态：每个按钮都配了后果句（按钮容器数 == 后果句数，漏配即红）', async () => {
+    const w = await mountWith(mk({ status: 'open' }))
+    const ops = w.findAll('.op')
+    expect(ops.length).toBeGreaterThan(0)
+    for (const op of ops) {
+      expect(op.findAll('button, form').length).toBeGreaterThan(0)
+      expect(op.findAll('.op-hint')).toHaveLength(1)
+    }
+    // 判别性：认领说「你接手」，忽略说「这簇不修了、不再跟踪」——两句话必须都在
+    const t = hints(w).join(' | ')
+    expect(t).toContain('你接手这一簇')
+    expect(t).toContain('这簇不修了')
+    expect(t).toContain('不再跟踪')
+  })
+
+  it('claim + admin：「驳回」与「忽略」后果相反（驳回还要修、忽略才是不修了）', async () => {
+    const w = await mountWith(mk({ status: 'claim', link: link({ verify_status: 'passed' }) }))
+    const all = hints(w)
+    const reject = all.find(h => h.includes('打回'))!
+    const ignore = all.find(h => h.includes('这簇不修了'))!
+    expect(reject).toBeTruthy()
+    expect(ignore).toBeTruthy()
+    // 驳回的后果句**必须点明还要继续修**，并显式与「不修了」划清界限
+    // （⚠️ 不能断言 `not.toContain('不修了')` —— 那句对比正是故意写的，见 [1/1] 那次假红）
+    expect(reject).toContain('继续修')
+    expect(reject).toContain('不是')   // 「还要继续修 —— 不是「不修了」」
+    // 忽略则相反：明确是终态、不再跟踪
+    expect(ignore).toContain('不再跟踪')
+  })
+
+  // 批 34：用户**第二次**问「必须要点过它以后，这个问题才会被推给 offline 吗？」
+  // 批 32 那句只说「认领会怎样」，漏了他真正在问的「不认领会怎样」。
+  // 本条钉死：认领按钮的后果句必须**同时**含 when-you-do 与 when-you-don't 两半。
+  it('认领按钮必须写明「它不是什么」：不点也照推、但没认领不会自动收口', async () => {
+    const w = await mountWith(mk({ status: 'open' }))
+    const hint = w.findAll('.op-hint').map(h => h.text()).find(t => t.includes('你接手这一簇'))!
+    expect(hint).toBeTruthy()
+    // when-you-do：认领干什么
+    expect(hint).toContain('修复版本号')
+    expect(hint).toContain('自动收口')
+    // when-you-don't：**否定式**，这正是用户问的那半
+    expect(hint).toContain('不是「推给 offline」的开关')
+    expect(hint).toContain('不等你点')
+    expect(hint).toContain('不会自动收口')
+    // 判别性：不得把 Markdown 星号漏进模板（会原样渲染成 **）
+    expect(hint).not.toContain('**')
+  })
+
+  it('ops 区块有标题，且明说按钮会随状态变（用户正是在多簇之间对比才困惑的）', async () => {
+    const w = await mountWith(mk({ status: 'open' }))
+    const h = w.find('.ops h3')
+    expect(h.exists()).toBe(true)
+    expect(h.text()).toContain('现在能做什么')
+    expect(h.text()).toContain('按钮会随这一簇的状态变化')
   })
 })

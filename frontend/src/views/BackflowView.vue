@@ -17,13 +17,16 @@ import type {
 } from '../api/types'
 import { agentDisplay, useAgents } from '../composables/useAgents'
 import {
+  BACKFLOW_INTRO,
   CLUSTER_STATUS_LABEL,
   LAYER_OPTIONS,
-  OFFLINE_STATUS_TEXT,
   STATUS_OPTIONS,
+  taskState,
+  TERM,
+  VERIFY_STATUS_TEXT,
   WATCH_OPTIONS,
 } from '../backflowLabels'
-import { fmtISO } from '../format'
+// 批 33：`fmtISO` 已随「首现 / 最新」列一并移除（本页不再渲染任何时间戳）。
 
 const router = useRouter()
 
@@ -44,9 +47,8 @@ const ifacesLoading = ref(false)
 
 const maxPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
-function fmtTs(v: string | null | undefined): string {
-  return fmtISO(v)
-}
+// 批 33 删除：`fmtTs` 的**唯一调用点**是已删的「首现 / 最新」列。
+// 一并删掉而不是留着——留一个没人调的函数，后人会读成「某处还在用它」。
 
 function statusLabel(s: string): string {
   return CLUSTER_STATUS_LABEL[s] ?? s
@@ -56,9 +58,39 @@ function statusCls(s: string): string {
   return `st-${s}`
 }
 
-// link 现行态标签：表内优先展示 offline 拉取语义；invalidated 长句行内截断展示
-function linkOffline(s: string | null | undefined): string {
-  return s ? (OFFLINE_STATUS_TEXT[s] ?? s) : '-'
+// 批 29 移除 `linkOffline`（原供页脚「现行 link」用）：那处取 items[0] 冒充全局，
+// 已连句删掉；表内改用下面这套**短标签**（长句版 OFFLINE_STATUS_TEXT 仍由详情页用）。
+
+// 短标签（卡片 + 表格列用）= **直接复用筛选下拉的选项文案**。
+// 改前卡片 2 渲染的是 `{{ k }}` = 后端裸键（`assembled` / `invalidated`…），
+// 而同一组值在筛选下拉里是中文 ⇒ 同一页同一组值两套写法，新手无法对上号。
+// 复用同一份 map 是唯一能保证「选了什么、看到的就是什么」的写法。
+const OFFLINE_SHORT: Record<string, string> = Object.fromEntries(
+  WATCH_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label]),
+)
+
+/** 卡片/表格列用的 offline 态短文案（未知值兜底原文，防后端加值后前端静默空白）。 */
+function offlineShort(s: string | null | undefined): string {
+  return s ? (OFFLINE_SHORT[s] ?? s) : '-'
+}
+
+/** 回归验证态短文案（概览卡用）。文案源 = VERIFY_STATUS_TEXT，与详情页同一份。 */
+function verifyShort(s: string): string {
+  return VERIFY_STATUS_TEXT[s] ?? s
+}
+
+/** 「回归验证结果」卡要渲染的行：**值为 0 的不可达态不占位**。
+ *  ⚠️ 只对 `invalidated` 生效，且**只在值为 0 时**过滤 —— 这不是「前端硬编码一个永不显示的行」，
+ *  而是「一个当前不可达的值不占版面」。取证（2026-09-20）：全仓唯一写 `verify_status` 的函数是
+ *  `claim.py::_mark_pending_links`，4 个调用点传的值只有 superseded / passed / failed
+ *  （claim.py:158/255、batches.py:153、verify.py:411/415/425），**无一处写 invalidated**
+ *  ⇒ 它恒为 0。**但一旦后端落了写入点、值 >0，本行照常显示**（守卫单测钉住这一点），
+ *  所以不存在「真值被静默吞掉」的失效模式。
+ *  另注：这与 `offline_status='invalidated'`（**可达**，见筛选下拉与表格列）**同名不同物**，别混。 */
+const HIDDEN_VERIFY_KEYS = ['invalidated']
+
+function verifyRows(links: Record<string, number>): [string, number][] {
+  return Object.entries(links).filter(([k, v]) => !(HIDDEN_VERIFY_KEYS.includes(k) && v === 0))
 }
 
 function pickAgent(v: string): void {
@@ -127,12 +159,10 @@ function toDetail(row: BackflowCluster): void {
   void router.push({ name: 'backflow-cluster', params: { clusterId: row.cluster_id } })
 }
 
-function toTrace(row: BackflowCluster, ev: Event): void {
-  ev.stopPropagation()
-  if (row.first_trace_id && row.agent) {
-    void router.push({ name: 'trace-detail', params: { agent: row.agent, traceId: row.first_trace_id } })
-  }
-}
+// 批 33 删除：原 `toTrace()`（列表页「代表 trace」列 → trace 详情）。
+// 删除理由 = 用户两次反馈的成因就在这里：该链接是行内**唯一长得像入口的元素**，
+// 而「点整行进簇详情」没有任何视觉提示 ⇒ 用户点它、落到 trace 事件页、找不到认领按钮。
+// 该跳转在**详情页**仍有出口（P1-12 的「代表 trace ↗」），此处删掉不造成死胡同。
 
 function refresh(): void {
   void loadAgents(true)
@@ -155,10 +185,16 @@ function agentCounts(): BackflowByAgent[] {
 
 <template>
   <div>
+    <!-- 页头一句话（批 29）：此前进页第一眼就是四张卡 + 一表，全是内部黑话，
+         新用户既不知道「错误闭环」是条什么流程、也不知道该从哪看起。
+         刻意只一句 —— 本页只有 23 条数据，撑不起一段教程，写长了反而没人读。 -->
+    <p class="intro">{{ BACKFLOW_INTRO }}</p>
+
     <!-- 总览卡：cluster 状态分布 / verify 分布 / to_fix（近似值标注）/ by_agent 小分布 -->
     <section v-if="overview" class="cards">
       <div class="card">
-        <strong>cluster 状态</strong>
+        <strong>错误簇状态</strong>
+        <span class="sub">{{ TERM.cluster }}</span>
         <ul class="kv">
           <li v-for="(v, k) in overview.clusters" :key="k">
             <span class="dot" :class="`st-${k}`" />
@@ -167,20 +203,34 @@ function agentCounts(): BackflowByAgent[] {
         </ul>
       </div>
       <div class="card">
-        <strong>link 回查分布</strong>
+        <!-- ⚠️ 本卡的键是 **verify_status（回归验证）**，不是 offline_status ——
+             后端 backflow.py:457-462 明确 `group_by(ErrorCaseLink.verify_status)`，
+             值域 = pending/passed/failed/invalidated/superseded。
+             我第一版按 offline 去映射，真机上只有 `invalidated` 撞上、其余全兜底成裸键，
+             当场抓回（[[measurement-scope-is-not-claim-scope]] 同族：映射对象搞错层）。 -->
+        <strong>回归验证结果</strong>
+        <span class="sub">{{ TERM.link }}回跑的结果分布</span>
         <ul class="kv">
-          <li v-for="(v, k) in overview.links" :key="k">
-            <span>{{ k }}</span><b>{{ v }}</b>
+          <li v-for="[k, v] in verifyRows(overview.links)" :key="k">
+            <!-- 改前此处渲染 `{{ k }}` = 后端裸键（pending / passed …），
+                 同一组值在别处是中文，新手对不上号。
+                 verifyRows：值为 0 的不可达态（invalidated）不占位，见函数注释。 -->
+            <span>{{ verifyShort(k) }}</span><b>{{ v }}</b>
           </li>
         </ul>
       </div>
       <div class="card">
-        <strong>待修复集（本地近似 offline 权威集）</strong>
-        <p class="tofix">约 {{ overview.to_fix }} 条 link 待回归/已失败</p>
-        <p class="muted note">近似值：本平台无 offline 权威集，以「已激活且未过回归」link 数代理</p>
+        <strong>待修复集</strong>
+        <!-- 口径（批 29 改准）：真实谓词 = offline_status='active' **且**
+             verify_status ∈ (pending, failed)（backend/app/api/backflow.py:466-471）。
+             原先此处的备注「近似值：本平台无 offline 权威集，以…代理」已删 ——
+             与其讲一串「近似谁」的内部黑话，不如把**它到底数什么**说清。 -->
+        <span class="sub">已推给 offline 侧、但还没通过回归验证的用例数</span>
+        <p class="tofix">{{ overview.to_fix }} 条</p>
       </div>
       <div class="card grow">
         <strong>待处置（按 agent）</strong>
+        <span class="sub">还没人认领 / 正在复核的簇，按智能体分组</span>
         <ul v-if="agentCounts().length" class="kv">
           <li v-for="a in agentCounts()" :key="a.agent">
             <span>{{ agentDisplay(a.agent) }}</span>
@@ -234,13 +284,19 @@ function agentCounts(): BackflowByAgent[] {
         <thead>
           <tr>
             <th>状态</th>
+            <!-- 批 30：此前「这簇上系统在自动干什么、要不要我动手」全页零呈现 ——
+                 用户照出的实例是「我没点确认，offline 怎么已经跑过 run 了」。
+                 与「状态」相邻，因为它是状态的自然延伸（状态=在哪一步，本列=下一步谁动）。 -->
+            <th>现在轮谁<span class="th-sub">系统在自动跑哪一步、要不要你动手</span></th>
             <th>agent / 接口</th>
             <th>错误</th>
-            <th title="入参指纹：指纹相同的失败会被聚成同一个回流簇">input_hash</th>
-            <th>代表 trace</th>
-            <th>次数</th>
-            <th title="修复版本号：认领前为空，修复完成后由 offline 回写">fix_version</th>
-            <th>首现 / 最新</th>
+            <th>次数<span class="th-sub">同类失败出现几次</span></th>
+            <th>修复版本<span class="th-sub">{{ TERM.fixVersion }}</span></th>
+            <!-- 补列（批 29）：本列是筛选下拉「offline 态」的承载物 ——
+                 改前能选不能见，选完了页面上无处对照（与 L1/L2 同病）。 -->
+            <th>offline 态<span class="th-sub">{{ TERM.offlineStatus }}</span></th>
+            <!-- 批 33：本列是用户两次反馈后加的**显式入口**。成因见 toDetail 上方注释。 -->
+            <th>操作<span class="th-sub">点它进这一簇的详情，在那里认领 / 复核</span></th>
           </tr>
         </thead>
         <tbody>
@@ -250,6 +306,9 @@ function agentCounts(): BackflowByAgent[] {
               <span class="muted small" v-if="row.generation > 1">gen{{ row.generation }}</span>
             </td>
             <td>
+              <span class="wheel" :class="{ need: taskState(row).mine }">{{ taskState(row).short }}</span>
+            </td>
+            <td>
               <div>{{ agentDisplay(row.agent) }}</div>
               <div class="muted small">{{ row.interface }}</div>
             </td>
@@ -257,31 +316,33 @@ function agentCounts(): BackflowByAgent[] {
               <div>{{ row.error_type }}</div>
               <div class="muted small" :title="row.error_msg ?? ''">{{ row.error_msg }}</div>
             </td>
-            <td class="mono short" :title="row.input_hash ?? ''">{{ row.input_hash }}</td>
-            <td>
-              <button
-                v-if="row.first_trace_id && row.agent" class="link-like"
-                type="button" @click="toTrace(row, $event)"
-              >{{ row.first_trace_id }}</button>
-              <span v-else class="muted">-</span>
-            </td>
             <td>{{ row.count }}</td>
             <td>{{ row.fix_version || '-' }}</td>
-            <td class="mono muted">
-              <div>{{ fmtTs(row.first_ts) }}</div>
-              <div>{{ fmtTs(row.latest_ts) }}</div>
+            <td>
+              <span v-if="row.link" class="status" :class="statusCls(row.link.offline_status)">
+                {{ offlineShort(row.link.offline_status) }}
+              </span>
+              <span v-else class="muted">-</span>
+            </td>
+            <td>
+              <!-- 按 @click.stop 而非只依赖行点击：本按钮是**显式入口**，
+                   用户点的就是这个按钮本身，不该再靠事件冒泡兜底（冒泡一旦被上层
+                   重构掉，这里会静默变成死按钮）。行为与行点击完全一致。 -->
+              <button
+                class="go" :class="{ need: taskState(row).mine }"
+                type="button" @click.stop="toDetail(row)"
+              >{{ taskState(row).mine ? '去处理 →' : '查看 →' }}</button>
             </td>
           </tr>
         </tbody>
       </table>
 
       <div class="foot">
-        <span class="muted">
-          共 {{ total }} 个 cluster
-          <template v-if="items[0]?.link">
-            · 现行 link：{{ linkOffline(items[0].link.offline_status) }}
-          </template>
-        </span>
+        <!-- 批 29 删掉原「· 现行 link：{{ linkOffline(items[0].link.offline_status) }}」：
+             它取的是 **items[0]（表格第一行）自己的 link**，措辞却像全页/全站的值
+             （`api/types.ts:237` 写明「list 侧**每个 cluster 一个**」）⇒ 纯误导。
+             补了「offline 态」列之后，每行的值已在行内可见，这句没有剩余信息量。 -->
+        <span class="muted">共 {{ total }} 个错误簇</span>
         <span v-if="total > pageSize">
           <button class="btn-ghost" type="button" :disabled="page <= 1" @click="doSearch(page - 1)">上一页</button>
           <span class="page-no">{{ page }} / {{ maxPages }}</span>
@@ -297,6 +358,35 @@ function agentCounts(): BackflowByAgent[] {
 </template>
 
 <style scoped>
+/* 页头一句话（批 29）：新手进页第一眼要能知道「这是什么、从哪看起」 */
+.intro {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--brand);
+  background: var(--panel);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #374151;
+}
+
+/* 卡片标题下的小字释义（就地、不折叠） */
+.sub {
+  display: block;
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 表头第二行小字：把原本只藏在 title（hover 才见）里的解释提到明面 */
+.th-sub {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: normal;
+}
+
 .cards {
   display: flex;
   gap: 10px;
@@ -357,8 +447,10 @@ function agentCounts(): BackflowByAgent[] {
   display: inline-block;
 }
 
+/* 批 29：原为 22px —— 同排另外三张卡的数值是 13px（`.kv b`），两套字号并排不成套
+   （同 P1-20「同级 KPI 卡不同形」一族）。统一到 13px，靠 font-weight 保持一点点主次。 */
 .tofix {
-  font-size: 22px;
+  font-size: 13px;
   font-weight: 600;
   margin: 4px 0;
 }
@@ -393,19 +485,46 @@ function agentCounts(): BackflowByAgent[] {
   font-size: 12px;
 }
 
-.link-like {
-  border: none;
+/* 批 33：行内**显式入口**。此前整行的可点击性只由 `cursor: pointer` 表达，
+   肉眼不可见 ⇒ 用户找不到进簇详情的门（两次反馈）。本按钮是那扇门的可见形态。
+   `.need` 与「现在轮谁」列同色，把「这行该你动」和「点这里去动」连成一条视线。 */
+.go {
+  border: 1px solid var(--border);
   background: none;
-  padding: 0;
-  color: var(--brand);
+  border-radius: 4px;
+  padding: 3px 8px;
   font-size: 12px;
+  color: var(--brand);
   cursor: pointer;
+  white-space: nowrap;
 }
+
+.go.need {
+  color: var(--error);
+  border-color: var(--hl-red);
+  font-weight: 600;
+}
+
+.go:hover { background: var(--bg); }
 
 table {
   width: 100%;
   border-collapse: collapse;
+  /* 批 31：原来 `table-layout` 默认 auto —— 窄列（状态 / 次数 / 轮谁）被内容撑开，
+     宽列（错误 / 时间）反被挤到难看。固定布局 + 逐列定宽后各列不再互相抢；
+     「错误」列刻意**不给宽度**，由它吃掉剩余空间（内容最长、最需要宽）。 */
+  table-layout: fixed;
 }
+
+/* 批 33：删「入参指纹 / 代表 trace / 首现·最新」三列、加「操作」列 ⇒ 编号整体前移，
+   此处**必须同步改**；漏改的症状是列宽错位（宽度还在，只是套到了别的列上），不会报错。 */
+th:nth-child(1) { width: 80px; }    /* 状态 */
+th:nth-child(2) { width: 132px; }   /* 现在轮谁 */
+th:nth-child(3) { width: 16%; }     /* agent / 接口 */
+th:nth-child(5) { width: 56px; }    /* 次数 */
+th:nth-child(6) { width: 96px; }    /* 修复版本 */
+th:nth-child(7) { width: 116px; }   /* offline 态 */
+th:nth-child(8) { width: 96px; }    /* 操作 */
 
 th, td {
   text-align: left;
@@ -460,6 +579,24 @@ tbody tr:hover {
 .st-fixed, .st-active { background: #e7f3e9; color: var(--ok); }
 .st-inactive { background: #e8eaf0; color: #6b7280; }
 .st-needs_review, .st-invalidated { background: var(--hl-red); color: var(--error); }
+
+/* 「现在轮谁」（批 30）：与 .status 同形（同字号/同圆角），靠颜色区分「要不要你动手」——
+   只有 `mine` 为真才高亮；系统自动推进的簇保持中性，不与状态列抢视线。
+   高亮用红色系（同 st-needs_review）是刻意的：这一列的全部价值就是让你一眼找到「该我动手了」。 */
+.wheel {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  background: #e8eaf0;
+  color: #4b5563;
+}
+
+.wheel.need {
+  background: var(--hl-red);
+  color: var(--error);
+  font-weight: 600;
+}
 
 .foot {
   display: flex;

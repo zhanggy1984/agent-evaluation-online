@@ -6,8 +6,9 @@ import {
   CLUSTER_STATUS_LABEL, CONVERSION_ACTION_TEXT, INVALIDATE_REASON_NOTE,
   INPUT_TRUNCATED_WARN, LAYER_OPTIONS, OFFLINE_STATUS_TEXT, REVIEW_REASON_TEXT,
   STATUS_OPTIONS, VERIFY_STATUS_TEXT, WATCH_OPTIONS, conversionActionLabel,
-  conversionDetailText, reentryCaption,
+  conversionDetailText, reentryCaption, taskState,
 } from './backflowLabels'
+import type { BackflowCluster } from './api/types'
 
 // 后端写面的真实值域（自 backend/ 源码 grep 核对，2026-09-10）
 const BACKEND_WRITTEN_ACTIONS = [
@@ -183,5 +184,122 @@ describe('reentryCaption', () => {
     const s = reentryCaption({ ...base, latest_version: null })!
     expect(s).toContain('自认领起同键线上再现 3 次')
     expect(s).not.toContain('最新版本')
+  })
+})
+
+// ─── taskState（批 30：「现在轮谁」两条车道）────────────────────────────────
+// 用户原话：「有的错误，我还没点确认，怎么 offline 那边就已经跑过 run，而且成功了？！」
+// 根因 = 两条互不等待的车道并行，而页面上一个字都没写。本组用例穷尽 5 个簇状态 ×
+// 关键 link 组合，并把「漏配新枚举」做成机械可检的（最后一条元测试）。
+describe('taskState（批 30：两条车道）', () => {
+  const link = (off: string, ver: string) => ({
+    link_id: 1, payload_id: 'p', case_id: 'c', case_type: 'regression_error',
+    offline_status: off, verify_status: ver, assembled_ts: null,
+    invalidate_reason: null, requeue_count: 0,
+  })
+  const cl = (over: Partial<BackflowCluster> = {}): BackflowCluster =>
+    ({
+      cluster_id: 1, agent: 'a', interface: 'i', layer: 'L1', error_type: 'e',
+      error_msg: null, input_hash: 'h', first_trace_id: null, input_truncated: 0,
+      generation: 1, count: 1, status: 'open', first_ts: null, latest_ts: null,
+      fix_version: null, claimed_by: null, claimed_at: null, claim_due_ts: null,
+      claim_k: 2, needs_review_reason: null, link: null, ...over,
+    }) as BackflowCluster
+
+  it('open 无 link：等系统自动组装，同时也要你认领（两条车道并存）', () => {
+    const r = taskState(cl())
+    expect(r.short).toBe('等你认领')
+    expect(r.mine).toBe(true)
+    expect(r.auto).toContain('60 秒')   // 组装是 worker 周期扫描，不是实时
+  })
+
+  it('open + offline 已拉走：系统侧说进程，你侧仍要认领（**并行**，不是二选一）', () => {
+    const r = taskState(cl({ link: link('active', 'pending') }))
+    expect(r.auto).toContain('offline 拉走')
+    expect(r.mine).toBe(true)           // ⚠️ 关键：系统在跑 ≠ 你没事干
+    expect(r.short).toBe('等你认领')
+  })
+
+  it('open + payload 被驳回：说清是驳回、不是失败', () => {
+    expect(taskState(cl({ link: link('invalidated', 'pending') })).auto).toContain('驳回')
+  })
+
+  it('open + 回归已 passed：明确「没有认领记录 ⇒ 系统不会自动收口」（用户报的那一幕）', () => {
+    // 成因：offline 把**没人认领**的簇跑绿了，但 _apply_auto_fixed 要求 status='claim'
+    // （claim.py:267 `.where(status == "claim")`）⇒ 它停在 open 不收口。
+    // 当前库内尚不可达（open 的 link 全 pending），但因果上必然可达 ⇒ 必须能解释。
+    const r = taskState(cl({ link: link('active', 'passed') }))
+    expect(r.auto).toContain('没有认领记录')
+    expect(r.short).toBe('等你认领')
+  })
+
+  it('claim + pending：系统在等回归，你无需操作（mine=false）', () => {
+    const r = taskState(cl({ status: 'claim', link: link('active', 'pending'), claim_k: 3 }))
+    expect(r.short).toBe('等 offline 回归')
+    expect(r.mine).toBe(false)
+    expect(r.auto).toContain('3 次')    // K 取 cluster.claim_k，不是写死的 2
+  })
+
+  it('claim + 通过一次：说清「还需连续 K 次」，不让人误以为已收口', () => {
+    const r = taskState(cl({ status: 'claim', link: link('active', 'passed'), claim_k: 2 }))
+    expect(r.auto).toContain('一次')
+    expect(r.auto).toContain('2 次')
+    expect(r.mine).toBe(false)
+  })
+
+  it('claim + failed：转人工（mine=true），且短句不写成「等 offline」', () => {
+    const r = taskState(cl({ status: 'claim', link: link('active', 'failed') }))
+    expect(r.mine).toBe(true)
+    expect(r.short).toContain('处置')
+  })
+
+  it('needs_review：等你复核', () => {
+    const r = taskState(cl({ status: 'needs_review' }))
+    expect(r.mine).toBe(true)
+    expect(r.short).toBe('等你复核')
+  })
+
+  it('fixed / inactive：已结束，均无需你操作', () => {
+    for (const s of ['fixed', 'inactive']) {
+      const r = taskState(cl({ status: s }))
+      expect(r.mine).toBe(false)
+      expect(r.human).toBe('无需操作')
+    }
+    expect(taskState(cl({ status: 'fixed' })).short).toBe('已收口')
+  })
+
+  it('未知 status：兜底中性短句 + 详情页带出原值（不裸渲染、不静默吞）', () => {
+    const r = taskState(cl({ status: 'brand_new' }))
+    expect(r.short).toBe('状态未识别')
+    expect(r.auto).toContain('brand_new')
+    expect(r.mine).toBe(false)
+  })
+
+  // ⚠️ 元测试：switch 漏配新枚举 → 本用例红。
+  // 没有它，「后端加了状态值、前端走 default」只会在真机上表现为一句中性文案，无人会发现。
+  // ⚠️ 本条是**真机取证抓到的**（#3858）：claim + payload 被驳回。
+  // 第一版实现里 human 仍是「无需操作，等系统收口」—— 而 payload 已被驳回、
+  // 推送已暂停，回归永远不会发生 ⇒ 让用户等一个不会来的结果。
+  // 判别性：对第一版实现，下面的 mine / human 两条断言都会红。
+  it('claim + payload 被驳回：必须转人工（K 序列已断，等不到自动收口）', () => {
+    const r = taskState(cl({ status: 'claim', link: link('invalidated', 'pending') }))
+    expect(r.mine).toBe(true)
+    expect(r.short).toContain('处置')
+    expect(r.human).not.toContain('无需操作')
+    expect(r.auto).toContain('驳回')
+  })
+
+  it('claim + payload 尚未被拉走（assembled/draft）：确实无需操作，等系统', () => {
+    for (const off of ['assembled', 'draft']) {
+      const r = taskState(cl({ status: 'claim', link: link(off, 'pending') }))
+      expect(r.mine, off).toBe(false)
+      expect(r.human).toBe('无需操作，等系统收口')
+    }
+  })
+
+  it('后端 cluster_status 全部取值都被 switch 显式覆盖（漏配即红）', () => {
+    for (const s of Object.keys(CLUSTER_STATUS_LABEL)) {
+      expect(taskState(cl({ status: s })).short).not.toBe('状态未识别')
+    }
   })
 })
