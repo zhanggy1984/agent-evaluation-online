@@ -356,6 +356,25 @@ export function taskState(c: BackflowCluster): TaskState {
       }
     }
     case 'claim': {
+      // ⚠️ 批 43 取证：**本态已是「存量消亡态」** —— 认领端点随批 35-B 撤除后，
+      // `status = 'claim'` 全仓**零写入方**：`.values(status=…)` 只写 `open` / `fixed`
+      // （cluster.py:127、claim_ttl_job.py:69、claim.py:66、batches.py:49,61），
+      // 唯一形似的 `row.status = body.status`（admin.py:348）其 `row` 是 **User 不是
+      // ErrorCluster**；入口三处谓词现全为 `open`（backflow.py:789 推送后判定守卫、
+      // rejudge_job.py:62 扫描、assemble_job）；而 `claim_ttl_job` 做的是
+      // **claim→open 的泄流**（出不是入）。库内剩 4 条，`claim_due_ts` 实测
+      // 2026-09-27~29 到期自愈后，**本分支将整体不可达**。
+      //
+      // ⚠️ 同一取证确认：**`failed` 与 `passed` 两条分支在 claim 态也不可达**
+      // （下面仍在读代码的人会以为它们可达，故此处显式记下判据链）：
+      // `verify_status` 的唯一写入点是 `_mark_pending_links`（claim.py:47-54），
+      // 其 passed / failed 只由 `verify.py:499/503` 写入 ← `_apply_terminal` ← `judge_link`；
+      // 而 `judge_link` 的两个调用点**都被 `status == 'open'` 挡住**（`backflow.py:789`
+      // 的守卫、`rejudge_job.py:62` 的扫描谓词），且 passed 那条分支随后调的
+      // `_apply_auto_fixed` 其 CAS 也只认 `open`（claim.py:65）——claim 簇走到那里必抛
+      // `_conflict_err`。实测吻合：4 条 claim 簇的现行 link **全是 `pending`**。
+      // **保留不删**：存量 7 天内还在，删了这些读面兜底，将来若因故重新引入认领，
+      // 它们会退回 default 分支渲染裸枚举值（同 `VERIFY_STATUS_TEXT` 对 invalidated 的处置）。
       const failed = ver === 'failed'
       // ⚠️ 真机取证（#3858，2026-09-20）抓到本函数第一版的一个自相矛盾：
       // `invalidated` 当时只改了 auto 文案，human 仍是「无需操作，等系统收口」——
@@ -367,6 +386,25 @@ export function taskState(c: BackflowCluster): TaskState {
         // 驳回优先于 failed：payload 都没被受理，谈 K 序列无意义（与列表页同一判据）
         const t = invalidatedText(c)
         return { auto: t.auto, human: t.human, mine: true }
+      }
+      // ⚠️ 批 43（本处，任务 #39）：**已通过 seq 次、还没到 K** 的簇，此前 auto 写
+      // 「等待 offline 回归（需连续通过 2 次）」—— 不假，但**漏了「已通过 1 次」**，
+      // 用户看不出这簇已经推进过一步。与 open 分支用**同一判据**是刻意的：不对齐的话，
+      // 同一簇在 claim 态说「等待 offline 回归」、TTL 回退成 open 后同一条 auto 变成
+      // 「已连续通过 1 次（…）」，用户会以为进度凭空出现。
+      // 实测全库唯一实例 = 簇 #3875（claim ∧ seq=1 ∧ K=2）；另两条 claim 簇 seq 为 null。
+      // `seq ?? 0` 同 open 分支：后端未给（无现行 link / link 非 pending / 无 case_id）时
+      // 按「还没通过过」处理。判据排在 failed 之后：回归未通过是另一种现场。
+      const seq = c.seq ?? 0
+      if (!failed && seq >= 1 && seq < c.claim_k) {
+        return {
+          auto: `回归已连续通过 ${seq} 次（需连续 ${c.claim_k} 次才自动收口），`
+            + '等 offline 推送下一版结果',
+          // mine=false ⇒ 本行整行不渲染（批 38 的条件渲染）。与改动前**取值相同**
+          // （旧的 `mine: stuck` 在本支路也是 false）⇒ 本批零行为回归，只改 auto 文案。
+          human: '无需操作，等下一版回归结果',
+          mine: false,
+        }
       }
       const auto = failed
         ? '回归未通过'

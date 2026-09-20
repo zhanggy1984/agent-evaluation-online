@@ -361,6 +361,40 @@ describe('taskState（批 30：两条车道）', () => {
     expect(r.human).not.toContain('等系统')
   })
 
+  // ─── 批 43（任务 #39）：claim 态补 K 进度 ─────────────────────────────
+  // 真机症状（#3875，全库唯一实例）：簇 `claim`、link `pending`+`active`、seq=1、K=2，
+  // 而旧 auto 只写「等待 offline 回归（需连续通过 2 次）」—— 不假，但**漏了「已通过 1 次」**。
+  // ⚠️ 与 open 分支不同，这里的旧文案**不是说假话**（human 本就是「无需操作」，
+  // 没有批 40 那种「叫你去改一个不用改的 bug」），所以本批**只改 auto 文案**。
+  it('claim + 已通过 1 次未达 K：auto 补上进度（#3875 实证）', () => {
+    const r = taskState(cl({
+      status: 'claim', link: link('active', 'pending'), seq: 1, claim_k: 2,
+    }))
+    expect(r.auto).toContain('已连续通过 1 次')
+    expect(r.auto).toContain('2 次')             // K 取 cluster.claim_k，不是写死的
+    expect(r.auto).not.toContain('等待 offline 回归')  // 判别性：旧文案不得残留
+    expect(r.mine).toBe(false)                   // 与改动前**取值相同**（旧支路也是 false）
+  })
+
+  it('反假绿对照：claim + seq=0 仍是「等待 offline 回归」', () => {
+    // 没有这条，上一条在「claim 分支无条件返回新文案」的错实现下也会绿。
+    const r = taskState(cl({
+      status: 'claim', link: link('active', 'pending'), seq: 0, claim_k: 2,
+    }))
+    expect(r.auto).toContain('等待 offline 回归')
+    expect(r.auto).not.toContain('已连续通过')
+  })
+
+  it('claim + seq 已达 K：不套「已通过 K 次」文案（判据是 `<` 不是 `<=`）', () => {
+    // 边界：seq >= claim_k 时该簇本应已被 auto_fixed 收口，走到本分支只可能是
+    // 「已收口但状态未迁移」的过渡窗口 —— 此时说「还需 0 次」是自相矛盾的。
+    const r = taskState(cl({
+      status: 'claim', link: link('active', 'pending'), seq: 2, claim_k: 2,
+    }))
+    expect(r.auto).toContain('等待 offline 回归')
+    expect(r.auto).not.toContain('已连续通过')
+  })
+
   it('needs_review：转人工，但不指向已撤除的「复核」动作', () => {
     const r = taskState(cl({ status: 'needs_review' }))
     expect(r.mine).toBe(true)

@@ -3040,3 +3040,74 @@ judged 行照常被 CAS 置 `processed=1` ⇒ **事件被静默吞掉、不重�
 - `DetailView.vue:83` 的三元真值分支现恒不可达（数据里 fix_version 恒 null）。
   保留是刻意的（防手工改库后丢上下文），但**读起来像「有值时会显示」** ⇒ 属
   [[deliverable-must-show-implementation-status]] 的同型风险。**未动。**
+
+---
+
+## 四十五、批 43（2026-09-20）：任务 #39 —— claim 态补 K 进度 + 取证「claim 已是存量消亡态」
+
+### 45.1 取证一：claim 态**零写入方**（任务书第 1 条要求，判据落到写入方而非库内条数）
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 全仓 `.values(status=…)` | 只写 `open`（cluster.py:127 新建 / claim_ttl_job.py:69 回退 / batches.py:49,61）/ `fixed`（claim.py:66）。唯一形似的 `row.status = body.status`（admin.py:348）其 `row` 是 **User 表不是 ErrorCluster**（`session.get(User, uid)`） |
+| 2 | 入口谓词 | 三处现全为 `open`：推送后判定 `backflow.py:789`、rejudge 扫描 `rejudge_job.py:62`、assemble_job |
+| 3 | 方向 | `claim_ttl_job` 做的是 **claim→open 的泄流**（出不是入） |
+| 4 | 库内 | 4 条（3839/3842/3845/3875），`claim_due_ts` 实测 2026-09-27~29 |
+
+⇒ **claim 是存量消亡态**：不会新增，到期自愈后 `case 'claim'` 整条不可达。
+
+### 45.2 取证二：`ver === 'passed'` / `'failed'` 在 claim 态**不可达**（任务书第 2 条要求）
+
+判据链：`verify_status` 唯一写入点 = `_mark_pending_links`（`claim.py:47-54`）；
+其 `passed`/`failed` 只由 `verify.py:499/503` 写入 ← `_apply_terminal` ← **`judge_link`**；
+而 `judge_link` 的两个调用点**都被 `status == 'open'` 挡住**（`backflow.py:789` 守卫、
+`rejudge_job.py:62` 谓词）；且 passed 那条随后调的 `_apply_auto_fixed` 其 CAS 也只认
+`open`（`claim.py:65`）—— claim 簇走到那里**必抛 `_conflict_err`**。
+
+**实测吻合**：4 条 claim 簇的现行 link 全是 `pending`，无一 passed/failed。
+
+⇒ 两条 if 分支都是死的，而代码里**没有任何标注**（本批补上）。
+
+### 45.3 取证三：实测 seq
+
+`3839=null`（无现行 link）· `3842=null` · `3845=null` · **`3875=1`** ← 全库唯一。
+
+### 45.4 改动（`backflowLabels.ts` `case 'claim'`，15 行有效代码）
+
+- fallback 前插 seq 分岔，**与 open 分支同一判据**（`!failed && seq >= 1 && seq < claim_k`）。
+  不对齐的后果：同一簇在 claim 态说「等待 offline 回归」、TTL 回退成 open 后同一条 auto
+  变成「已连续通过 1 次」，用户以为进度凭空出现。
+- `mine` **取值与改动前相同**（旧 `mine: stuck` 在本支路也是 false）⇒ 本批只改 auto 文案。
+- 两条死分支加**取证式标注**（判据链 + 实测），并说明**为何保留不删**：
+  存量 7 天内还在；将来若重新引入认领，删了会退回 default 渲染裸枚举。
+
+⚠️ **与批 40 的关键区别（必须写清，防后人以为同源）**：批 40 在 open 态修的是
+**假话**（human 叫「去代码里改」而回归已经 pass 过，用户白翻一遍代码）。
+claim 态的 human 本就是「无需操作」⇒ **本处只是漏报进度，不是报假话，主伤害不在**。
+
+### 45.5 验证
+
+- **判别性 A/B**（按 [[git-checkout-restores-index]]：用 `git show HEAD:` 取旧码、不用
+  `git checkout --`，改完 `cp` 还原并 `git diff --stat` 确认）：旧实现下**恰好 1 条红**
+  —— 实收 `'等待 offline 回归（需连续通过 2 次）'`，正是 #3875 真机现状；
+  两条**对照**（seq=0 / seq≥K）照常绿 —— 那正是对照的职责。
+- 前端 **243 passed / 17 files**（基线 240，+3）；`npm run build` 绿。
+- **真机**（新标签页，bundle `index-C6ihC3wa.js`，非旧页）：
+  - #3875：`系统自动  回归已连续通过 1 次（需连续 2 次才自动收口），等 offline 推送下一版结果`；
+    旧文案「等待 offline 回归」**整页零出现**；human 行仍不渲染（mine=false）⇒ 零行为回归。
+  - #3839（顺带）：`link: null`、meta 只剩「回归阈值 K=2」、页尾「暂无回归 run」——
+    ⇒ **另立任务 #41**，本批不掺。
+
+### 45.6 顺带撞见的三处漂移（**未动**，按任务书「别顺手改」的指示 → 全部并入 #33）
+
+1. `backflowLabels.ts:84-85` 写着「`superseded` 有 **4 个真实写入点**
+   （`claim.py:158/255`、`batches.py:153`、`verify.py:411-425`）」——
+   **那 4 处全被批 35-A/B 删了**（`claim.py` 现 91 行、`batches.py` 67 行，
+   `verify.py:411-425` 已是 `ensure_unclean_batch` 块）。该注释现在是假话，
+   且与紧邻的 invalidated 注释（「全仓零写入点、当下不可达」）**自相矛盾** ——
+   与 invalidated 同因，`superseded` 现在也是**零写入点**。属
+   [[stale-rationale-outlives-its-data]]（论据没了、守卫还在）。
+2. `backflowLabels.ts:178` 的 `STATUS_OPTIONS` 注释说 claim「库内有 **6 条**真数据」，
+   实测 **4 条**。
+3. `rejudge_job.py:49` docstring 说扫 `status=='claim'`，**代码是 `'open'`**
+   （模块头 :26 同病）—— 正是本批取证时差点被它误导的那一处。
