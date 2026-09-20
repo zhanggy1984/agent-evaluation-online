@@ -7,15 +7,24 @@
 而判定本身仍是**不可靠的一次性操作** —— 事件到达的那一刻只要「现场未就绪」，这一次判定就
 白跑，且没有任何重试。本 job 补回「再判一次」的能力，覆盖三类「事件到达时未就绪」：
 
-① **claim 晚于推送**：正常时序是 建簇(open) → ≤60s 自动组装 pending link（`assemble_job`
+① **推送到达时现场未就绪**：正常时序是 建簇(open) → ≤60s 自动组装 pending link（`assemble_job`
    扫 `status=='open'`，**不依赖认领**）→ offline 拉走（pull-API 无 cluster.status 闸）→
-   推结果。此时 cluster 仍是 `open` → 推送端点被 `cluster.status=='claim'` 守卫挡下
-   （**必须挡**，见该处注释）→ link 永挂 pending，直到 viewer 认领。认领之后**不会再有事件**
-   来驱动这次判定 —— 没有本 job 就永久停在 pending。
+   推结果。此时 cluster 仍是 `open`。⚠️ **批 50（#33）订正**：本条原先写「推送端点被
+   `cluster.status=='claim'` 守卫挡下（**必须挡**）→ link 永挂 pending，直到 viewer 认领，
+   认领之后不会再有事件来驱动这次判定」—— **该「必须挡」的守卫已随批 35-A 删除，
+   认领也不再是判定前提**（准入 `claim`→`open`；实测 `record_regression_result` 所在端点
+   体内无任何 cluster 状态闸）。故「先挡下、认领后再补判」这条链**已不存在**。
+   本 job 覆盖的场景收窄为：这一次判定**因现场未就绪而没能收敛**（link 仍 pending）
+   ⇒ 没有事件再来驱动它，靠本 job 周期重放。⚠️ **该场景在现网数据下是否可达，本批未取证**，
+   不宣称验过。
 ② **判定抛异常**：判定段已按「降级不回滚」处理（数据照落、响应 200，见
    `record_regression_result` 的 try/except），跳过的这一轮判定只能靠本 job 补。
-③ **其它状态过渡窗口**：needs_review 的 resolve ↔ reopen、TTL 回退、admin invalidate/requeue
-   等过渡态下推送到达 → 同样被守卫跳过，状态回到 claim 后需要一次补判。
+③ ⚠️ **批 50（#33）订正**：本条原写「needs_review 的 resolve ↔ reopen、TTL 回退、
+   admin invalidate/requeue 等过渡态下推送到达 → 同样被守卫跳过，状态回到 claim 后需要一次补判」。
+   **这些「守卫」与「回到 claim」的前提都已不成立**：admin invalidate/requeue 写端点在批 35-A
+   整体删除；状态写点实测只剩 `open`（`batches.py:49`、`claim_ttl_job.py:69`）与 `fixed`
+   （`claim.py:66`），**无任何写点产 `claim`** ⇒「回到 claim」不可达。本条**暂无可达场景，
+   保留段落仅为记录原设计意图**；若日后重新引入「推送被状态挡下」的机制，需连同本段一并复核。
 
 **与已删的 recheck 不是一回事，别混为一谈、也别把 job 清单按 6→5 改回**（见
 `worker/__init__.py`）：recheck 是「online 主动拉 offline 结果」（每分钟一个 outbound
@@ -23,9 +32,11 @@ HTTP 轮询），本 job 是**纯本地**扫描 + 重放本 link 已落库的结
 （`core/offline_client.py` 已删，本模块不 import 任何 offline 客户端），不依赖 offline 存活，
 也不产生平台间流量。
 
-扫描谓词刻意与旧 recheck 的扫描谓词**逐字相同**（`cluster.status=='claim'` ∧ 存在
-`verify_status=='pending'` 的现行 link），因为「可判现场」的定义没有变，变的是**触发方式**：
-旧 job 用它决定「去拉什么」，本 job 用它决定「重放什么」。
+扫描谓词（`cluster.status=='open'` ∧ 存在 `verify_status=='pending'` 的现行 link），
+与旧 recheck 的扫描谓词**只差状态字面量**：旧 job 用它决定「去拉什么」，本 job 用它决定
+「重放什么」。⚠️ **批 50（#33）订正**：本行原先写的是 `'claim'`，**与代码不符**——
+批 35-A 把准入从 `claim` 改成 `open`（认领不再是判定前提），本 docstring 漏改，
+批 43 取证时曾据此差点把「claim 簇不进判定循环」判反。**代码是权威，行 56 起为准。**
 
 - 每候选 begin_nested() savepoint（判定链中途抛异常只回退该候选，不留半态）；
 - 每批一个事务 commit；批循环以「零终态迁移」为收敛判据（**不是**空批，见 run_rejudge
@@ -46,9 +57,9 @@ logger = get_logger("worker.rejudge")
 
 
 async def _scan_candidates(session: AsyncSession, *, batch: int) -> list:
-    """扫 `status=='claim'` ∧ 存在现行（pending）link 的 cluster（order by id limit batch）。
+    """扫 `status=='open'` ∧ 存在现行（pending）link 的 cluster（order by id limit batch）。
 
-    只看 cluster 不看 `verify_run_record`：无已收结果的 claim 簇调 judge_link 会走「本 link
+    只看 cluster 不看 `verify_run_record`：无已收结果的 open 簇调 judge_link 会走「本 link
     尚无已收结果 → pending」快速返回（零判定成本），不值得为它多加一次 join。
     """
     has_pending_link = exists().where(
@@ -117,9 +128,9 @@ async def _rejudge_batch(engine: AsyncEngine, *, batch: int) -> tuple[int | None
 async def run_rejudge(
     engine: AsyncEngine, *, logger=None, batch: int = REJUDGE_BATCH
 ) -> int:
-    """claim 簇现行 pending link 批量补判（worker rejudge loop 每 60s 调一次）。
+    """open 簇现行 pending link 批量补判（worker rejudge loop 每 60s 调一次）。
 
-    收敛判据是「本批**零终态迁移**」而**不是**「空批」—— 本 job 的候选谓词（claim ∧ 有
+    收敛判据是「本批**零终态迁移**」而**不是**「空批」—— 本 job 的候选谓词（open ∧ 有
     pending link）**不自清**：gap / 未达 K / 不可判的簇判定完仍然留在候选集里，空批永远等
     不到（实测：照抄 assemble/claim_ttl 的「批循环直到空批」会让一轮 run 永不返回，worker
     该 loop 从此不 sleep、整轮空转打库）。有终态迁移时对应 link 已离开 pending 集合、候选窗口

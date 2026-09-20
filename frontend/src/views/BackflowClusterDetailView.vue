@@ -78,6 +78,10 @@ function offlineLabel(s: string): string {
   return OFFLINE_STATUS_TEXT[s] ?? s
 }
 
+// ⚠️ 批 50（#33）注明：三元里的「待 {fix_version} 回归 run」分支**当前不可达** ——
+// `fix_version` 已零写点且存量已于批 42 清空（详见 backflowLabels.ts 同名注释），
+// 取值恒为 null ⇒ 实际恒走 '待回归'。**保留本分支是为了「值若回来还能显示」**，
+// 不是「这里有两条路可走」；照它去构造用例会验到一条不存在的路。
 function verifyLabel(lk: BackflowLink): string {
   if (lk.verify_status === 'pending') {
     return detail.value?.fix_version ? `待 ${detail.value.fix_version} 回归 run` : '待回归'

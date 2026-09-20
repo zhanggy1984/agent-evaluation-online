@@ -46,7 +46,7 @@
 | **T-4.13** ⑤ 平台间契约异常 | 非白名单丢行 / schema_version 拒单 / 重复 case_id 整单拒 / 未知 payload 404 | `push_probe#S-4`、`#S-5`、`#S-13`、`pull_probe#P-5`、`#P-7`、`#P-8` |
 | **T-4.14** ③ 判定时序边界 | 到期瞬间补判、重复到期不重判 | 同 T-4.5 E-16 |
 | **T-4.14** ⑤ 并发/竞态（部分） | claim CAS、ack 幂等重放、requeue 防抖边界 | `claim_probe#C-10`、`pull_probe#P-13`、`#P-11` |
-| **T-4.11** 前端端到端（大部分）⚠️ | 登录 / 回流列表与详情 / viewer 与 admin 权限 / 状态文案 / claim 倒计时 / 空态 | **补测批浏览器 e2e（2026-09-10 当次会话结论，非可复跑资产）** |
+| **T-4.11** 前端端到端（大部分）⚠️ | 登录 / 回流列表与详情 / viewer 与 admin 权限 / 状态文案 / ~~claim 倒计时~~ / 空态 | **补测批浏览器 e2e（2026-09-10 当次会话结论，非可复跑资产）**。⚠️ **批 50（#33）订正**：覆盖项里的「claim 倒计时」对应控件与作业面已随批 35-A/B 撤除 ⇒ **该项现无对象可覆盖**（本行其余项不受影响） |
 | **T-4.7** 故障注入（**三条**） | **E-19 ES 不可用 / E-18 Kafka 不可用 / E-20 MySQL 不可用**——判据均为「投唯一 trace → 注入 → 恢复 → 断言判定态行」 | **真机注入实测，非探针资产**；dev 库已回基线 70 行（2026-09-13）。详见 §6 F-4 |
 | **T-4.9** 部署/网络（**非网关半边五条**） | 交付物边界 / 凭证不入镜像 / `{env}.` 前缀全链路 / backend 零宿主端口映射 / 中间件走网络内服务名 | **真机取证**（`docker run --rm` 无 bind mount 取镜像本体 + 运行时 `select database()` + `NetworkSettings.Ports`），2026-09-13。详见 §6 F-6 |
 | **T-4.10** 鉴权边界（**online 四条**） | 角色矩阵越权被拒 / 吊销即时生效（`status` + session 行**两半**）/ `case_type` 白名单返空集 / 未授权 topic 丢弃计数 | **探针 21/21 PASS**，2026-09-13（A/B/E/C1-C2/D 真机 HTTP + Kafka/ES；**C3~C6 为进程内 ASGI**，边界已标注）。详见 §6 F-8；**该「部署层未验」残留已于 2026-09-14 复验闭合（6/6，见 §6 F-21）** |
@@ -527,7 +527,7 @@ J5 真挣到的是**四条结构型事实**：真重算轮确实会发生 / meta
 | 判定入口的候选查询 | `analyzer/cluster.py:173-184` 的 `select(ErrorCluster).where(...)` **只有四个谓词** = `agent` / `interface` / `error_type` / `input_hash`。**无任何时间谓词** | **强**——这是「count+1 vs 新开代」的唯一判据产生处，我读的是该查询语句本身 |
 | 判据纯函数 | `pick_merge_target`（`:49-69`）签名只收 `reopen_after_terminal`，**不接收时间输入**；分支只看 `status` / `generation` | 强 |
 | `latest_ts` 全部读写点 | 写 **2** 处（`:124` 建簇、`:254` `_apply_count` 刷新）；读 **1** 处（`api/backflow.py:245`，仅为展示转 ISO）。**无任何时间比较** | 强 |
-| `inactive` 全部命中 | 全仓命中中**唯一的赋值点 = 人工 `ignore`**（`backflow/claim.py:154-174` 的 `.values(status="inactive")`）；另有 `reopen` 反向。**无自动归档代码** | 强——`inactive` 的全部命中已逐条过目 |
+| `inactive` 全部命中 | ~~唯一的赋值点 = 人工 `ignore`（`backflow/claim.py:154-174` 的 `.values(status="inactive")`）~~；⚠️ **批 50（#33）订正（2026-09-20 实测）**：该写点已随批 35-A 删除，`grep -rn 'status="inactive"' backend/app/` **零命中** ⇒ `inactive` 现**无任何赋值点**（原「人工 ignore」这一条已不成立）；`reopen` 反向仍在（`backflow/claim.py:85`）。**「无自动归档代码」这个结论本身不变**（反而更强） | 强——**上行为原取证，本次为复核**；`inactive` 的全部命中已逐条过目 |
 | `cluster_window_days` | 全仓 **2** 命中：`core/seed.py:46`（写库默认值）+ 文档口径表。**零读取点** | 强（限本仓） |
 
 ⇒ **「同键静默超窗口 → cluster → inactive」整条未实现**；`cluster_window_days` 是一个**登记了默认值、无人读取**的配置键。

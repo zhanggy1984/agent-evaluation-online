@@ -3501,3 +3501,75 @@ INSERT INTO `dev.obs`.conversion_record (cluster_id, action, detail) VALUES
    结尾点了 tab[1]），**不是分页缺陷** —— 后续改为「先点明 tab 再读、并回读哪个 tab 带 `on`」后读数自洽。
    记在这里是因为「读错 tab」与「分页没生效」的行数症状**同形**。
 3. 三页的**空态**（0 条）不渲染页脚 —— 逻辑上由 `total > 0` 保证，**未单独真机取证**（当前窗口三页都非空）。
+
+## 五十二、批 50（2026-09-20）：任务 #33 —— 文档同步（端点契约与人工处置流程描述）
+
+**动因**：批 35-A/B 把 online 侧「人工处置写面」整体撤除（9 个写端点 + 对应前端），但**文档没跟着搬** ——
+多份规格/验收文档仍在描述「claim 倒计时」「admin invalidate/requeue」「needs-review-resolve」这些**已不存在**的能力。
+这类残留的危害不是「写错了」，而是**后人照它去点一个不存在的按钮、或按它去建一个已被撤除的页面**。
+
+### 52.1 本批取证事实（写文档前先查，**不许照抄台账**）
+
+| 事实 | 取证命令 / 出处 | 读数 |
+|---|---|---|
+| backflow 现存端点 **4 条** | `grep -nE '^@router\.(get\|post\|put\|patch\|delete)' backend/app/api/backflow.py` | `overview`(373) / `clusters`(413) / `clusters/{cluster_id}`(475) / `regression-results`(829) |
+| 状态写点只剩 `open` 与 `fixed` | 全仓 `.values(status=…)` | `open`：`batches.py:49`、`claim_ttl_job.py:69`；`fixed`：`claim.py:66` |
+| **`inactive` 赋值点已归零** | `grep -rn 'status="inactive"' backend/app/` | **零命中**（原「唯一赋值点 = 人工 ignore `claim.py:154-174`」已随批 35-A 删除） |
+| reentry 版本门控不过 = **零落库** | `backend/app/analyzer/cluster.py:199-205` | `return "blocked"`，**不建簇、不 count、不 conv** |
+| `rejudge_job` 真实扫描谓词 | `backend/app/worker/rejudge_job.py:64` | `ErrorCluster.status == "open"`（**不是** `claim`） |
+| 库内状态分布 | MySQL `dev.obs` | `open 6 / fixed 10 / claim 0` |
+
+### 52.2 改动九站（A/B/C）
+
+**A 类（后端/规格，会被当权威读的）**
+
+| # | 站点 | 原写（错） | 处理 |
+|---|---|---|---|
+| A1a | `backend/app/api/router.py:7` | 「backflow：admin 人工 invalidate/requeue 单点+批量」 | 改为「回流簇读面 + 结果推送接收」+ 批 50 订正注 |
+| A1b | `backend/app/api/router.py:10-12` | 「**12 条** cluster/link 路由」（含 5 个已删写端点） | 改为「只剩 4 条」+ 列出实际 4 条 + **给出复跑命令**、并写「别照抄本行」 |
+| A2 | `solution_detail.md` §9.2 读面表「回流-聚类详情」行 | 列了 `admin invalidate/requeue`、人工操作区（ignore/claim/…）、claim 复核窗倒计时 | 三项删除并注明「人工处置面现不存在，本行不再作为待建清单使用」 |
+| A3a | `solution.md:472` | 「同日不等值按上线中**只 `count+1`** 不开新 cluster」 | 改为「不开新簇」+ 注明实测 `cluster.py:199-205` 返 `blocked`、**零落库** |
+| A3b | `solution_detail.md` §7.5 序比较段 | 同一句「只 `count+1`」——**且与它自己下文的「非『只 count+1』」自相矛盾** | 同上订正，并点明「与本段下方定音自相矛盾」 |
+
+**B 类（验收/报告，会被当「验过什么」读的）**
+
+| # | 站点 | 处理 |
+|---|---|---|
+| B1a | `task.md` T-4.11 验收清单 | 删「claim 倒计时」（已撤除的控件） |
+| B1b | `task.md` T-4.11 needs_review 段 | `needs-review-resolve` 端点已删 ⇒ 注明「此路当前无实现」 |
+| B2 | `docs/integration-report.md:49` T-4.11 覆盖范围行 | 「claim 倒计时」划删除线 + 注明「该项现无对象可覆盖」 |
+| B3 | `docs/integration-report.md` §530 `inactive` 取证表 | 原「唯一赋值点 = 人工 ignore」划删除线 + 补**本次复核命令与读数（零命中）** |
+
+**C 类（代码注释，会被当「这里有两条路」读的）**
+
+| # | 站点 | 处理 |
+|---|---|---|
+| C1 | `frontend/src/backflowLabels.ts` `VERIFY_STATUS_TEXT.superseded` 注释 | 原写「有 4 个真实写入点」——那 4 处已全删；改为「零写入点」并写清**保留词条的理由变了** |
+| C2 | `frontend/src/backflowLabels.ts` `STATUS_OPTIONS` 判据块 | 补「库内条数是会腐的数（本条已腐两次）」+ 复跑命令 + 当时实测分布；`claim` 条改为「库内 0 ⇒ `claim_ttl_job` 无对象可处理」 |
+| C3a | `backend/app/worker/rejudge_job.py` 模块 docstring ①③ | 原文建立在一个**已被批 35-A 删除的** `cluster.status=='claim'` 守卫上 ⇒ 「先挡下、认领后补判」这条链**已不存在**；如实改写并标注未取证项 |
+| C3b | 同上，扫描谓词段 + `_scan_candidates` / `run_rejudge` docstring | `claim` → `open`（**代码是权威，行 64 为准**） |
+
+**E 类（只加注明，不改行为）**：`BackflowClusterDetailView.vue:82` 的「待 `{fix_version}` 回归 run」三元分支、
+`backflowLabels.ts` 的 `reentryCaption` —— 两处分支**当前都取不到数据**（`fix_version` 已零写点并被批 42 清空；
+`claim` 态库内 0 条），注明「保留分支是为了值若回来还能显示，**不是这里有两条路可走**」。
+`reentryCaption` 文案教用户「re-claim / reopen」而两个入口都已删除 ⇒ 一并标注（**未在本批顺手改文案**，因为
+这属「指引」而非「分支」，改它会牵动单测断言，该单独成批）。
+
+### 52.3 明确不动
+
+- **D 类**：`frontend/src/format.ts` 的 `fmtCountdownMs` + `format.spec.ts` 对应单测 —— 属**代码删除**，
+  验证面与文档不一致，单独成批（本批只做文档同步）。
+- **F 类**：`solution_detail.md:26`、`task.md:119`、`revision-design-register.md:472` 三处**带日期锚定的历史记录**
+  （形如「截至 X 日，当时是…」）—— 历史记录本就该保持原样，改了反而是伪造当时认知。
+
+### 52.4 验证与未验项
+
+- **前端**：`npx vitest run` ⇒ **19 files / 260 passed**（与批 49 基线持平）。
+  ⚠️ **这条绿不能证明本批正确** —— 改动全是注释，测试断言的对象是行为，注释改错不会有任何用例变红。
+  本批真正的判据是**取证读数与复跑命令**（见 52.1），不是测试。
+- **后端**：`py_compile` 通过；`pytest -q` ⇒ **496 passed**。
+  ⚠️ **首跑出现过 1 条红**：`tests/test_api_auth.py::test_login_lockout_after_5_fails_15min`；
+  该用例**单跑绿**、全量**复跑两次均绿** ⇒ 观测如实记录为「偶发（疑似测试间状态污染）」，
+  **成因未查**（本批未做归因，不写成一条待办）。
+- **未验**：E 类两处「当前取不到数据」是**静态推理 + 库内读数**得出，**未在真机页面上确认「那个分支确实不渲染」**
+  （要造一条带 `fix_version` 的 `fixed` 簇才能验，属另一验证面）。

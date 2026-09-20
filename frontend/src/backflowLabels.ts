@@ -80,10 +80,14 @@ export const VERIFY_STATUS_TEXT: Record<string, string> = {
   passed: '回归通过',
   failed: '回归失败',
   invalidated: '已失效（invalidated）',
-  // 批 31：原「已让位（superseded）」——用户原话「太难理解了」。
-  // **不删只改词**：`superseded` 有 4 个真实写入点（claim.py:158/255、batches.py:153、
-  // verify.py:411-425），是**可达值**，现在显示 0 只因还没发生过；删掉后它第一次变 1、2、3 时
-  // 那个数字会凭空消失（卡片总数对不上）。改词同样解决「看不懂」，且不丢信息。
+  // 批 31：原「已让位（superseded）」——用户原话「太难理解了」。改词不删，理由见下。
+  // ⚠️ 批 50（#33）订正：本条原写「`superseded` 有 4 个真实写入点（claim.py:158/255、
+  // batches.py:153、verify.py:411-425），是可达值」——**那 4 处已被批 35-A/B 全部删除**，
+  // 且此后无新增。**实测全仓 `.values(status=…)` 现在只写 `open`（batches.py:49、
+  // claim_ttl_job.py:69）与 `fixed`（claim.py:66）**，`superseded` **零写入点**，
+  // 与紧邻的 `invalidated` 同因（那一行的注释当时已写明「全仓零写入点、当下不可达」）。
+  // 保留词条的理由随之改变，只剩下一条：**它是对外渲染面**，后端若哪天重新落写入点，
+  // 删掉词条会让徽标退化成原始英文串。**别再把它读成「有写入点的可达值」。**
   superseded: '已被新用例取代',
 }
 
@@ -183,18 +187,23 @@ export const WATCH_OPTIONS = [
 // 状态筛选下拉（批 38：用户拍板「三个都删，只留未处置/已修复」）。
 // ⚠️ **下拉只列「现在能筛出东西」的值**，不列「枚举里有」的值 —— 两者从此不等，
 // 这是刻意的（下方 spec 有专门的断言反向钉住）。
-// 判据（2026-09-20 全仓 grep + 库内实测）：
-//   open   写点 cluster.py:127 新建 / claim_ttl_job.py:69 TTL 回退  库内 7 条  → 保留
-//   fixed  写点 claim.py:66 自动收口                                库内 10 条 → 保留
-//   claim  **0 写点**（认领端点随批 35-B 撤除）⇒ 进不去了；但库内有 6 条真数据，
-//          且 claim_ttl_job 的退回路径是活的（claim_due_ts 实测 2026-09-27~29）⇒
-//          它是「正在消失的历史态」，不是空选项。仍被删出下拉：让用户筛一个
-//          **不会再产生、且一周后自己消失**的值，成本大于收益。
-//          ⚠️ 代价已与用户确认：那 6 条**暂时只能不加状态筛选地翻列表**（一周后自愈）。
+// ⚠️ **库内条数是会腐的数**（本条已腐两次：写过 6 条、实测 4 条；批 48 把仅剩的 3 条
+// 退回 open 后归 0）。**引用前必须重跑**：
+//   docker exec -i shared-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e \
+//     "SELECT status, COUNT(*) FROM \`dev.obs\`.error_cluster GROUP BY status;"'
+// 实测（2026-09-20 批 50 当时）：open 6 / fixed 10 / **claim 0**。
+//   open   写点 cluster.py:127 新建 / claim_ttl_job.py:69 TTL 回退  → 保留
+//   fixed  写点 claim.py:66 自动收口                                → 保留
+//   claim  **0 写点**（认领端点随批 35-B 撤除，`action="claim"` 全仓零写入方）
+//          **且库内已 0 条** —— 批 48 把最后 3 条走查数据提前退回 open。
+//          ⇒ `claim_ttl_job` 的谓词要求 `status=='claim'`，无对象可处理（**当前不可达**）。
+//          ⚠️ 别据此把 claim 当成「已死的枚举」：`CLUSTER_STATUS_LABEL` 里仍有它，
+//          手工改库/未来重开写面都会让它再次可达。
 //   inactive / needs_review  库内 0 条、全仓 0 写点（needs_review 由批 35-A 明确停用，
 //          见 verify.py:337-347）⇒ 选中**必然空结果**且页面不解释。这是批 29 `L1/L2`
 //          的同型缺陷，本次一并清掉。
-// ⚠️ `CLUSTER_STATUS_LABEL` **不动**：徽标要照实渲染那 6 条历史 claim 簇，页面显示真值。
+// ⚠️ `CLUSTER_STATUS_LABEL` **不动**：徽标照实渲染后端返回的真值（含 claim / superseded /
+// inactive 等当前库内为 0 的值），不因「现在没有」而删词条。
 export const STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
   { value: 'open', label: '未处置' },
@@ -277,6 +286,15 @@ export const INPUT_TRUNCATED_WARN =
   '复现输入原始 input>8K 已截断，证据不完整：相关 run pass 不计 K；建议小输入重测或人工复核（R-10）'
 
 // blocked/claim 同键复发观察 caption（P2-6 新增钉定措辞；purge 保留窗内现算）
+// ⚠️ 批 50（#33）注明：本函数的两个分支**当前都取不到数据**，别拿它当「有两条路」读。
+// - `mode==='claim'`（:297）要求簇处于 claim 态，而 claim 已零写入点、库内 0 条（批 48）；
+// - `mode==='fixed'`（:294）要求 `fix_version` 非空，而该值已零写入点、存量已被批 42 清空。
+// 两条都是「值回来才显示」的保留分支。**另**：:294 文案教用户「re-claim / reopen」，
+// 而这两个动作的人工入口已随批 35-A/B 删除（reopen 现只剩回归 failed 的系统自动路径）
+// ⇒ **这句指引当前无法执行**（实测 `claim_cluster` 全仓零命中、reopen 仅 `verify.py:90` 系统自动路径）。
+// ⚠️ 它与批 36 批量订正过的 9 处「教你点一个不存在的按钮」**同类，但本处当时未被搜到** ——
+// 至于为何漏搜（批 36 的搜索模式是否只覆盖中文话术、未含本处的英文 `re-claim / reopen`），
+// **本批未取证，不作断言**。要修「指引」而非「分支」时改这半句即可。
 export function reentryCaption(o: ReentryObserve | null): string | null {
   if (!o) return null
   if (o.mode === 'fixed') {
