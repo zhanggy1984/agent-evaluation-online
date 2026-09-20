@@ -6,7 +6,7 @@ import {
   CLUSTER_STATUS_LABEL, CONVERSION_ACTION_TEXT, INVALIDATE_REASON_NOTE,
   INPUT_TRUNCATED_WARN, LAYER_OPTIONS, OFFLINE_STATUS_TEXT, REVIEW_REASON_TEXT,
   STATUS_OPTIONS, VERIFY_STATUS_TEXT, WATCH_OPTIONS, conversionActionLabel,
-  conversionDetailText, reentryCaption, taskState,
+  conversionDetailText, kProgress, reentryCaption, taskState,
 } from './backflowLabels'
 import type { BackflowCluster, BackflowLink } from './api/types'
 
@@ -461,5 +461,27 @@ describe('taskState（批 30：两条车道）', () => {
         expect(taskState(c).human, `${c.status}/${word}`).not.toContain(word)
       }
     }
+  })
+})
+
+// ─── kProgress（批 47 / 任务 #45）：列表页露出 K 进度 ──────────────────────
+// 判别性所在：改前列表页**根本不渲染 seq**（只有详情页写「已连续通过 1/2 次」），
+// 所以「列表里出现 1/2」这条断言在旧码上必红。
+describe('kProgress：只在「真的走到一半」时给值', () => {
+  it('seq=1 / K=2 → 「回归 1/2 次」（本批要修的那个现场）', () => {
+    expect(kProgress({ seq: 1, claim_k: 2 })).toBe('回归 1/2 次')
+  })
+  it('seq=0 → 空串（一次没过 ≠ 进度 0/2，写出来是凭空造进度）', () => {
+    expect(kProgress({ seq: 0, claim_k: 2 })).toBe('')
+  })
+  it('seq=null → 空串（不适用：无现行 link / link 非 pending / 无 case_id）', () => {
+    expect(kProgress({ seq: null, claim_k: 2 })).toBe('')
+  })
+  it('seq 已达 K → 空串（该簇本该已收口；若仍显示 2/2 会读成「永远差一次」）', () => {
+    expect(kProgress({ seq: 2, claim_k: 2 })).toBe('')
+  })
+  it('claim_k 缺省 → 按后端同款兜底 2，不渲染出 undefined', () => {
+    expect(kProgress({ seq: 1 })).toBe('回归 1/2 次')
+    expect(kProgress({ seq: 1, claim_k: null })).toBe('回归 1/2 次')
   })
 })

@@ -387,6 +387,23 @@ describe('字段与边界', () => {
     expect(t).not.toContain('现行 link')   // 页脚那句误导已删
   })
 
+  // ─── 批 47（任务 #45）：列表页露出 K 进度 ─────────────────────────────────
+  it('K 进度：只有「走到一半」的行有，且整表**恰好一处**（旧码根本不渲染 seq ⇒ 必红）', async () => {
+    const w = await mountView({
+      items: [
+        row({ cluster_id: 1, status: 'open', seq: 1, claim_k: 2 }),   // 本批要修的那个现场
+        row({ cluster_id: 2, status: 'open', seq: 0, claim_k: 2 }),   // 一次没过
+        row({ cluster_id: 3, status: 'open', seq: null, claim_k: 2 }), // 不适用
+      ],
+    })
+    expect(w.text()).toContain('回归 1/2 次')
+    // ⚠️ 保留侧写成**可计数**而不是「某字样仍在」：`toContain` 只证明出现 ≥1 次，
+    // 证不了另两行没被一起写错。三行里应恰有一座进度。
+    expect(w.findAll('.kprog').length).toBe(1)
+    // 反向：不得凭空造出「回归 0/2」这种不存在的进度
+    expect(w.text()).not.toContain('回归 0/2')
+  })
+
   it('行无 link ⇒ 该格显示 `-`，不渲染空标签、不抛错', async () => {
     const w = await mountView({ items: [row({ link: null })] })
     expect(w.findAll('tbody tr').length).toBe(1)

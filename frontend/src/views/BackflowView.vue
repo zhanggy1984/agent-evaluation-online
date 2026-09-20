@@ -20,6 +20,7 @@ import {
   BACKFLOW_INTRO,
   CARDS_NOTE,
   CLUSTER_STATUS_LABEL,
+  kProgress,
   LAYER_OPTIONS,
   STATUS_OPTIONS,
   taskState,
@@ -322,6 +323,11 @@ function agentCounts(): BackflowByAgent[] {
             <td>
               <span class="status" :class="statusCls(row.status)">{{ statusLabel(row.status) }}</span>
               <span class="muted small" v-if="row.generation > 1">gen{{ row.generation }}</span>
+              <!-- 批 47（任务 #45）：K 进度。改前只在详情页可见 ⇒ 列表上「未处置」读成
+                   「系统没反应」，而实测 3 条 open 簇全部停在 1/2（详见 kProgress 的注释）。
+                   与 gen 同一行、共用 px 定宽列 —— 本列已有两行高（agent/接口 那列自带两行），
+                   **不增高行高**。返回 '' 时不渲染。 -->
+              <span class="muted small kprog" v-if="kProgress(row)">{{ kProgress(row) }}</span>
             </td>
             <td>
               <div>{{ agentDisplay(row.agent) }}</div>
@@ -553,16 +559,28 @@ table {
   width: 100%;
   border-collapse: collapse;
   /* 批 31：原来 `table-layout` 默认 auto —— 窄列（状态 / 次数 / 轮谁）被内容撑开，
-     宽列（错误 / 时间）反被挤到难看。固定布局 + 逐列定宽后各列不再互相抢；
-     「错误」列刻意**不给宽度**，由它吃掉剩余空间（内容最长、最需要宽）。 */
+     宽列（错误 / 时间）反被挤到难看。固定布局 + 逐列定宽后各列不再互相抢。 */
   table-layout: fixed;
 }
 
 /* ⚠️ 改列 = 改这张表。批 33（删 3 列 + 加「操作」）、批 35-B（删「现在轮谁」）、
    批 42（删「修复版本」）都动过它，每次都**必须同步改编号**；漏改的症状是列宽错位
    （宽度还在，只是套到了别的列上），**不报错、不红测**，只能靠眼睛看出来。 */
+/* ⚠️ 批 46（任务 #43）：**「错误」列原先刻意不给宽度**，由它吃掉剩余空间。用户实测反馈
+   「错误列太宽」—— 真机量得它独占 625px（表宽 1158），而单元格内容只有 ~130px
+   （error_type 最长 14 字符 + error_msg 14~30 字符）⇒ 约 495px 是纯空白。
+   ⚠️ 这条不是「设计如此」：它是**漏配**出来的宽度 —— 固定布局下不写宽度的列自动吃满余量，
+   写成注释也改变不了它是副作用的事实。
+   修法 = 给「错误」补上宽度，并把「agent / 接口」从 16% 加到 26% 与之等宽。**两列等宽是刻意的**：
+   单给「错误」限宽而让「接口」保持 16%，余量仍会按比例摊回各列（实测 [98,342,391,…]，
+   「错误」依旧最宽）；两列同宽后视觉上左右对称，且长接口路径不再换行
+   （改前 16 行里有 2 行被挤成三行高 69px，改后 0 行）。
+   ⚠️ 定宽列（状态/次数/offline 态/操作）**保持原值不动**：六列都写宽后，超出的余量会被
+   浏览器**按比例摊给所有列**（无法只给某一列），这是固定布局的既定行为，不是这里写错。
+   真机实测（表宽 1158，16 行）：改前 [80, 185, 625, 56, 116, 96] → 改后 [97, 336, 336, 68, 141, 116]。 */
 th:nth-child(1) { width: 80px; }    /* 状态 */
-th:nth-child(2) { width: 16%; }     /* agent / 接口 */
+th:nth-child(2) { width: 26%; }     /* agent / 接口 */
+th:nth-child(3) { width: 26%; }     /* 错误 */
 th:nth-child(4) { width: 56px; }    /* 次数 */
 th:nth-child(5) { width: 116px; }   /* offline 态 */
 th:nth-child(6) { width: 96px; }    /* 操作 */
@@ -588,7 +606,17 @@ tbody tr:hover {
   background: var(--hover-row);
 }
 
+/* 批 47（任务 #45）：K 进度独占一行。不设 block 的话它跟状态徽标挤在同一行尾部，
+   而徽标宽度随文案变（未处置 / 复核中 / 已修复），折点不可控 —— 同一列里有的行折有的不折。 */
+.kprog {
+  display: block;
+  margin-top: 2px;
+}
+
 .err {
+  /* ⚠️ 批 46：本行的 `max-width: 240px` 在 `table-layout: fixed` 下**不生效** —— 单元格宽度
+     由列宽决定，实测该列 625px 时 td 仍是 625px（max-width 未参与计算）。保留是因为它无害，
+     但**别把它当护栏读**：错误列的宽度只在上面 `th:nth-child(3)` 一处定义。 */
   max-width: 240px;
   word-break: break-all;
 }
