@@ -1,12 +1,26 @@
 <script setup lang="ts">
 // LLM 失败现场（T-2.4）：请求成功(request ok)但 LLM 节点失败的兜底/降级事件，
 // 不计入接口失败率（口径归 llm-failures 下钻）；行点击下钻原 trace 看现场。
+import { computed, ref, watch } from 'vue'
+
 import { agentDisplay } from '../composables/useAgents'
 import { fmtDT } from '../format'
+import { pageCount, slicePage } from '../paging'
+import Pager from './Pager.vue'
 import type { LlmFailureItem } from '../api/types'
 
-defineProps<{ items: LlmFailureItem[]; loading: boolean }>()
+const props = defineProps<{ items: LlmFailureItem[]; loading: boolean }>()
 const emit = defineEmits<{ (e: 'open', row: { agent: string; traceId: string }): void }>()
+
+// 批 49（任务 #44）：分页。「刷新」只替换 payload、不卸载本组件 ⇒ 必须 watch 数据身份
+// 重置页码，否则刷新后可能停在一个空页上（同 AnomaliesSection）。
+const page = ref(1)
+watch(() => props.items, () => {
+  page.value = 1
+})
+
+const pages = computed(() => pageCount(props.items.length))
+const pageRows = computed(() => slicePage(props.items, page.value))
 
 function toOpen(r: LlmFailureItem): void {
   if (r.agent && r.trace_id) emit('open', { agent: r.agent, traceId: r.trace_id })
@@ -50,7 +64,7 @@ function reqStatus(r: LlmFailureItem): string {
       </thead>
       <tbody>
         <tr
-          v-for="(r, i) in items" :key="`${r.agent}#${r.trace_id}#${i}`"
+          v-for="(r, i) in pageRows" :key="`${r.agent}#${r.trace_id}#${i}`"
           :class="{ clickable: r.agent && r.trace_id }" @click="toOpen(r)"
         >
           <td>{{ fmtDT(r.ts) }}</td>
@@ -64,6 +78,7 @@ function reqStatus(r: LlmFailureItem): string {
         </tr>
       </tbody>
     </table>
+    <Pager :total="items.length" :page="page" :pages="pages" @change="page = $event" />
   </div>
 </template>
 

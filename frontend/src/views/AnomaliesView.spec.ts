@@ -94,3 +94,74 @@ describe('P1-6 异常页按耗时排序', () => {
     expect(hint()).not.toContain('最新')
   })
 })
+
+// 批 49（任务 #44）：异常页前端分页。
+// 判别性所在：**旧实现渲染全部 items**（无分页）⇒「25 条只渲染 20 行」在旧码上必红
+// （旧码是 25 行）。只断言「有下一页按钮」不够 —— 旧码根本没有这个按钮，但真正要钉的
+// 是「表格确实被切了」。
+describe('批 49 异常页分页（每页 20）', () => {
+  function many(n: number): MetricsAnomalies {
+    const items = Array.from({ length: n }, (_, i) => ({
+      ts: 1758000000000 + i, agent: 'a-1', trace_id: `t-${i}`, interface: 'POST /chat',
+      node: 'request', status: 'error', error_type: 'db_error', error_msg: null,
+      duration_ms: 100 + i,
+    })) as AnomalyItem[]
+    return { items, total: n, truncated: false } as MetricsAnomalies
+  }
+
+  async function mountN(n: number, refill?: number) {
+    apiMock.metricsAnomalies.mockResolvedValue(many(n))
+    const w = mount(AnomaliesView)
+    await Promise.resolve(); await Promise.resolve()
+    if (refill !== undefined) apiMock.metricsAnomalies.mockResolvedValue(many(refill))
+    return w
+  }
+
+  const bodyRows = (w: ReturnType<typeof mount>) => w.findAll('tbody tr').length
+  const nextBtn = (w: ReturnType<typeof mount>) =>
+    w.findAll('button').find(b => b.text().includes('下一页'))!
+
+  it('25 条：首屏只渲染 20 行 + 页脚「1 / 2」，翻页后剩 5 行', async () => {
+    const w = await mountN(25)
+    expect(bodyRows(w)).toBe(20)
+    expect(w.find('.page-no').text()).toBe('1 / 2')
+    await nextBtn(w).trigger('click')
+    expect(bodyRows(w)).toBe(5)
+    expect(w.find('.page-no').text()).toBe('2 / 2')
+  })
+
+  it('首尾页按钮各自禁用（到头了就别再给可点的假象）', async () => {
+    const w = await mountN(25)
+    const prev = () => w.findAll('button').find(b => b.text().includes('上一页'))!
+    expect(prev().attributes('disabled')).toBeDefined()
+    expect(nextBtn(w).attributes('disabled')).toBeUndefined()
+    await nextBtn(w).trigger('click')
+    expect(nextBtn(w).attributes('disabled')).toBeDefined()
+    expect(prev().attributes('disabled')).toBeUndefined()
+  })
+
+  // 批 49（用户拍板）：只有一页时**也**渲染页脚（含「1 / 1」），两个按钮都禁用。
+  // 反向钉住：若哪天按 /traces 的规则改成「≤1 页不显示」，本用例必红（那是刻意的不一致）。
+  it('正好 20 条（只有一页）：仍渲染「1 / 1」，两个按钮都禁用', async () => {
+    const w = await mountN(20)
+    expect(bodyRows(w)).toBe(20)
+    expect(w.find('.page-no').text()).toBe('1 / 1')
+    expect(w.findAll('button').find(b => b.text().includes('上一页'))!.attributes('disabled'))
+      .toBeDefined()
+    expect(w.findAll('button').find(b => b.text().includes('下一页'))!.attributes('disabled'))
+      .toBeDefined()
+  })
+
+  // ⚠️ 这条钉的是「**排序/刷新后必须回到第 1 页**」：排序切换刻意不清空 payload、
+  // 不卸载组件（上面已反向钉住），若不重置页码，翻到第 2 页再点排序就会停在
+  // 只剩 5 行的第 2 页上，而表头计数仍是全量 —— 读者会把「少了一半」读成「真的少了」。
+  it('翻到第 2 页后触发排序：回到第 1 页而不是继续停在第 2 页', async () => {
+    const w = await mountN(25, 25)
+    await nextBtn(w).trigger('click')
+    expect(bodyRows(w)).toBe(5)
+    await durTh(w)!.trigger('click')
+    await Promise.resolve(); await Promise.resolve()
+    expect(bodyRows(w)).toBe(20)
+    expect(w.find('.page-no').text()).toBe('1 / 2')
+  })
+})

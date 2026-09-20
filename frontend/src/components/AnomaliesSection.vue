@@ -1,15 +1,30 @@
 <script setup lang="ts">
 // 异常列表（T-2.4）：anomalies 端点是实时事件列表（不做 rollup，rollup 丢 trace 身份）。
 // 红显 = request 节点 status ∈ {error, timeout}；行点击下钻原 trace（复用详情页）。
+import { computed, ref, watch } from 'vue'
+
 import { agentDisplay } from '../composables/useAgents'
 import { fmtDT } from '../format'
+import { pageCount, slicePage } from '../paging'
+import Pager from './Pager.vue'
 import type { AnomalyItem } from '../api/types'
 
-defineProps<{ items: AnomalyItem[]; loading: boolean; sort: string }>()
+const props = defineProps<{ items: AnomalyItem[]; loading: boolean; sort: string }>()
 const emit = defineEmits<{
   (e: 'open', row: { agent: string; traceId: string }): void
   (e: 'toggle-sort'): void
 }>()
+
+// 批 49（任务 #44）：分页。**必须 watch 数据身份而不是只在挂载时置 1** ——
+// 排序切换与「刷新」都只替换 payload、**不卸载本组件**（AnomaliesView 的 sort watch
+// 刻意不清空 payload），不重置就会停在第 3 页看到空表，而表头计数显示的是全量。
+const page = ref(1)
+watch(() => props.items, () => {
+  page.value = 1
+})
+
+const pages = computed(() => pageCount(props.items.length))
+const pageRows = computed(() => slicePage(props.items, page.value))
 
 // null → '-'（不留 "- ms" 尾巴）
 function durText(v: number | null): string {
@@ -57,7 +72,7 @@ function isTo(r: AnomalyItem): boolean {
       </thead>
       <tbody>
         <tr
-          v-for="(r, i) in items" :key="`${r.agent}#${r.trace_id}#${i}`"
+          v-for="(r, i) in pageRows" :key="`${r.agent}#${r.trace_id}#${i}`"
           :class="{ clickable: r.agent && r.trace_id }" @click="toOpen(r)"
         >
           <td>{{ fmtDT(r.ts) }}</td>
@@ -70,6 +85,7 @@ function isTo(r: AnomalyItem): boolean {
         </tr>
       </tbody>
     </table>
+    <Pager :total="items.length" :page="page" :pages="pages" @change="page = $event" />
   </div>
 </template>
 

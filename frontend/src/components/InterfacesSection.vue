@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // 接口面板（T-2.4）：单 body 双 filter agg 的消费端——请求级 / LLM 级双 tab。
 // LLM 级接口行点击展开 model 明细（折叠态默认收起，防深表刷屏）。
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { fmtInt, fmtMs, fmtPct } from '../format'
+import { pageCount, slicePage } from '../paging'
+import Pager from './Pager.vue'
 import type { LlmIfaceRow, MetricsInterfaces, ReqIfaceRow } from '../api/types'
 
 const props = defineProps<{
@@ -22,6 +24,22 @@ const expanded = ref<string | null>(null) // 展开中的 llm 接口名（null =
 
 const reqRows = computed(() => props.payload?.request ?? [])
 const llmRows = computed(() => props.payload?.llm ?? [])
+
+// 批 49（任务 #44）：分页。两个 tab **各持一份页码** —— 在请求级翻到第 3 页再切到
+// LLM 级，若共用一个页码会落在那里同样存在的第 3 页上，读起来像「LLM 级也翻了 3 页」。
+// 排序切换与「刷新」只替换 payload、**不卸载本组件** ⇒ 必须 watch 数据身份重置，
+// 否则会停在一个空页上（表头计数仍是全量，看不出是页码越界）。
+const page = ref(1)
+const llmPage = ref(1)
+watch(() => props.payload, () => {
+  page.value = 1
+  llmPage.value = 1
+})
+
+const reqPages = computed(() => pageCount(reqRows.value.length))
+const reqPageRows = computed(() => slicePage(reqRows.value, page.value))
+const llmPages = computed(() => pageCount(llmRows.value.length))
+const llmPageRows = computed(() => slicePage(llmRows.value, llmPage.value))
 
 function redReq(r: ReqIfaceRow): boolean {
   return r.error > 0 || r.timeout > 0
@@ -87,7 +105,7 @@ function fmtTok(v: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in reqRows" :key="r.interface" :class="{ red: redReq(r) }">
+          <tr v-for="r in reqPageRows" :key="r.interface" :class="{ red: redReq(r) }">
             <td>{{ r.interface }}</td>
             <td class="num">{{ fmtInt(r.total) }}</td>
             <td class="num" :class="{ red: r.error > 0 }">
@@ -111,6 +129,10 @@ function fmtTok(v: number): string {
           </tr>
         </tbody>
       </table>
+      <Pager
+        :total="reqRows.length" :page="page" :pages="reqPages"
+        @change="page = $event"
+      />
       <p class="muted slim unit">延迟单位 ms；红显 = 该接口含错误/超时</p>
     </template>
 
@@ -131,7 +153,7 @@ function fmtTok(v: number): string {
           </tr>
         </thead>
         <tbody>
-          <template v-for="r in llmRows" :key="r.interface">
+          <template v-for="r in llmPageRows" :key="r.interface">
             <tr
               class="iface" :class="{ on: expanded === r.interface }"
               @click="toggle(r.interface)"
@@ -175,6 +197,10 @@ function fmtTok(v: number): string {
           </template>
         </tbody>
       </table>
+      <Pager
+        :total="llmRows.length" :page="llmPage" :pages="llmPages"
+        @change="llmPage = $event"
+      />
       <p class="muted slim unit">
         LLM 失败率 = (error + timeout) / 调用数；接口行点击展开 model 明细（tokens 累计自 usage.*）
       </p>
