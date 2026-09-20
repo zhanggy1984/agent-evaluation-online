@@ -183,7 +183,7 @@ function agentCounts(): BackflowByAgent[] {
         <strong>待处置（按 agent）</strong>
         <ul v-if="agentCounts().length" class="kv">
           <li v-for="a in agentCounts()" :key="a.agent">
-            <span>{{ a.agent }}</span>
+            <span>{{ agentDisplay(a.agent) }}</span>
             <b>{{ a.open }} 未处置 · {{ a.claim }} 复核中</b>
           </li>
         </ul>

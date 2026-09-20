@@ -3010,7 +3010,9 @@ grep -n 'contract-check' backend/app/core/seed.py
 
 ### ④ 本批证不了
 
-其余 9 个渲染点仍显英文（4 处头部/面包屑/总览卡、1 处幽灵提示、3 处硬编码 tooltip）⇒ **页面中英混排**；
+~~其余 9 个渲染点仍显英文（4 处头部/面包屑/总览卡、1 处幽灵提示、3 处硬编码 tooltip）~~
+⚠️ **批 24 订正：「9 处 / 3 处 tooltip」是我造出来的假数字** —— 源自上一会话 Explore 子代理的口头归纳，
+**我没复核就抄进了台账**。实测**只有 5 处**、**没有硬编码 tooltip**。批 24 已全部补完，见 §19。
 ES 里有而 `agent` 表没有的名字（`probe-c2-push` 等）回退裸 key。
 
 ### ⑤ 记录订正（5 站）
@@ -3026,4 +3028,56 @@ P1-18 原判「判不做」的**前提**（表内 display_name 全 == name、`/m
 # 后端：display 应 4 条中文、agents 应 4 个英文（未污染）
 curl -s -H "Authorization: Bearer <token>" localhost:18080/api/v1/metrics/agents
 # 前端真机：打开 http://localhost:18080/traces，看 agent 下拉项与表格 agent 列
+```
+
+---
+
+## 19. 批 24 —— P1-18 补全：其余渲染点 + 2 处数据源触发（2026-09-20）
+
+**触发**：批 23 交付后我自评「中英混排可能比全英文更糟」，用户选「补齐其余渲染点」。
+
+### ① 先做穷尽取证（结果推翻了批 23 自己的台账）
+
+`grep -n '\.agent\b' frontend/src --include=*.vue`（范围写到包根）+ `title="…agent…"` 全仓。
+**实测只剩 5 处**，且 **`title="…agent…"` 零命中** ⇒ 批 23 写的「9 处 / 3 处硬编码 tooltip」**是假数字**。
+已订正 5 站（`task.md` §18 / `docs` 后记 / memory 3 处）。
+
+### ② 5 处渲染点
+
+| 位置 | 原 | 改 |
+| --- | --- | --- |
+| `MetricFilterBar.vue:78` 幽灵提示 | `「{{ filter.agent }}」已不在近 7d…` | `agentDisplay(filter.agent)` |
+| `BackflowView.vue:186` 概览 by_agent 列表 | `{{ a.agent }}` | `agentDisplay(a.agent)` |
+| `OverviewView.vue:205` 页头 | `agent：{{ overview.agent ?? '全站' }}` | `overview.agent ? agentDisplay(...) : '全站'` |
+| `BackflowClusterDetailView.vue:291` 详情页头 | `· {{ detail.agent }}` | `agentDisplay(detail.agent)` |
+| `TraceDetailView.vue:151` 详情页头 | `（agent: {{ agent }}）` | `agentDisplay(agent)` |
+
+⚠️ `OverviewView` 那处 **`??` 必须换三元**：`agentDisplay(null)` 按设计返回 `''`，不是 `'全站'`。
+
+### ③ 新发现的边界：2 处需要自己触发数据源
+
+`displayMap` 是模块级单例，**只由 `MetricFilterBar` 触发加载**。
+`TraceDetailView` / `BackflowClusterDetailView` **既无下拉也不 import `useAgents`**
+⇒ 直接用 URL 打开这两页时 `displayMap` 恒空 ⇒ **改了也白改**
+（正是 `field-exists-is-not-field-informs` 的镜像：这次是「接了，但数据源没到位」）。
+
+修法：两页各自 `onMounted` 加 `void useAgents().load()`；单例内「已有结果不重复拉」会短路，从列表页进来不会多打请求。
+
+### ④ 验证
+
+| 面 | 结果 |
+| --- | --- |
+| 前端单测 | **213 passed**（= 基线） |
+| `vue-tsc --noEmit` + `vite build` | 通过 |
+| **真机 · 新标签页直开 trace 详情** | 页头显示「（agent: **合同校验**）」，网络里确有 `metrics/agents` ⇒ **本页自己触发的 load 生效** |
+| **真机 · 新标签页直开 cluster 详情** | 该请求**同样发出**，但 cluster #1 不存在、页面报 `ERR_CLUSTER_0001` ⇒ **中文渲染这半未验** |
+
+⚠️ **未验**：`BackflowClusterDetailView` 的中文渲染（无真实簇可开）；批 23 就欠的「真实点击筛选后的请求参数」**仍未取证**。
+⚠️ **取证方法本身**：真机验这两页必须**新开标签页** —— 同页的模块单例早已加载过 `displayMap`，在旧标签页上看等于没验。
+
+### ⑤ 复核命令
+
+```bash
+grep -rn '\.agent\b' frontend/src --include=*.vue   # 剩余命中应全是查询/路由/权限用途，无渲染点
+grep -rn 'title="[^"]*agent' frontend/src           # 应为空（批 23 台账的「3 处 tooltip」不存在）
 ```

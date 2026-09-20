@@ -33,6 +33,7 @@ import {
   REVIEW_REASON_TEXT,
   VERIFY_STATUS_TEXT,
 } from '../backflowLabels'
+import { agentDisplay, useAgents } from '../composables/useAgents'
 import { fmtCountdownMs, fmtISO, parseISODate } from '../format'
 
 const route = useRoute()
@@ -275,7 +276,8 @@ function stopClaimTimers(): void {
 }
 
 watch(isClaim, (v) => { if (v) syncClaimTimers(); else stopClaimTimers() })
-onMounted(() => { void loadDetail(true) })
+// 同 TraceDetailView：本页无 agent 下拉，需自己触发一次 displayMap 加载（单例内短路重复拉）。
+onMounted(() => { void loadDetail(true); void useAgents().load() })
 onUnmounted(() => stopClaimTimers())
 
 const rows = computed(() => detail.value?.conversions ?? [])
@@ -288,7 +290,7 @@ const rows = computed(() => detail.value?.conversions ?? [])
       <button class="btn-ghost" type="button" @click="back">← 错误闭环</button>
       <strong class="title">
         cluster <span class="mono">#{{ clusterId }}</span>
-        <span class="muted" v-if="detail">· {{ detail.agent }}{{ detail.interface ? `.${detail.interface}` : '' }}</span>
+        <span class="muted" v-if="detail">· {{ agentDisplay(detail.agent) }}{{ detail.interface ? `.${detail.interface}` : '' }}</span>
         <!-- P1-12：本页原为「死胡同」—— 列表页（BackflowView.vue:262）能跳 trace 详情，
              进了详情页反而没有出口。判据与列表页逐字一致（缺 trace_id 或缺 agent 不渲染，
              不给死链），目标路由 /traces/:agent/:traceId 早已存在。 -->

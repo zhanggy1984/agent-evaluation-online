@@ -75,7 +75,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
     </div>
     <!-- v1.14 辅助提示：幽灵 agent 清除 / top100 截断，随数据就绪出现 -->
     <div v-if="ghost" class="hint-line warn-text">
-      「{{ filter.agent }}」已不在近 7d 有流量 agent 列表（可能已下线/改名）——当前筛选实际无数据命中
+      「{{ agentDisplay(filter.agent) }}」已不在近 7d 有流量 agent 列表（可能已下线/改名）——当前筛选实际无数据命中
       <button class="link-like" type="button" @click="pickAgent('')">清除为全站</button>
     </div>
     <div v-else-if="truncated && !agentsLoading" class="hint-line muted">

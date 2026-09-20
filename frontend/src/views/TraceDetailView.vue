@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../api/client'
 import { traceDetail, traceLogs } from '../api/traces'
 import type { TraceEventRow, TraceLogRow } from '../api/types'
+import { agentDisplay, useAgents } from '../composables/useAgents'
 import { errorDetail } from '../traceLabels'
 
 const route = useRoute()
@@ -136,7 +137,9 @@ function back(): void {
   void router.push({ name: 'traces' })
 }
 
-onMounted(() => void loadDetail())
+// 详情页没有 agent 下拉（displayMap 无人触发加载）⇒ 本页自己拉一次，否则中文名恒为空转。
+// 单例内部已做「已有结果不重复拉」短路，从列表页进来时不会多打一次请求。
+onMounted(() => { void loadDetail(); void useAgents().load() })
 </script>
 
 <template>
@@ -145,7 +148,7 @@ onMounted(() => void loadDetail())
       <button class="btn-ghost" type="button" @click="back">← 返回列表</button>
       <strong class="title">
         trace <span class="mono">{{ traceId }}</span>
-        <span class="muted">（agent: {{ agent }}）</span>
+        <span class="muted">（agent: {{ agentDisplay(agent) }}）</span>
       </strong>
       <span class="muted">
         {{ events.length }} / {{ totalEvents }} 事件<span v-if="truncated">（超出上限截断）</span>

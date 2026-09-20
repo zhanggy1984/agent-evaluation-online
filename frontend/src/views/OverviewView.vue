@@ -13,6 +13,7 @@ import type { MetricsOverview } from '../api/types'
 import EmptyState from '../components/EmptyState.vue'
 import MetricCards from '../components/MetricCards.vue'
 import MetricFilterBar from '../components/MetricFilterBar.vue'
+import { agentDisplay } from '../composables/useAgents'
 import TimeSeriesChart from '../components/TimeSeriesChart.vue'
 import { useMetricFilter } from '../composables/useMetricFilter'
 import { fmtAxis, fmtPct } from '../format'
@@ -202,7 +203,7 @@ onUnmounted(() => {
         <div class="sec-row">
           <h2 class="sec">概览</h2>
           <span v-if="overview" class="muted src">
-            数据源：{{ sourceLabel }} · agent：{{ overview.agent ?? '全站' }} · 窗口 {{ filter.window }}
+            数据源：{{ sourceLabel }} · agent：{{ overview.agent ? agentDisplay(overview.agent) : '全站' }} · 窗口 {{ filter.window }}
           </span>
         </div>
         <p v-if="banner" class="warn">{{ banner }}</p>
