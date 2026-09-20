@@ -21,6 +21,7 @@
 | 后端 API | `obs-backend` **有** bind mount（`./backend:/app`），但 uvicorn **没带 `--reload`** ⇒ **文件是新的、进程跑的是旧代码** | 重启进程：`docker compose restart backend`。⚠️ 「文件在容器里」**不等于**「改动生效」 |
 | 后端 **job**（worker/*.py） | 跑在**另一个容器** `obs-worker` 里（同 bind mount、同样无 `--reload`） | `docker compose restart worker`。⚠️ **`docker compose ps` 先看有几个 service**，别默认「后端 = 一个容器」 |
 | 真机取证 | **旧标签页的模块级单例早已加载**（如 `useAgents` 的 `displayMap`）⇒ 在旧页上看等于没验 | **必须新开标签页**再验 |
+| 删容器内文件（`docker exec <容器> rm <文件>`） | 文件属主不是默认 exec 用户 —— `obs-backend` 默认跑 `appuser`，而 `/tmp` 下的探针常属 `root` ⇒ **`Operation not permitted`**（是**没做成**，不是没生效） | 加 `-u root`：`docker exec -u root <容器> rm <文件>`。⚠️ 别误判成「路径写错了」去反复核对路径 |
 
 ## 二、真机取证的纪律（本项目反复踩过）
 
