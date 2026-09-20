@@ -145,10 +145,26 @@ export function conversionDetailText(action: string, detail: string | null): str
 }
 
 // watch 筛选选项（值 = 后端 watch 参数；'' = 全部）
+// offline 态筛选下拉（批 39：用户拍板「draft 删掉」）。
+// ⚠️ **下拉只列「现在能筛出东西」的值**，不列「枚举里有」的值 —— 与 `STATUS_OPTIONS` 同一口径
+// （见下方那条的判据），两处从此都**不等于**各自枚举的全键集，这是刻意的。
+// 判据（2026-09-20 跨仓取证，含 offline 仓）：
+//   assembled    写点 envelope.assemble_cluster / requeue.py:192 复位   库内 2 条  → 保留
+//   active       offline ack（pull_loop.py:260 action="active"）        库内 14 条 → 保留
+//   invalidated  offline ack（pull_loop.py:343 action="invalidated"）   库内 0 条  → **保留**
+//   draft        **两侧都无有效写点**                                    库内 0 条  → 删除
+// ⚠️ `invalidated` 库内 0 是**本批数据清理的结果**（批 39 删了 6 条走查数据），
+//    不是它天然为 0 —— 拿这个 0 当「删选项」的依据，等于用自己刚制造的观测当判据。
+//    它的写点在 offline 侧活着，随时会再产生，删了就真筛不出来。
+// ⚠️ `draft` 与 `claim` **同类但死因不同**：claim 是**我方删了产生路径**（认领端点随批 35-B 撤除）；
+//    draft 是**对端从未实现** —— online `_ACK_MATRIX`（ack.py:39）明写 `"draft": [("assembled", None)]`
+//    是正常路径，但 offline `backflow_client.ack()` 全仓只有 2 个调用点（见上表），**无一发 draft**
+//    ⇒ 契约写了、实现从未走 ⇒ 恒 0 是**必然的**，不是「停留时间短」。
+// ⚠️ `OFFLINE_STATUS_TEXT` **不动**：短文案/taskState 是渲染真值的兜底，
+//    万一库里出现 draft，页面照常渲染而非空白（同批 38 对 claim 的处置）。
 export const WATCH_OPTIONS = [
   { value: '', label: '全部 offline 态' },
   { value: 'assembled', label: '待 offline 拉取' },
-  { value: 'draft', label: '待 offline 确认' },
   { value: 'active', label: '已激活' },
   { value: 'invalidated', label: '已驳回（推送已停）' },
 ]
@@ -197,6 +213,23 @@ export const BACKFLOW_INTRO =
   '线上失败的请求会自动聚成「错误簇」，一簇 = 同一类错误。本页按处置状态组织：' +
   '先看「未处置」的簇，点进去看它卡在哪 —— 本页只读，修 bug 在代码里做，' +
   '再由 offline 侧回归验证。'
+
+/** 总览四卡的关系说明（批 39，用户报「四个数对不上」）。
+ *
+ *  排查结论：**四个数各自都是对的**，不是数据问题 —— 病根是四块用了两把尺子
+ *  （卡①④ 数「簇」、卡②③ 数「评测用例」），而页面上一个字都没说。
+ *  2026-09-20 实测：簇 23（open 7/claim 6/fixed 10）·用例 22（pending 12/passed 10）
+ *  ·待修复集 4 ·待处置 13 —— ①与④对得上（7+6=13），②与③差 8 是因为③多要求
+ *  `offline_status='active'`（12 里的另外 6 条已被 offline 驳回、2 条还没被拉走）。
+ *
+ *  ⚠️ 本条**写死了后端 overview 的口径**（谁是谁的子集、各自加了什么过滤）——
+ *  backend/app/api/backflow.py::overview 改谓词时，**没有任何测试会因此变红**，
+ *  只能靠人回读这一句。这是本写法的失效模式，与卡片上的「单位」徽标同生共死。 */
+export const CARDS_NOTE =
+  '上面四块数的是两种单位：「错误簇状态」「待处置」数的是簇，「回归验证结果」「待修复集」' +
+  '数的是评测用例（一簇可含 0 条或多条，所以两边合计不相等是正常的）。' +
+  '「待处置」=「错误簇状态」里还没修完的簇；「待修复集」=「回归验证结果」里 offline ' +
+  '已拉走、还没回归通过的用例。'
 
 /** 详情页页头一句话：这页有什么、从上往下怎么看。 */
 // ⚠️ 批 36：原句含「与可执行动作」—— 批 35-B 后本页**已无任何处置动作**（只剩刷新），

@@ -280,16 +280,55 @@ describe('字段与边界', () => {
     expect(heads.some(h => h.includes('操作'))).toBe(true)
   })
 
-  it('操作列：需人动手的行显示「去处理 →」并高亮，其余显示「查看 →」（且不高亮）', async () => {
+  // 批 39（用户提出）：文案**恒为「查看 →」**。批 35-B 后 online 侧已无任何处置动作，
+  // 「去处理」是承诺一个点不出来的东西（批 36 抓到的同一类病）。
+  // ⚠️ 但高亮**仍随 mine 翻转** —— 它表达「这簇还等着人在代码里修」，不是「点它去操作」。
+  // 判别性：把文案改回三元式即红；把 `:class` 里的 need 去掉也红（两个不变量各钉一头）。
+  it('操作列：文案恒为「查看 →」；高亮仍随 mine 翻转（两个不变量分开钉）', async () => {
     const w = await mountView({
       items: [row({ cluster_id: 1, status: 'open' }), row({ cluster_id: 2, status: 'fixed' })],
     })
     const gos = w.findAll('td button.go')
     expect(gos).toHaveLength(2)
-    expect(gos[0].text()).toBe('去处理 →')
-    expect(gos[0].classes()).toContain('need')       // 与「现在轮谁」列同步高亮
+    expect(gos[0].text()).toBe('查看 →')
     expect(gos[1].text()).toBe('查看 →')
+    expect(gos[0].classes()).toContain('need')       // open 态 = 还没修完 ⇒ 红字
     expect(gos[1].classes()).not.toContain('need')
+    expect(w.text()).not.toContain('去处理')
+  })
+
+  // ─── 批 39：四卡「单位 + 关系」（用户报「四个数对不上」）─────────────────────
+  // 排查结论：四个数各自都对，病根是四块用了两把尺子（簇 / 评测用例）且页面零提示。
+  // ⚠️ 本组**证不了**「文案与后端谓词一致」—— 那段一致性靠人回读
+  // backend/app/api/backflow.py::overview，见 CARDS_NOTE 上方注释。
+  const overview4 = {
+    clusters: { open: 7, claim: 6, fixed: 10 }, to_fix: 4,
+    by_agent: [{ agent: 'contract-check', open: 7, claim: 1 }],
+    links: { pending: 12, passed: 10, failed: 0, invalidated: 0, superseded: 0 },
+  } as unknown as BackflowOverview
+
+  it('四卡各带「单位」徽标（卡①④ = 簇，卡②③ = 用例）', async () => {
+    const w = await mountView({ overview: overview4 })
+    expect(w.findAll('.card .unit').map(u => u.text())).toEqual(['簇', '用例', '用例', '簇'])
+  })
+
+  it('卡片区上方渲染关系说明，且两种单位都被点到', async () => {
+    const w = await mountView({ overview: overview4 })
+    const note = w.find('.cards-note')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('簇')
+    expect(note.text()).toContain('评测用例')
+    // 不渲染 Markdown 星号：模板里误写 `**` 会原样显示（批 34 踩过）
+    expect(note.text()).not.toContain('**')
+  })
+
+  it('两处过期小字已订正（「已推给 offline」说大了 / 「还没人认领」指向已删动作）', async () => {
+    const w = await mountView({ overview: overview4 })
+    const cards = w.findAll('.card').map(c => c.text())
+    expect(cards[2]).toContain('offline 已拉走')   // 待修复集：谓词是 active，不是 assembled
+    expect(cards[3]).toContain('未处置')           // 待处置：改说状态，不说动作
+    expect(cards[3]).toContain('复核中')
+    expect(w.text()).not.toContain('还没人认领')
   })
 
   it('二期入口在本页零渲染（detail §9.1：弃留墙/quality 不从本页引）', async () => {

@@ -18,6 +18,7 @@ import type {
 import { agentDisplay, useAgents } from '../composables/useAgents'
 import {
   BACKFLOW_INTRO,
+  CARDS_NOTE,
   CLUSTER_STATUS_LABEL,
   LAYER_OPTIONS,
   STATUS_OPTIONS,
@@ -191,9 +192,14 @@ function agentCounts(): BackflowByAgent[] {
     <p class="intro">{{ BACKFLOW_INTRO }}</p>
 
     <!-- 总览卡：cluster 状态分布 / verify 分布 / to_fix（近似值标注）/ by_agent 小分布 -->
+    <!-- 批 39（用户报「四个数对不上」）：四块数的是**两种单位**，此前页面上零提示 ⇒
+         23 与 22 并排摆着，读者第一反应是「数据错了」。实测四个数各自都对，
+         缺的是「单位」与「谁是谁的子集」两句话。单位做成标题旁的徽标（可扫视），
+         关系写成上面一行（关系本身写死在 CARDS_NOTE，改动需同时回读后端 overview）。 -->
+    <p v-if="overview" class="cards-note">{{ CARDS_NOTE }}</p>
     <section v-if="overview" class="cards">
       <div class="card">
-        <strong>错误簇状态</strong>
+        <strong>错误簇状态<span class="unit">簇</span></strong>
         <span class="sub">{{ TERM.cluster }}</span>
         <ul class="kv">
           <li v-for="(v, k) in overview.clusters" :key="k">
@@ -208,7 +214,7 @@ function agentCounts(): BackflowByAgent[] {
              值域 = pending/passed/failed/invalidated/superseded。
              我第一版按 offline 去映射，真机上只有 `invalidated` 撞上、其余全兜底成裸键，
              当场抓回（[[measurement-scope-is-not-claim-scope]] 同族：映射对象搞错层）。 -->
-        <strong>回归验证结果</strong>
+        <strong>回归验证结果<span class="unit">用例</span></strong>
         <span class="sub">{{ TERM.link }}回跑的结果分布</span>
         <ul class="kv">
           <li v-for="[k, v] in verifyRows(overview.links)" :key="k">
@@ -220,17 +226,28 @@ function agentCounts(): BackflowByAgent[] {
         </ul>
       </div>
       <div class="card">
-        <strong>待修复集</strong>
+        <strong>待修复集<span class="unit">用例</span></strong>
         <!-- 口径（批 29 改准）：真实谓词 = offline_status='active' **且**
              verify_status ∈ (pending, failed)（backend/app/api/backflow.py:466-471）。
              原先此处的备注「近似值：本平台无 offline 权威集，以…代理」已删 ——
-             与其讲一串「近似谁」的内部黑话，不如把**它到底数什么**说清。 -->
-        <span class="sub">已推给 offline 侧、但还没通过回归验证的用例数</span>
+             与其讲一串「近似谁」的内部黑话，不如把**它到底数什么**说清。
+             ⚠️ 批 39 订正用词：原写「**已推给** offline 侧」，但谓词是 `active`，
+             而本页词汇表里 `active` =「已激活（offline）」= offline **已拉走**；
+             「已推给 offline」对应的是 `assembled`（「已生成（待 offline 拉取）」）。
+             按原小字的字面，它该数 `assembled + active` 的待回归用例（实测 2+4=6），
+             而不是 4 —— 说大了。 -->
+        <span class="sub">offline 已拉走、但还没通过回归验证的用例数</span>
         <p class="tofix">{{ overview.to_fix }} 条</p>
       </div>
       <div class="card grow">
-        <strong>待处置（按 agent）</strong>
-        <span class="sub">还没人认领 / 正在复核的簇，按智能体分组</span>
+        <strong>待处置（按 agent）<span class="unit">簇</span></strong>
+        <!-- ⚠️ 批 39 订正用词：原写「还没人认领 / 正在复核的簇」——
+             批 35-B 已删除认领与复核端点 ⇒ 这两个**动作**在 online 侧不存在了，
+             写出来就是「教你点一个不存在的按钮」（批 36 抓到的同一类病）。
+             改说**状态**（open / claim），不说动作：谓词就是 status ∈ (open, claim)。
+             6 条 claim 是历史遗留（claim 现零写点），会在 claim_due_ts 到期后由
+             claim_ttl_job 自动回退 open —— 那时这行会自己归零。 -->
+        <span class="sub">状态还是「未处置」或「复核中」的簇，按智能体分组</span>
         <ul v-if="agentCounts().length" class="kv">
           <li v-for="a in agentCounts()" :key="a.agent">
             <span>{{ agentDisplay(a.agent) }}</span>
@@ -323,11 +340,16 @@ function agentCounts(): BackflowByAgent[] {
             <td>
               <!-- 按 @click.stop 而非只依赖行点击：本按钮是**显式入口**，
                    用户点的就是这个按钮本身，不该再靠事件冒泡兜底（冒泡一旦被上层
-                   重构掉，这里会静默变成死按钮）。行为与行点击完全一致。 -->
+                   重构掉，这里会静默变成死按钮）。行为与行点击完全一致。
+                   ⚠️ 批 39（用户提出）：文案**恒为「查看 →」**，不再随 mine 翻转成
+                   「去处理 →」—— 批 35-B 后 online 侧已无任何处置动作，本按钮只做
+                   「进详情看」，写「去处理」是承诺一个点不出来的动作。
+                   **但 `.need` 红字高亮保留**：它表达的不是「点它去操作」，而是
+                   「这一簇还等着人在**代码里**修」，仍是这一行的有效信号。 -->
               <button
                 class="go" :class="{ need: taskState(row).mine }"
                 type="button" @click.stop="toDetail(row)"
-              >{{ taskState(row).mine ? '去处理 →' : '查看 →' }}</button>
+              >查看 →</button>
             </td>
           </tr>
         </tbody>
@@ -381,6 +403,28 @@ function agentCounts(): BackflowByAgent[] {
   font-size: 11px;
   color: var(--muted);
   white-space: normal;
+}
+
+/* 卡片标题旁的「单位」徽标（批 39）：四块数的是两种单位，徽标让「两边合计不等」
+   一眼可解释 —— 比只写一句说明更早被看到（扫标题时就看得到）。 */
+.unit {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* 四卡关系一行（批 39）：文案本体在 backflowLabels.CARDS_NOTE
+   —— 与页面同处一个「给用户看的文案」集合，便于一次性校对措辞。 */
+.cards-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
 }
 
 .cards {

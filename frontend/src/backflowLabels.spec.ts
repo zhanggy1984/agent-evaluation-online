@@ -94,9 +94,19 @@ describe('OFFLINE_STATUS_TEXT / VERIFY_STATUS_TEXT', () => {
       ['failed', 'invalidated', 'passed', 'pending', 'superseded'])
   })
 
-  it('WATCH_OPTIONS 的取值与 OFFLINE_STATUS_TEXT 一致（筛选下拉不漏态）', () => {
+  // ⚠️ 批 39 本条**反向重写**（同上方批 38 对 STATUS_OPTIONS 的处置）。
+  // 原断言是「下拉项 == OFFLINE_STATUS_TEXT 全键集（不漏态）」，前提是「枚举里的值都能筛」——
+  // 该前提对 `draft` 已不成立：online `_ACK_MATRIX`(ack.py:39) 把它写作正常路径，
+  // 但 offline `backflow_client.ack()` 全仓仅 2 个调用点（pull_loop.py:260 active /
+  // :343 invalidated）**无一发 draft** ⇒ 契约写了、实现从未走 ⇒ 恒 0 是必然的。
+  // 现在钉的是相反的不变量：**下拉只列活值，且文案表仍覆盖全部 4 值**。
+  // 判别性：有人把 draft 加回下拉（或把文案表裁成只剩活值）即红。
+  it('offline 下拉只列活值；文案表仍覆盖全部枚举值（两者刻意不等）', () => {
     const optValues = WATCH_OPTIONS.map(o => o.value).filter(Boolean).sort()
-    expect(optValues).toEqual(Object.keys(OFFLINE_STATUS_TEXT).sort())
+    expect(optValues).toEqual(['active', 'assembled', 'invalidated'])
+    expect(optValues).not.toContain('draft')
+    // 但文案必须还在 —— 库里一旦出现 draft（如 offline 补上该 action）要照常渲染而非空白
+    expect(OFFLINE_STATUS_TEXT.draft).toBeTruthy()
   })
 
   it('invalidated 文案含 §9.3 长句语义关键词（勿被简写覆盖）', () => {

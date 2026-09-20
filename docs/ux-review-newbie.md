@@ -2490,3 +2490,294 @@ cluster_job 内联（§7.5 拍板）」；且两者读写**同一批 link 的同
 前提是「枚举里的值都能筛」。该前提在批 35-B/35-A 之后已不成立 ⇒ 现钉相反的不变量：
 **下拉只列活值（`['fixed','open']`）**，且**三个死值的标签必须仍在**（徽标覆盖不缩水）。
 判别性：有人把死值加回下拉、或把标签表裁成只剩活值，即红。
+
+## 三十九、批 39（2026-09-20）：四卡「单位 + 关系」+ 操作列文案
+
+### 39.1 用户两问
+
+1. 列表页【去处理】按钮是不是都该改【查看】？
+2. 四块数量（错误簇状态 / 回归验证结果 / 待修复集 / 待处置）对不上，排查 + 页面提示关系。
+
+### 39.2 排查：四个数各自都对，错的是「一句话都没说」
+
+库内直读（2026-09-20，`docker compose exec -T backend python`）：
+
+| 卡片 | 单位 | 实测 | 明细 |
+|---|---|---|---|
+| 错误簇状态 | **簇** | **23** | open 7 · claim 6 · fixed 10（+ inactive 0 · needs_review 0） |
+| 回归验证结果 | **用例** | **22** | pending 12 · passed 10（+ failed 0 · superseded 0） |
+| 待修复集 | **用例** | **4** | — |
+| 待处置（按 agent） | **簇** | **13** | contract-check 7+1 · customer-service 0+1 · good-question 0+4 |
+
+交叉表（verify × offline）把关系定死：
+
+```
+卡①全部簇 23 ─┬─ status∈(open,claim) ──→ 卡④ = 13   ✅ 7+6=13 对得上
+              └─ (其余 10 = fixed)
+卡②全部用例 22 ─── pending 12 ─┬─ offline=active ──→ 卡③ = 4
+                              ├─ offline=assembled 2
+                              └─ offline=invalidated 6
+                 └── passed 10
+```
+
+- **23 vs 22 不是错**：23 个簇装了 22 条用例（一簇可含 0 条或多条）。
+- **12 vs 4 不是错**：卡③多要求一个 `offline_status='active'`。
+
+**病根 = 四块用了两把尺子（簇 / 用例），而页面上零提示。** 属
+`terminology-ambiguity-mimics-data-bug` 同族：读数全对、答错问题。
+
+### 39.3 顺带查出的三处（都是措辞，不是数字）
+
+1. **卡③小字「已推给 offline 侧」说大了。** 谓词是 `active`，而本页词汇表里
+   `active` =「已激活（offline）」= offline **已拉走**；「已推给 offline」对应的是
+   `assembled`（「已生成（待 offline 拉取）」）。按原字面它该数 `assembled + active`
+   的待回归用例 = **6**，而不是 4。⇒ 改「offline 已拉走、但还没通过回归验证的用例数」。
+2. **卡④小字「还没人认领 / 正在复核的簇」已过期。** 批 35-B 删除了认领/复核端点
+   ⇒ 这两个**动作**在 online 侧不存在了，写出来就是「教你点一个不存在的按钮」
+   （批 36 抓到的同一类病）。⇒ 改说**状态**：「状态还是『未处置』或『复核中』的簇」。
+   ⚠️ 6 条 claim 是历史遗留（claim 现零写点），`claim_due_ts` 到期后由 `claim_ttl_job`
+   自动回退 open —— 那时这行会自己归零。
+3. （次要，非错）卡①②会渲染 0 值行（`已忽略 0`/`待人工复核 0`/`回归失败 0`/`已被新用例取代 0`）。
+   这是**有意**的：只有**不可达**的 `verify_status='invalidated'` 才隐藏 0 行
+   （见 `HIDDEN_VERIFY_KEYS` 注释）。但它会诱发「怎么一个都没失败」的疑问 —— 记此不处置。
+
+### 39.4 落地
+
+- `backflowLabels.CARDS_NOTE` = 关系说明一句（页面渲染卡区上方）；四卡标题旁加 `.unit` 徽标
+  （①④「簇」、②③「用例」）。**零后端改动。**
+- 操作列文案**恒为「查看 →」**，不再随 `mine` 翻成「去处理 →」。
+  ⚠️ **`.need` 红字高亮保留** —— 它表达的是「这一簇还等着人在**代码里**修」，
+  不是「点它去操作」。两个不变量在单测里分开钉（文案一条、class 一条）。
+
+### 39.5 判据与失效模式
+
+新增 3 条单测：单位徽标序列 `['簇','用例','用例','簇']`（钉顺序，防两张卡互换）、
+关系说明渲染且**不含 Markdown `**`**（批 34 踩过模板原样渲染星号）、两处过期小字已订正。
+
+⚠️ **本方案的失效模式（写在 `CARDS_NOTE` 注释里）**：那句关系**写死了后端
+`overview` 的口径**（谁是谁的子集、各自加了什么过滤）。`backend/app/api/backflow.py::overview`
+改谓词时**没有任何测试会因此变红** —— 只能靠人回读。这是「把口径讲给用户听」的固有代价，
+接受它，但必须显式记下来。
+
+### 39.6 验证
+
+前端 **227 passed / 16 files**（基线 224，+3）；`npm run build`（含 `vue-tsc`）通过；
+容器产物 `index-VAtFX_wx.js` / `index-BgoLsDEi.css` == 宿主 dist。
+
+真机（**新标签页**，页面 36）读数：`.cards-note` 渲染正确；四卡 `.unit` =
+`簇 / 用例 / 用例 / 簇`；卡③小字 =「offline 已拉走、但还没通过回归验证的用例数」；
+卡④小字 =「状态还是『未处置』或『复核中』的簇，按智能体分组」；
+表格 20 个操作按钮**全部**为「查看 →」，`need` 仍区分（7 真 / 13 假）。
+
+⚠️ **构建期自伤一次**：改 `backflowLabels.ts` 时把 `export const CLUSTER_INTRO =` 这一行
+连同文档注释一起误删（Edit 的 `old_string` 正好是那一行），**单测 227 全绿**，
+只有 `npm run build`（`vue-tsc --noEmit`）报 `TS2305: no exported member 'CLUSTER_INTRO'`。
+⇒ **单测绿 ≠ 能编译**，本仓的 `build` 是唯一会走到类型检查的那一步。
+
+---
+
+## 四十、批 39 收尾：已驳回数据的成因追溯 + offline 下拉 draft 清理
+
+### 40.1 用户两问
+
+1. 「这些【已驳回】状态的数据，是 online 平台的 bug 还是 offline 平台的 bug？应该如何解决？」
+2. 「查询条件里，offline 的状态项，是否也需要调整或删除？」
+
+### 40.2 排查一：6 条「已驳回」的成因 → **「谁的 bug」这个问法在两处都不成立**
+
+实测（2026-09-20 库内直读，**删除前**）：
+
+| link | 簇 | agent / interface | 簇状态 | 驳回码 |
+|---|---|---|---|---|
+| 2239 | 3857 | good-question / `POST /api/chat/{session_id}` | claim | `online_content_gap` |
+| 2240 | 3858 | 同上 | claim | `online_content_gap` |
+| 2245 | 3866 | contract-check / `POST /internal/check-tasks/{id}/run` | open | `offline_cap_gap` |
+| 2246 | 3867 | 同上 | open | `offline_cap_gap` |
+| 2247 | 3868 | contract-check / `GET /api/tasks/{id}/result` | open | `online_content_gap` |
+| 2248 | 3869 | 同上 | open | `online_content_gap` |
+
+共同点：`invalidated_by` **全 NULL**（无人工驳回，全是对端回写）；`case_type` 全
+`regression_error`、`case_id` **全 NULL**；来源 trace 只有 `clm-good-question-1`（×2）
+与 `task-642..645`。旁证：账号 180/181 = **`clm-probe-admin` / `clm-viewer`**（走查账号），
+全库 link 里 `clm-`/`task-` 前缀占 **18/22**。
+
+**结论分三层**：
+
+1. **`offline_cap_gap`（2 条）→ 归 offline 侧的「登记未配齐」，不是代码 bug。**
+   恢复面在离线侧（补 agent/interface 登记 → 重扫自愈回写 `active`，契约 R2 例外）。
+   ⚠️ **但先要回答一个产品问题**：`POST /internal/check-tasks/{id}/run` 名字带 `internal`，
+   它**该不该**进评测集？若不该，那是 **online 误推**，不是 offline 漏登记。**本批未取证，不下结论。**
+2. **`online_content_gap`（4 条）→ 归 online 侧，但 online 侧定位不了。**
+   该码按 `backend/app/backflow/ack.py:29-32` 是 offline 的
+   `content_gap`/`version_drift`/`empty_words` **三码折叠**而来；而 `PullAckRequest`
+   （`api/pull.py:63`）**无 detail 槽** ⇒ **「缺哪个字段」不跨端**（register R-7 原话）。
+   结果 = online 只能盲推同一份内容 ⇒ 必然再被拒。流转记录坐实：4 条全部走到
+   **`自动重推 #1、#2 / 上限 2`**，即批 37 的机制**确实到了尽头**。
+   **排除空词表**：`assemble` 记录写 `wordlist_v=5/6, words=5`（3866-3869 为 `v=2, words=3`）。
+3. **这不构成「改哪一端代码」的动作** —— 缺的是**契约信息**，不是实现。
+
+### 40.3 ⚠️ 本批最贵的一课：**「要删 link」查出来等于没删**
+
+用户拍板「清掉这 6 条」。动手前读 `worker/assemble_job.py:43-61`，其扫描谓词是：
+
+```
+status == 'open'  ∧  input_snapshot 非空  ∧  该簇无 verify_status='pending' 的 link
+```
+
+实测这 6 簇：`input_snapshot` 长度 69/16（**非空**）；6 条 link 的 `verify_status`
+**全是 `pending`**、`cur_key` 全等于自身簇 id ⇒ 它们正在充当**「现行 link 占位」**，
+这正是 assemble_job 现在跳过这 6 簇的原因。
+
+⇒ **只删 link，三个条件立刻同时成立，下一轮（≤60s）assemble_job 会把它们重新组装成
+新 link 再推给 offline 一次。** 3866-3869 是 `open` 态，**当场发生**；3857/3858 是 `claim` 态，
+等 `claim_due_ts`（2026-09-29）TTL 回落 `open` 时也会发生。
+
+**⇒「清掉」唯一可行的尺度是连簇一起删。** 这是「**动手前先读那个会把我删掉的东西再长回来的代码**」
+的实证 —— 不读它就白删一轮，而且**现象是「删成功了、数据也少了」，没有任何判据会红**。
+
+### 40.4 执行：单事务删除（含备份）
+
+- 备份先落盘并**校验行数**（`conversion_record` 16 / `error_case_link` 6 / `error_cluster` 6）
+  → `%TEMP%\obs-del-clm-backup.sql`。
+- 删除顺序 `conversion_record → error_case_link → error_cluster`，**单事务一次提交**。
+  ⚠️ **必须单事务**：分两次提交会在中途造出「簇在、现行 link 已删」的窗口，
+  assemble_job 当场重组装（即 40.3 那条）。
+- 复核：`error_cluster` 23→**17**（open 3 · claim 4 · fixed 10）、`error_case_link` 22→**16**
+  （`invalidated` 归 0，余 assembled 2 · active 14）、`conversion_record` 109→**93**、
+  `verify_run_record` **34 未动**；目标 id 残留全 0。
+
+⚠️ **我在问询里写错过一个数**：把「待处置」写成 13→**11**，真值是 **13→7**
+（删掉的 6 簇里 open 4 个、claim 2 个）。已当场订正。真机读数确认 = 7。
+
+### 40.5 排查二：offline 态下拉 → **删 `draft`，`invalidated` 必须留**
+
+| 值 | 库内 | 写点 | 处置 |
+|---|---|---|---|
+| `assembled` 待 offline 拉取 | 2 | `envelope.assemble_cluster` / `requeue.py:192` 复位 | 保留 |
+| `active` 已激活 | 14 | offline ack（`pull_loop.py:260`） | 保留 |
+| `invalidated` 已驳回 | **0** | offline ack（`pull_loop.py:343`） | **保留** |
+| `draft` 待 offline 确认 | **0** | **两侧都无有效写点** | **删除** |
+
+**① `invalidated` 现在 0，是 40.4 那次删除造成的，不是它天然为 0。**
+拿这个 0 当「删选项」的依据，等于**用自己刚制造的观测当判据**。写点在 offline 侧活着，
+删了就真筛不出来。⇒ **先删数据、再用删除后的读数决定 UI，是错的顺序。**
+
+**② `draft` 恒 0 是必然的（跨仓取证，非推断）**：
+- online `_ACK_MATRIX`（`ack.py:39`）明写 `"draft": [("assembled", None)]` = 正常路径；
+- offline `backflow_client.ack()` **全仓仅 2 个调用点** —— `pull_loop.py:260 action="active"`、
+  `:343 action="invalidated"`，**无一发 `draft`**。
+⇒ **契约写了、对端实现从未走。** 不是「停留时间短」。
+
+**③ `draft` 与 `claim`（批 38）同类但死因不同**，这决定了处置一致而**理由不同**：
+- `claim` = **我方删了产生路径**（认领端点随批 35-B 撤除）+ 一周后自愈归零；
+- `draft` = **对端从未实现**。
+⇒ 判据要落到「**对端调用点**」，不是「库内条数」—— 只看库内条数，两者长得一样。
+
+**④ 处置照批 38 对 `claim` 的先例**：只从下拉里拿掉，`OFFLINE_STATUS_TEXT` /
+`taskState` / `.st-draft` CSS **一个不动**（兜底渲染真值，库里真出现时不空白）。
+spec 的断言同步**反向重写**（原为「下拉 == 文案表全键集（不漏态）」，前提是对所有值都成立，
+现改为「下拉只列活值；文案表仍覆盖全部枚举值」）。
+
+### 40.6 验证
+
+- 前端 `npx vitest run` = **227 passed / 16 files**（与基线同数：一测换一测）；
+  `npm run build`（含 `vue-tsc --noEmit`）**通过** ⇒ 新产物 `index-BBJsMPH2.js`。
+- `docker cp` 部署进 `obs-frontend`（**烘焙镜像无 bind mount**，见 CLAUDE.md 表）。
+- 真机（**新标签页**，页面 37，2026-09-20）：offline 态下拉 **4 项**（draft 已消失）；
+  错误簇状态 = 3/4/10 = **17**；待处置 = 合同校验 4 · 智能客服 1 · 不懂就问 2 = **7**；
+  回归验证结果 = 待回归 6 · 通过 10 = **16**；待修复集 **4 条**；表格**无「已驳回」行**；
+  页脚「共 17 个错误簇」。`cards-note` 关系说明与单位徽标（簇/用例/用例/簇）渲染正确。
+
+### 40.7 未处置的观察（不属本批范围）
+
+1. **浏览器遗留 3 个标签页**指向已删的簇 3866/3868/3869 —— 删除的正常后果，刷新即可。
+2. **`interface` 表残留走查接口**：下拉里仍挂着 `DELETE /api/v1/admin/knowledge/probe_cs_20260918`。
+   与 #34 同属数据残留但**性质不同**（挂在接口表上，非验证记录），**本批未动**。
+3. **`clm-good-question-1` 一个 trace id 出现在 7 个簇里**，且 7 簇**全是同一 agent + 同一
+   interface**。按错误聚类常识，同接口同签名该收敛为一个簇 ⇒ 疑似**簇分裂**。
+   未读聚类键，**不下结论**，建议单独成批。
+
+---
+
+## 四十一、待办（下个 session 从这开工）：未达 K 的簇被误标为「去修 bug」
+
+> **状态：已出方案、已定路线，未动手。** 本节是交接，不是已完成项。
+
+### 41.1 用户报的现象
+
+「`/backflow/clusters/3874` 状态是【未处置】，但页面显示回归验证 run 是 pass，这不对吧？
+页面上好几条数据都是这样的情况」
+
+### 41.2 排查：**数据是对的，错的是文案**
+
+实测（2026-09-20 库内直读）：
+
+| 簇 | status | claim_k | link | 该 link 的 run 数 | 其中 case_pass=1 | 最近 run |
+|---|---|---|---|---|---|---|
+| 3872 | open | 2 | 2251 | 1 | 1 | 2026-09-16 |
+| 3873 | open | 2 | 2252 | 1 | 1 | 2026-09-16 |
+| **3874** | open | 2 | 2253 | 1 | 1 | 2026-09-16 |
+
+- `decide_k`（`verify.py:100-119`）：`seq >= claim_k` 才判 passed；**seq 数的是「相邻版本的
+  连续纯净 pass」**（`count_k` → `seq+1 if prev_pure else 1`）。
+- 这 3 条各只有 **1** 条验证记录 ⇒ `seq=1 < claim_k=2` ⇒ 不判 passed ⇒ **link 保持 pending、
+  簇保持 open**。**这是设计如此。**
+- 全库 `claim_k` 分布：`2` 有 16 个、`1` 有 1 个。全库处于「open ∧ 有 pending link ∧ 该 link
+  有 pass 记录」的簇 = **恰好这 3 条**。
+
+### 41.3 🔴 真正的缺陷：页面对这个状态给了**错误指令**
+
+真机（新标签页，页 38）读到的「需要你」原文：
+
+> **去修这一簇的 bug（在代码里改）—— 回归连续通过 2 次，系统自动收口**
+
+**这三个簇的回归已经 pass 了，没有 bug 可修**；它们在等的是 **offline 再推一版通过结果**
+（凑够 2 次）。这句把「**等系统**」说成了「**需要你动手**」。
+
+⚠️ 注意**规则本身页面上写了三处**（「连续通过 2 次」、「回归阈值 K=2」、run 区小字
+「连续通过 K 次才判已修复」）—— 所以这**不是「信息缺失」，是「信息都在但没翻译成
+『所以现在轮到谁』」**，与批 30/32/34/36 反复出现的同型缺陷一致。
+
+### 41.4 已定方案（**路 B**）与一个被推翻的估计
+
+**目标**：详情接口输出 `seq`（+ 已有 `claim_k`），前端把「需要你」分支成
+「已连续通过 **1/2** 次，等 offline 推下一版结果」。
+
+- **路 A（加列 `error_cluster.judge_seq`）**：动 schema + alembic 迁移 + 回填 17 簇。
+- **路 B（拆分 `judge_link` 为「纯计算 seq」+「应用终态」）**：不动 schema，判定链单一来源。
+- **用户选定 = 路 B。**
+
+⚠️ **但「路 B 改动面小」这个判断是错的，动手前必须知道**：
+`judge_link` 的判定循环体内**有写操作** —— `verify.py:328-333`：
+
+```python
+if decision["action"] == "unclean_run" and rec.id == trigger_id:
+    from app.backflow import batches
+    await batches.ensure_unclean_batch(...)      # ← 写库，在循环里
+```
+
+⇒ 拆分不是「把前半段摘出来」，而是要把**「哪个版本触发了 unclean」**（纯计算）与
+**「写批次」**（副作用）**拆开**，再把后者挪回 `judge_link` 按纯函数返回的版本号执行。
+循环里还夹着：`needs_review` 日志分支、缺行中断（`prev_terminal_version` 查
+`_agent_versions` 惰性查询）、不可判版本中断（`_cases_key_present`）。
+
+### 41.5 ⚠️ 动手前的硬约束（改错会静默误判）
+
+- 判定的正确性依据是「**对全链的幂等重放**」（`judge_link` docstring；`rejudge_job` 每 60s
+  重放一次）。**拆错会破坏这个性质**，而症状是**静默把簇误判为已修复** —— 正是
+  `verify.py:296-300` 注释里「v2 推送全丢时误算连续 2 次纯净 pass」在防的那件事。
+- 护栏 = 后端 492 测试；改完必须全跑，并**真机复验 3872/3873/3874 三条**（应显示 `1/2`）。
+- 前端要改的位置：`BackflowClusterDetailView.vue` 的「需要你」分支
+  （数据源 `backflowLabels.ts::taskState`）。`claim_k` **已暴露**（`api/backflow.py:144`），
+  **缺的只有 `seq`**。
+
+### 41.6 顺带记两条（与本批无关，勿当已完成）
+
+1. **这 3 条很可能永远到不了第 2 次**：run 停在 2026-09-16，已 3 天。若 offline 不再跑这些
+   case，它们会永久停在「未处置」—— 即批 30 记过的「**让用户等一个不会来的结果**」。
+   ⇒ 修完文案后，这类簇**仍会长期停着**，只是页面不再骗人。是否要给它们别的出口，
+   **本批未讨论**。
+2. **`rejudge_job.py:26-28` 注释与代码不符**：注释写「扫描谓词刻意与旧 recheck **逐字相同**
+   （`cluster.status=='claim'` ∧ …）」，而 `:62` 的代码是 `.where(ErrorCluster.status == "open", ...)`
+   —— 批 35-A 把准入 `claim`→`open` 时改了代码、**漏改这段注释**。属
+   [[stale-rationale-outlives-its-data]] 同型。**本批未改**。
