@@ -376,9 +376,9 @@ authorization | token | password | secret | api[_-]?key | fernet | credential
 
 | 控制点 | 一期规则 |
 |---|---|
-| 采集开关 | 正文 `output` 与入参 `input` 的 **可检索/可展示** 面**默认关**；需要还原"当时如何答复/入参为何"的接口（优先对话类）逐接口评估开启（§8.5 interface.body_search 标记）；落库前内容型最小化 |
+| 采集开关 | 正文 `output` 与入参 `input` 的 **可检索/可展示** 面**默认关**；需要还原"当时如何答复/入参为何"的接口（优先对话类）逐接口评估开启（§8.5 interface.body_search 标记）；落库前内容型最小化。**（2026-09-20 订正：该「逐接口开关」从未有载体 —— `interface` 表 0 行、无写入端点、`backend/app` 零读取点（§8.5 admin Agent 面 2026-09-14 撤除时把端点一并带走）⇒ 实际落为全局 **admin-only** 门控，见 §8.2 注）** |
 | 截断 | `input/output/log_message` 单条 ≤ **8K 字符**；`error_msg` ≤512；超长截断须保留语义头（【实现约定】前 8K，不按 UTF-16 半字截断告警处理） |
-| 权限 | 查看 `input/output` 需 viewer 及以上 + 该接口 `body_search=true`；统一 viewer 无 per-agent 授权域（R2） |
+| 权限 | ~~查看 `input/output` 需 viewer 及以上 + 该接口 `body_search=true`；统一 viewer 无 per-agent 授权域（R2）~~ **（2026-09-20 订正）实为：需入参 `body_search=true` **且 role == admin**；「该接口」那半无载体（同上行）。非 admin 传 true **静默降级**、不报 403 —— 403 与 200 的差异本身就是「这条 trace 有正文」的信标** |
 | 保留期 | 随事件 ILM 30 天，不独立延长 |
 
 > v1 无会话历史摘要（N 轮收敛二期，C1），`input` 仅当前请求 `input_turns`；因此本表是 v1 唯一正文/入参暴露面。错误现场快照（§5.1④ `input_snapshot`）与正文同级约束。
@@ -588,6 +588,7 @@ CREATE TABLE `interface` (
   llm_source   ENUM('config','manual','auto_observed') NULL,
   llm_suspect  TINYINT NOT NULL DEFAULT 0,           -- 疑似漏标观察窗内
   body_search  TINYINT NOT NULL DEFAULT 0,           -- 正文/入参可检索可查看开关（§2.7），默认关
+  --                                          ⚠️ 2026-09-20 实测：本列**零读取点**、表 **0 行** ⇒ 开关未生效，勿据它判断授权（见 §8.2 注）
   status       TINYINT NOT NULL DEFAULT 1,
   first_seen_ts DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   last_seen_ts  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -802,7 +803,7 @@ CREATE TABLE `trace_judge_state` (
   }
 }
 ```
-> `input/output/log_message` 仅 index 中始终保留全文（ILM 30d 内）；**可检索/可查看展示面**由接口级 `body_search` 开关控制（§2.7）——即"存 ≠ 可查可看"，检索 API 层做开关过滤（§8.2/§8.3）。
+> `input/output/log_message` 仅 index 中始终保留全文（ILM 30d 内）；**可检索/可查看展示面**由接口级 `body_search` 开关控制（§2.7）——即"存 ≠ 可查可看"，检索 API 层做开关过滤（§8.2/§8.3）。**（2026-09-20 订正：接口级开关无载体，真实门控 = API 入参 `body_search` + role == admin，见 §8.2 注）**
 
 ### 5.3 指标：双路查询 + 7d 小时级 rollup（决策 R7）
 
@@ -1101,7 +1102,7 @@ CREATE TABLE `trace_judge_state` (
 | `GET /traces/{agent}/{trace_id}` | viewer | 该 trace 全节点：~~`(ts,parent,seq)` 树排序事件行（含 log 行引用）~~ **（v1.23 反查订正）实为 `seq asc`**（父 seq 恒小于子 seq → 即结构拓扑序；不能用 ts asc：request 事件在中间件 finally 才发出、ts 恒为全 trace 最大）；**本响应不含 log 行引用**（响应字段无该项，日志走 logs 懒加载）；异常节点红显标记；llm_call 高亮。**大 trace 防护**：日志行不进本响应（走 8.2 logs）；事件行单 trace 上限（【实现约定】500）+ 超时 |
 | `GET /traces/{agent}/{trace_id}/logs` | viewer | 日志行分页懒加载（`page/page_size`），单独接口防上千日志行一次拉爆 |
 
-> **body_search 后端置空（v1.1）**：接口级 `body_search=false`（默认）时，traces 列表/详情/logs 响应在**后端序列化前将 `input/output/log_message` 置空**，前端隐藏仅兜底（§13.4）；检索面在 ES 查询层已按开关过滤命中（§5.2 注）——两层都不泄露正文。
+> **body_search 后端置空（v1.1）**：接口级 `body_search=false`（默认）时，traces 列表/详情/logs 响应在**后端序列化前将 `input/output/log_message` 置空**，前端隐藏仅兜底（§13.4）；检索面在 ES 查询层已按开关过滤命中（§5.2 注）——两层都不泄露正文。**（2026-09-20 订正：「接口级」无载体 —— 该参数是 **API 入参**；放行条件 = 入参 true **且 role == admin**，`interface.body_search` 列零读取点、表 0 行）**
 
 ### 8.3 指标看板 metrics（维度2，时间窗路由 §5.3）
 
@@ -1240,7 +1241,7 @@ CREATE TABLE `trace_judge_state` (
 - 平台 JWT：短效 access(15min) + refresh(7d)；**吊销 = session 行 `revoked_at` + `user.status`（2026-09-14 订正：原文「token version 吊销」与实现不符——无该列，`api/auth.py:4-8` 明写不做该迁移）**；失败锁定。
 - 路由级：`viewer` 可访问 8.1~8.4；`admin` 才可 8.5/8.6 + 8.4 中 admin 动作；**前端隐藏 + 后端二次鉴权双保险**。
 - 平台间端点仅接受 evaluator 服务凭证（独立签发路径），不接平台 JWT。**v1.23 实证口径（据实收敛，此前版本描述的 JWT/scope 机制 online 从未实现）**：online 的服务凭证实现 = **静态预共享 secret**（`api/deps.py:50-58` `require_evaluator`，`secrets.compare_digest` 比对 `settings.evaluator_service_secret`），**非 JWT service token**——offline 文档 §9 设计的 `iss`/`scope`/`exp` 体系 online 侧**未采用**。故：**pull/ack 与结果推送三端点共用同一 secret，不做 scope 分置**；接受「推送凭证可调 pull 面」的耦合，凭证分置与轮换一并归 `#2` credential 缺口批。**online 侧不再持有任何 offline 出站凭证**（原 `BACKFLOW_INBOUND_SECRET` 概念整条作废）。
-- 正文查看需 viewer + 接口 `body_search=true`（无 per-agent 授权域，R2）；`body_search=false` 时后端响应前置空正文（§8.2 注/§13.4）。
+- ~~正文查看需 viewer + 接口 `body_search=true`（无 per-agent 授权域，R2）~~ **（2026-09-20 订正）实为：入参 `body_search=true` 且 **role == admin**；「该接口」那半无载体。非 admin 静默降级不报 403**；`body_search=false`（或非 admin）时后端响应前置空正文（§8.2 注/§13.4）。
 - metrics agg / trace 检索默认带超时与结果护栏（`metric_agg_timeout_ms` / `trace_query_timeout_ms` / 结果上限，§8.2/§8.3/§10.1），~~超时熔断引导缩小范围而非长查询拖死~~ **（v1.23 反查订正）实现 = 超时配置 + `TransportError`→400 fail-fast，无独立熔断器**。
 
 ### 8.9 错误码（统一 `core/errors.py`）
@@ -1404,7 +1405,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 | 4 | `db`/`redis` 子节点 | 建议 | 建议 | 建议 | 建议 |
 | 6 | 收敛自有埋点 | `_json_log` 并入 SDK | Prometheus `/metrics` 保留端点兼容 | — | — |
 | 7 | 接口字典可枚举 | FastAPI/OpenAPI 自发现 | 同 | 同 | 同 |
-| 8 | 正文默认关逐接口评估 | ✅ | ✅ | ✅ | ✅ |
+| 8 | ~~正文默认关逐接口评估~~ **（2026-09-20 订正：逐接口无载体 ⇒ 落为 admin-only，见 §8.2 注）** | ✅ | ✅ | ✅ | ✅ |
 | 9 | 回流白名单 | **开放（v1 error 侧）** | **开放** | **开放** | 否（D18） |
 
 > #5（record_quality/retrieve_hit）二期整改，v1 不接——**§13.1 #5 的 sp `source_count/max_score/confidence_band` → retrieve_hit 归一映射属二期盘点记档**，接入时仅核对字段口径留档。
@@ -1477,7 +1478,7 @@ ignore / claim（必填 fix_version+说明）/ needs_review 处置 / reopen；**
 ### 13.4 脱敏与内容安全
 
 - 键级掩码 SDK 完成，平台**只复核不还原**（检出未掩码 → 丢弃计数告警）。
-- `input/output` 可检索可查看面受接口级 `body_search` 门控（默认关，§2.7）；查看需 viewer + 开关已开。**门控关闭时后端在序列化响应前置空** `input/output/log_message`（前端隐藏仅兜底，防展示面泄露），见 §8.2/§8.8 注。
+- `input/output` 可检索可查看面受接口级 `body_search` 门控（默认关，§2.7）；~~查看需 viewer + 开关已开~~ **（2026-09-20 订正：接口级开关无载体 ⇒ 实为「入参 `body_search=true` 且 role == admin」，见 §8.2 注）**。**门控关闭时后端在序列化响应前置空** `input/output/log_message`（前端隐藏仅兜底，防展示面泄露），见 §8.2/§8.8 注。
 - 事件/正文 ILM 30 天；error_cluster 快照 input 实文留档（≤8K，脱敏；供组装不依赖 ES，但**不放大 PII 留存**——脱敏口径同正文）。`input_snapshot / error_msg` 为**受控列**：仅组装/复验链路 + admin 聚类详情可读，普通 trace 检索不可达。**降级清理（v1.1）**：cluster 终态（fixed/inactive）且超【实现约定】90 天 → 清空快照 input 实文（保留去重键/计数/时间字段），与 ES 30d 生命周期解耦的长审计面收口。
 
 ### 13.5 审计与平台间

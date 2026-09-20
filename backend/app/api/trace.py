@@ -1,10 +1,15 @@
 """链路查询 API（detail §8.2）：GET /traces 检索 + /traces/{agent}/{trace_id} 详情。
 
-- **鉴权**：全部挂 ViewerUser（viewer/admin，§8.1）；正文可见度再按 body_search 参数分层。
-- **正文保护（v1.1 约定，§8.2 注 / §13.4 两层）**：body_search=false（默认）时——① 检索面
-  不命中 input/output/log_message（store 层 multi_match fields 随开关收窄到 error 字段）；
-  ② 响应序列化前把这三字段置 None。两层都不泄露正文；body_search=true 仅显式放行
-  （curl/S-5 验收用）。
+- **鉴权**：全部挂 ViewerUser（viewer/admin，§8.1）；正文另按 **admin-only** 门控（见下）。
+- **正文门控（2026-09-20，用户拍板改口径）**：正文 = input/output/log_message，放行条件 =
+  **`body_search=true` 且调用方 role == admin**。契约 §13.4 原文「需 viewer 及以上 + **该接口**
+  body_search=true」的后半**无载体** —— `interface` 表 0 行、无写入端点、`backend/app` 零读取点
+  （§8.5 admin Agent 面 2026-09-14 整节撤除时把那个端点一并带走了），故改挂前半（角色）。
+  非 admin 传 true **静默按 false 处理**，不 403：403 与 200 的差异本身就是「这条 trace 有正文」
+  的信标，为一个不放行的字段开旁路不值得。
+- **两层保护**（v1.1 约定，§8.2 注）：① 检索面不命中正文三字段（store 层 multi_match fields
+  随开关收窄到 error 字段）；② 响应序列化前把这三字段置 None。两层都不泄露正文。
+  ⚠️ 前端**日志请求**（/logs）固定带 true ⇒ 对 admin 而言第 ② 层在 UI 上已放行；默认值未改。
 - **运行时键**（§10 dict_config，seed 默认 7/3000）：keyword_search_days 控缺省时间窗，
   trace_query_timeout_ms 控单查询超时。60s 进程缓存（core/dict_config）。
 - **结果护栏（§14.4）**：列表深翻页上限 200（offset≥200 拒）；详情单 trace ≤500 截断 +
@@ -92,6 +97,14 @@ class TraceLogRow(BaseModel):
     log_message: str | None = None
 
 
+def _allow_body(body_search: bool, role: str) -> bool:
+    """正文放行判定（2026-09-20）：显式请求 **且** admin。理由见模块 docstring「正文门控」。
+
+    收 role 字符串而非 User 对象：本函数是纯判定、不碰 DB，收窄入参也好测。
+    """
+    return bool(body_search) and role == "admin"
+
+
 # ---------- 端点 ----------
 
 
@@ -143,7 +156,7 @@ async def list_traces(
             status=status,
             start_ts=start_ts,
             end_ts=end_ts,
-            body_search=body_search,
+            body_search=_allow_body(body_search, user.role),
             from_=offset,
             size=page_size,
         )
@@ -187,10 +200,11 @@ async def trace_detail(
 
     _KEYS = ("seq", "node", "parent", "branch", "interface", "status", "error_type",
              "error_msg", "ts", "duration_ms", "model", "usage")
+    allow_body = _allow_body(body_search, user.role)
     events: list[TraceEventRow] = []
     for h in hits:
         row = TraceEventRow(**{k: h.get(k) for k in _KEYS})
-        if body_search:  # 正文仅显式放行时回填（两层正文保护，§8.2 注）
+        if allow_body:  # admin 显式请求时回填（两层正文保护，§8.2 注）
             row.input = h.get("input")
             row.output = h.get("output")
         events.append(row)
@@ -226,9 +240,10 @@ async def trace_logs(
     except (TransportError, ApiError) as exc:
         raise AppError("ERR_TRACE_0002", f"检索暂不可用或超时: {exc}", http=400) from exc
 
+    allow_body = _allow_body(body_search, user.role)
     items = [
         TraceLogRow(seq=h.get("seq"), ts=h.get("ts"), log_level=h.get("log_level"),
-                    log_message=h.get("log_message") if body_search else None)
+                    log_message=h.get("log_message") if allow_body else None)
         for h in result["hits"]
     ]
     return Page(items=items, total=result["total"], page=page, page_size=page_size)

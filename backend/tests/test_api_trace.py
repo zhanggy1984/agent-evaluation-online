@@ -160,7 +160,21 @@ def test_trace_detail_ok_blank_body_by_default():
     assert row["seq"] == 0 and row["input"] is None and row["output"] is None  # 正文置空
 
 
-def test_trace_detail_body_search_true_returns_body():
+# 同 logs：正负两条成对读才有判别力（见下文 logs 那组注释）。
+def test_trace_detail_body_search_true_returns_body_for_admin():
+    src = _evt_source(seq=0, input='{"q":"hi"}', output='{"answer":"ok"}')
+    es = _fake_es(es_hits(1, [src]))
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer("admin")])
+    with _enter(app, es) as c:
+        r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}", headers=_auth_hdr("admin"),
+                  params={"body_search": "true"})
+    assert r.status_code == 200
+    assert r.json()["events"][0]["input"] == '{"q":"hi"}'
+
+
+def test_trace_detail_body_search_true_is_silently_ignored_for_viewer():
+    """负对照：viewer 传 true → 200 且 input/output 仍为 None（不 403，理由同 logs 那条）。"""
     src = _evt_source(seq=0, input='{"q":"hi"}', output='{"answer":"ok"}')
     es = _fake_es(es_hits(1, [src]))
     app = create_app(_settings())
@@ -169,7 +183,8 @@ def test_trace_detail_body_search_true_returns_body():
         r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}", headers=_auth_hdr(),
                   params={"body_search": "true"})
     assert r.status_code == 200
-    assert r.json()["events"][0]["input"] == '{"q":"hi"}'
+    assert r.json()["events"][0]["input"] is None
+    assert r.json()["events"][0]["output"] is None
 
 
 def test_trace_detail_not_found_404():
@@ -216,7 +231,31 @@ def test_trace_logs_paginated_and_body_blanked():
     assert es.calls[0][1]["from"] == 50 and es.calls[0][1]["size"] == 50
 
 
-def test_trace_logs_body_search_true_returns_message():
+# 正文门控改 admin-only（2026-09-20）后，下面两条必须**成对**读：
+# 单看任一条都判不出「门控生效」——只有「admin 拿得到 + viewer 拿不到」并立才有判别力
+# （[[criterion-structural-vs-capacity]] 记的同一教训：判「某开关生效」须含生效与不生效两样本）。
+# ⚠️ 改前这条用的是 viewer。门控上线后它变红，**那个红就是这条测试的价值**。
+def test_trace_logs_body_search_true_returns_message_for_admin():
+    srcs = [{"agent": _AGENT, "trace_id": _TRACE, "event_kind": "log", "seq": 1,
+             "ts": 1001, "log_level": "ERROR", "log_message": "connection refused"}]
+    es = _fake_es(es_hits(1, srcs))
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_viewer("admin")])
+    with _enter(app, es) as c:
+        r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}/logs", headers=_auth_hdr("admin"),
+                  params={"body_search": "true"})
+    assert r.status_code == 200
+    assert r.json()["items"][0]["log_message"] == "connection refused"
+
+
+def test_trace_logs_body_search_true_is_silently_ignored_for_viewer():
+    """负对照：viewer 传 `body_search=true` → **200 且正文仍为 None**，不是 403。
+
+    两处刻意选择都钉在这里：
+    ① 断言「等于 None」而非「空/假」——后者在字段整个缺失时也通过；
+    ② 断言 status == 200 —— 403 与 200 的差异本身就是「这条 trace 有正文」的信标，
+       为一个不放行的字段开旁路不值得，故实现取静默降级（见 trace.py 模块 docstring）。
+    """
     srcs = [{"agent": _AGENT, "trace_id": _TRACE, "event_kind": "log", "seq": 1,
              "ts": 1001, "log_level": "ERROR", "log_message": "connection refused"}]
     es = _fake_es(es_hits(1, srcs))
@@ -226,7 +265,7 @@ def test_trace_logs_body_search_true_returns_message():
         r = c.get(f"/api/v1/traces/{_AGENT}/{_TRACE}/logs", headers=_auth_hdr(),
                   params={"body_search": "true"})
     assert r.status_code == 200
-    assert r.json()["items"][0]["log_message"] == "connection refused"
+    assert r.json()["items"][0]["log_message"] is None
 
 
 # ---------- ApiError 族（HTTP 层错误）与 TransportError 同待遇 ----------

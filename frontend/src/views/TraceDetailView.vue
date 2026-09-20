@@ -1,16 +1,23 @@
 <script setup lang="ts">
 // trace 详情页：事件树（后端 seq asc 返回 = §11.1 创建序拓扑，根锚点恒首位；parent 链算缩进层级）。
 // 红显 = status∈{error,timeout}；llm_call 高亮 = node=="llm_call"。
-// 正文（input/output/log_message）后端 body_search=false 已置空 → 前端零渲染兜底（两层保护，§8.2 注）。
+// 正文（2026-09-20 改）：log_message 已由 traceLogs() 显式带 body_search=true 放行（见 api/traces.ts）。
+// input/output 仍受门控，且本页**没有**它们的渲染点 —— 故未放开（理由同 traces.ts 注释）。
 // 日志懒加载：/logs 分页拉（后端 default page_size=50）。
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ApiError } from '../api/client'
+import { ApiError, readStoredUser } from '../api/client'
 import { traceDetail, traceLogs } from '../api/traces'
 import type { TraceEventRow, TraceLogRow } from '../api/types'
 import { agentDisplay, useAgents } from '../composables/useAgents'
 import { errorDetail } from '../traceLabels'
+
+// 正文占位文案随角色变（2026-09-20）：后端门控为 **admin-only**（trace.py「正文门控」）——
+// 非 admin 无论是否带 body_search=true，log_message 恒为 None。此时若照旧显示「该行无正文」，
+// 就是**把权限问题说成数据问题**：用户会去查「这条日志为什么没有正文」，而真因是角色不足。
+const isAdmin = readStoredUser()?.role === 'admin'
+const bodyGapText = isAdmin ? '（该行无正文）' : '（正文仅 admin 可见）'
 
 const route = useRoute()
 const router = useRouter()
@@ -139,7 +146,8 @@ function back(): void {
 
 // 详情页没有 agent 下拉（displayMap 无人触发加载）⇒ 本页自己拉一次，否则中文名恒为空转。
 // 单例内部已做「已有结果不重复拉」短路，从列表页进来时不会多打一次请求。
-onMounted(() => { void loadDetail(); void useAgents().load() })
+// 日志首屏随详情一起拉（2026-09-20：原为「加载日志」按钮手动触发）。
+onMounted(() => { void loadDetail(); void loadLogs(true); void useAgents().load() })
 </script>
 
 <template>
@@ -198,21 +206,20 @@ onMounted(() => { void loadDetail(); void useAgents().load() })
     </div>
     <p v-else-if="!loading" class="muted">该 trace 无事件</p>
 
-    <!-- 懒加载日志：正文 log_message 后端默认置空，仅出元信息 -->
+    <!-- 日志：正文 log_message 由 traceLogs 带 body_search=true 放行（2026-09-20）
+         2026-09-20 用户要求：**去掉「加载日志」按钮，进详情页直接拉首屏**。
+         ⚠️ 分页的「加载更多」保留 —— 去掉它会让第 2 页起的日志彻底不可达（page_size=50）。 -->
     <div class="panel logs">
       <div class="logs-head">
         <strong>日志</strong>
-        <button
-          v-if="!logsLoaded" class="btn-ghost" type="button" :disabled="logsLoading"
-          @click="loadLogs(true)"
-        >{{ logsLoading ? '加载中…' : '加载日志' }}</button>
+        <span v-if="logsLoading && !logsLoaded" class="muted">加载中…</span>
         <span v-else-if="logsTotal > logs.length" class="muted">
           {{ logs.length }} / {{ logsTotal }} 条
           <button class="btn-ghost" type="button" :disabled="logsLoading" @click="loadLogs(false)">
             {{ logsLoading ? '加载中…' : '加载更多' }}
           </button>
         </span>
-        <span v-else class="muted">{{ logsTotal }} 条</span>
+        <span v-else-if="logsLoaded" class="muted">{{ logsTotal }} 条</span>
       </div>
 
       <div v-if="logsLoaded && logs.length" class="log-list">
@@ -220,7 +227,7 @@ onMounted(() => { void loadDetail(); void useAgents().load() })
           <span class="mono muted log-seq">{{ lg.seq }}</span>
           <span class="log-lv muted">{{ lg.log_level || '' }}</span>
           <span class="muted">{{ fmtTs(lg.ts) }}</span>
-          <span class="log-body">{{ lg.log_message ?? '（日志正文默认不返回：可能含敏感内容）' }}</span>
+          <span class="log-body">{{ lg.log_message ?? bodyGapText }}</span>
         </div>
       </div>
       <p v-else-if="logsLoaded" class="muted">无日志</p>
@@ -267,7 +274,7 @@ onMounted(() => { void loadDetail(); void useAgents().load() })
 }
 
 .ev-row:hover {
-  background: #fafbfc;
+  background: var(--hover-row);
 }
 
 /* llm_call 高亮 + 红显行（§8.2：红显 = status 判，非 error_type 非空）。

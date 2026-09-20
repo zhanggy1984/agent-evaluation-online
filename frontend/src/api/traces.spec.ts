@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const apiMock = vi.hoisted(() => vi.fn())
 vi.mock('./client', () => ({ api: apiMock }))
 
-import { listTraces } from './traces'
+import { listTraces, traceDetail, traceLogs } from './traces'
 
 /** 取第 n 次调用传给 api() 的 path（第 0 个实参） */
 const pathOf = (n = 0): string => apiMock.mock.calls[n][0] as string
@@ -71,5 +71,28 @@ describe('P1-10 后半（2026-09-20）listTraces 时间窗透传', () => {
     ]) {
       expect(p).toContain(kv)
     }
+  })
+})
+
+// 日志正文放行（2026-09-20，用户拍板）。三条一组：第 1 条钉「要开的那一处确实开了」，
+// 第 2/3 条钉「不该开的两处**没**开」—— 防的是后续「既然是正文面，那详情也一起开吧」
+// 式的顺手扩面。详情/列表按后端 docstring ① 还是**检索面**总闸，而这两页根本没有
+// input/output 的渲染点（详情列只有 seq/节点/接口/model/usage/时间/耗时/状态）。
+describe('2026-09-20 日志正文放行：只开 /logs 一处', () => {
+  beforeEach(() => { apiMock.mockReset(); apiMock.mockResolvedValue({ items: [], total: 0 }) })
+
+  it('日志请求必须带 body_search=true（不带则后端序列化前把 log_message 置 None，页面只剩占位文案）', async () => {
+    await traceLogs('cc', 't-1', 1, 50)
+    expect(pathOf()).toContain('body_search=true')
+  })
+
+  it('详情请求不带 body_search（本页无 input/output 渲染点，开了是白放开正文面）', async () => {
+    await traceDetail('cc', 't-1')
+    expect(pathOf()).not.toContain('body_search')
+  })
+
+  it('列表请求不带 body_search（它同时是检索面总闸：multi_match fields 随开关收窄）', async () => {
+    await listTraces({ agent: 'cc' })
+    expect(pathOf()).not.toContain('body_search')
   })
 })

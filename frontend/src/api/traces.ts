@@ -28,11 +28,21 @@ export function traceDetail(agent: string, traceId: string): Promise<TraceDetail
   return api<TraceDetail>(`/traces/${encodeURIComponent(agent)}/${encodeURIComponent(traceId)}`)
 }
 
+// 日志正文放行（2026-09-20 用户拍板，**契约层面的选择、不是修 bug**）：
+// log_message 受 body_search 门控（v1.1 约定，后端 detail §8.2 注 / §13.4 两层 —— ① 检索面
+// 收窄到 error 字段 ② 序列化前把 input/output/log_message 置 None），默认 false。
+// 前端此前不传 ⇒ 拿到的恒为 None，页面只能渲染「日志正文默认不返回」的占位。
+// 现由前端**显式**带 true：这层默认保护在 UI 的日志路径上从此不再生效。默认值本身没改，
+// curl / S-5 验收口径不变。
+// ⚠️ **只给日志这一个请求带。** body_search 同时是**检索面总闸**（后端 docstring ①：
+// store 层 multi_match fields 随开关收窄），而详情页/列表页**没有任何 input/output 渲染点**
+// （详情列只有 seq/节点/接口/model/usage/时间/耗时/状态）⇒ 给它们带 true 是纯放开正文面、
+// 零可见收益。下方两条 spec 就是钉这个边界的。
 export function traceLogs(
   agent: string, traceId: string, page: number, pageSize: number,
 ): Promise<Page<TraceLogRow>> {
   return api<Page<TraceLogRow>>(
     `/traces/${encodeURIComponent(agent)}/${encodeURIComponent(traceId)}/logs` +
-      `?page=${page}&page_size=${pageSize}`,
+      `?page=${page}&page_size=${pageSize}&body_search=true`,
   )
 }
