@@ -3371,3 +3371,72 @@ px 探针（col2=280px / col3=320px）：[98, 342, 391, 68, 142, 117]   ← 六�
    claim 态「存量消亡」不同：open 是**活态**，卡住不会自愈。**本批只让它可见，没让它可动。**
 3. ⚠️ 未取证：offline 侧到底按什么节奏重跑用例（要不要重跑、隔多久）。**没查就不写结论** ——
    那属于另一个仓，且「契约判断必须两侧取证」（[[contract-claims-need-both-sides]]）。
+
+---
+
+## 五十、批 48（2026-09-20）：3 条 `claim`（复核中）簇提前退回 `open`（**数据清理，零代码改动**）
+
+**触发**：用户报「列表页有状态是【复核中】的，显示回归 1/2 次；【未处置】的，也显示回归 1/2 次！」
+
+### 50.1 先答「这是不是渲染 bug」：**不是**
+
+K 进度（`seq/claim_k`）与簇状态（`status`）**正交** —— 前者数的是「现行 link 连续通过了几次」，
+后者是「人对这条簇走到哪一步了」。同一个 `1/2` 挂在两种状态上本身**正确**，不是渲染错。
+（对照 [[terminology-ambiguity-mimics-data-bug]]：用户报「数据不对」时先查他用的词是不是多义词。）
+
+**真正有问题的是「复核中」这个标签本身** —— 承批 43 的取证：`action="claim"` 流转**零写入方**
+（本次复核 `app/` 再次确认），`judge_link` 的两个调用点谓词都是 `status == "open"`
+（`backflow.py:789`、`rejudge_job.py:62`）⇒ **一条 claim 簇即使收到第二次 run 也不会被判定**。
+它是一个**没有入口、也没有出口**的存量态。
+
+### 50.2 处置（A 级，已先出方案并经用户拍板「退回 open」）
+
+**备份**（执行前全值，三条）：
+
+| id | status | claimed_by | claimed_at | claim_due_ts | claim_k |
+|---|---|---|---|---|---|
+| 3842 | claim | 181 | 2026-09-14 09:48:31.836 | 2026-09-28 09:48:31.836 | 2 |
+| 3845 | claim | 181 | 2026-09-14 09:48:31.876 | 2026-09-28 09:48:31.876 | 2 |
+| 3875 | claim | 1   | 2026-09-20 07:09:27.337 | 2026-09-27 07:09:27.337 | 2 |
+
+**动作**：**照抄 `claim_ttl_job._expire_batch` 的 CAS 与取值**，只是提前执行（单事务）：
+
+```sql
+UPDATE `dev.obs`.error_cluster
+   SET status='open', claimed_by=NULL, claimed_at=NULL, claim_due_ts=NULL, claim_k=2
+ WHERE id IN (3842,3845,3875) AND status='claim' AND claim_due_ts IS NOT NULL;   -- 实测 rowcount=3
+INSERT INTO `dev.obs`.conversion_record (cluster_id, action, detail) VALUES
+  (3842,'claim_ttl_expire','人工提前退回 open（走查清理，批 48；非 TTL 到期）'), … ;
+```
+
+**为什么取值逐字段照抄 job 而不是「只改 status」**：① `claim_due_ts` 一并清空 ⇒ job 的谓词
+（`claim_due_ts IS NOT NULL`）此后永不命中，**不会被二次处理**；② 与 job 取值一致 ⇒ 日后没人
+需要分辨「这行是被 TTL 清的还是被手工清的」（[[same-day-contradictory-records]] 那类麻烦的起点）。
+
+⚠️ **一处不精确已向用户说明**：`action` 只能填枚举里最接近的 `claim_ttl_expire`（表内此前 0 条样例），
+真实原因是**人工提前**；真话写进 `detail`，`actor_user_id` 留 NULL（同 job 写法）。
+
+### 50.3 验证
+
+- 数据面：三条 `status=open`、`claimed_by/claimed_at/claim_due_ts` 全 NULL、`claim_k=2`；
+  流转记录 3 条（id 3316/3317/3318）；**全库 `status='claim'` 现存 0 条**。
+- 真机（新标签页 51，读接口响应而非只看渲染）：`3842 open seq=null` / `3845 open seq=null` /
+  `3875 open seq=1 k=2`。⚠️ **3842/3845 的 `seq=null` 是关键** —— `kProgress()` 返回 `''`，
+  不会凭空造出「回归 0/2 次」（§49.4 已钉）。
+- 列表页 `复核中` 行数 **0** ⇒ 批 47 §49.4 记的「`.kprog` 恰好 4 处（3 未处置 + 1 复核中）」
+  在本批后变成 **4 处全挂「未处置」**。
+
+### 50.4 **本批没解决、单独登记的（不许被上节的绿盖过去）**
+
+1. 🔴 **3842 / 3845 的离线链路自 2026-09-14 起从未启动**：其 link 一直是 `assembled`，
+   **0 次 run**，offline **从未拉取**；两条簇与真实业务无关（走查造数）。这不是本批的处置对象，
+   但**退回 open 只是把它们变成「看得见的卡住」**。未取证：为何 `assembled` 不被 offline 拉走。
+2. **「复核中」写入方之谜（已收窄，未完全闭环）**：3875 有一笔 `ts=2026-09-20 07:09:27`、
+   `actor_user_id=1` 的 `claim` 流转，而当前代码 `action="claim"` 零写入方。
+   ⚠️ **先对齐时间基**（本项目已多次因两端时间读数不同而误判）：`conversion_record.ts` 存的是
+   **UTC**（本次实测：`ts=12:14:28` 写入时 `date -u` = 12:16Z），容器 `StartedAt` 也是 UTC。
+   ⇒ 该记录写于 **07:09:27Z**，而 `obs-backend` / `obs-worker` 的启动时间是 **11:00:05Z / 11:00:07Z**
+   ⇒ **它由「重启前那个进程实例」写入，且重启后全表再无新的 `claim` 记录**。
+   **推论（非断言）**：旧进程实例仍在提供批 35-B 已撤除的认领端点。**待用户确认那笔是否他点的。**
+3. **open 簇除 K=2 外无出口**（承 §49.5-2）：本批把 3 条从「隐形的死态」变成「可见的活态」，
+   **没有让它们可动**。
