@@ -378,12 +378,12 @@ async def link_gap_version(session: AsyncSession, cluster, link) -> str | None:
     """本 link 现行是否处于「缺行中断」现场；是则返回缺失的版本，否则 None。
 
     用途 = 详情读面派生标记 `result_gap_suspected`（§8.4，零 DDL 现算）的**唯一判据来源**，
-    与 `judge_link` 内联的 gap 分支**同源**（同一 `_RAW_PREV_TERMINAL` / 同一「只看 ≥ fv」
-    边界 / 同一 `_agent_versions` 全集），不在此另抄一份判据（抄一份就等着两处漂移）。
+    与 `judge_link` 内联的 gap 分支**同源**（同一 `_RAW_PREV_TERMINAL` / 同一「全历史重放、
+    **无版本下界**」/ 同一 `_agent_versions` 全集），不在此另抄一份判据（抄一份就等着两处漂移）。
 
     与内核的唯一结构差异：内核在第一个终态处 `break`，本函数扫完全部版本。二者**不会分歧**——
     link 仍 pending ⇒ 内核从未判出终态 ⇒ 内核遇到的第一个 gap 即本函数扫出的最小 gap。
-    无已收结果行 / 无 fix_version / 无 case_id → None（该三态各有别的可见面，不是「疑似丢推送」）。
+    无已收结果行 / 无 case_id → None（两态各有别的可见面，不是「疑似丢推送」）。
     """
     # 批 35-A：原 `fv` 及其「只看 ≥ fv」边界随内核一并去掉（本函数 docstring 明写与内核
     # **同源**、不得漂移）—— 内核去掉了下界与水位闸，此处必须同步，否则 result_gap_suspected
@@ -404,7 +404,6 @@ async def link_gap_version(session: AsyncSession, cluster, link) -> str | None:
         str(prev_v)
         for V in sorted(by_version, key=_ver_key)
         if (prev_v := _raw_of(by_version[V]).get(_RAW_PREV_TERMINAL))
-        and _ver_key(str(prev_v)) >= _ver_key(fv)
     ]
     if not candidates:
         return None

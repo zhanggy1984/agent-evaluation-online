@@ -1,11 +1,11 @@
-// api/backflow.ts 契约测试：11 个导出逐个断言 **HTTP 方法 / 路径 / 查询串 / 请求体**。
+// api/backflow.ts 契约测试：3 个**只读**导出逐个断言 **HTTP 方法 / 路径 / 查询串**。
 // 这是前后端契约的前端侧护栏，与后端 test_backflow* 的响应形状断言配对——两边各钉一半。
 // 手法：stub 全局 fetch，经真实 client.api 跑一遍（不 mock 模块），这样连
 // `/api/v1` 前缀、Content-Type、Authorization 注入这些 client 侧行为也一并被固定住。
+// ⚠️ 批 35-B：人工处置写面（8 个导出）已整体删除，原「处置写面 / admin 写面」两段随之删除。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  backflowClusterDetail, backflowClusters, backflowOverview, batchResolve, claimCluster,
-  fixedReview, ignoreCluster, linkInvalidate, linkRequeue, needsReviewResolve, reopenCluster,
+  backflowClusterDetail, backflowClusters, backflowOverview,
 } from './backflow'
 
 interface Captured {
@@ -87,86 +87,21 @@ describe('读面', () => {
   })
 })
 
-describe('处置写面（viewer 可触达）', () => {
-  it('claimCluster：POST 且请求体含 fix_version/k/note', async () => {
-    const body = { fix_version: '2026.09.10-r1', k: 3, note: '已定位' }
-    await claimCluster(7, body)
-    const c = only()
-    expect(c.method).toBe('POST')
-    expect(c.url).toBe('/api/v1/backflow/clusters/7/claim')
-    expect(c.body).toEqual(body)
-  })
-
-  it('ignoreCluster：POST 无请求体（不传 undefined body）', async () => {
-    await ignoreCluster(7)
-    const c = only()
-    expect(c.method).toBe('POST')
-    expect(c.url).toBe('/api/v1/backflow/clusters/7/ignore')
-    expect(c.body).toBeUndefined()
-  })
-
-  it('reopenCluster：缺省 note 归一为显式 null（非 undefined 键缺失）', async () => {
-    await reopenCluster(7)
-    expect(only().body).toEqual({ note: null })
-    await reopenCluster(7, '误判')
-    expect(calls[1].body).toEqual({ note: '误判' })
-  })
-
-  it('fixedReview：approve 布尔原样透传（false 不可被吞成缺省）', async () => {
-    await fixedReview(7, false)
-    expect(only().body).toEqual({ approve: false })
-  })
-
-  it('needsReviewResolve：action 与 note 同送', async () => {
-    await needsReviewResolve(7, 'escalated')
-    const c = only()
-    expect(c.url).toBe('/api/v1/backflow/clusters/7/needs-review-resolve')
-    expect(c.body).toEqual({ action: 'escalated', note: null })
-  })
-
-  it('batchResolve：缺省 action = reopen_cluster（与后端缺省一致）', async () => {
-    await batchResolve(9)
-    const c = only()
-    expect(c.url).toBe('/api/v1/backflow/needs-review-batches/9/resolve')
-    expect(c.body).toEqual({ action: 'reopen_cluster' })
-    await batchResolve(9, 'escalated')
-    expect(calls[1].body).toEqual({ action: 'escalated' })
-  })
-})
-
-describe('admin 写面', () => {
-  it('linkInvalidate：POST /backflow/links/{id}/invalidate，reason 归一为 null', async () => {
-    await linkInvalidate(3)
-    const c = only()
-    expect(c.method).toBe('POST')
-    expect(c.url).toBe('/api/v1/backflow/links/3/invalidate')
-    expect(c.body).toEqual({ reason: null })
-    await linkInvalidate(3, 'offline_cap_gap')
-    expect(calls[1].body).toEqual({ reason: 'offline_cap_gap' })
-  })
-
-  it('linkRequeue：POST 无请求体（增量锚在后端，不由前端传）', async () => {
-    await linkRequeue(3)
-    const c = only()
-    expect(c.method).toBe('POST')
-    expect(c.url).toBe('/api/v1/backflow/links/3/requeue')
-    expect(c.body).toBeUndefined()
-  })
-})
-
-describe('client 侧共性（11 个端点共享）', () => {
+describe('client 侧共性（3 个端点共享）', () => {
   it('全部经 /api/v1 前缀且 Content-Type 为 JSON', async () => {
     await backflowOverview()
-    await linkRequeue(1)
+    await backflowClusters({})
+    await backflowClusterDetail(1)
+    expect(calls).toHaveLength(3)
     for (const c of calls) {
       expect(c.url.startsWith('/api/v1/backflow/')).toBe(true)
       expect(c.headers['Content-Type']).toBe('application/json')
     }
   })
 
-  it('登录后自动注入 Bearer（写面鉴权不受本模块控制但依赖它）', async () => {
+  it('登录后自动注入 Bearer', async () => {
     localStorage.setItem('obs_access', 'tok-abc')
-    await linkRequeue(1)
+    await backflowClusterDetail(1)
     expect(only().headers.Authorization).toBe('Bearer tok-abc')
   })
 

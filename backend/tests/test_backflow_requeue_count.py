@@ -20,11 +20,8 @@ from _fakes import (
 
 from app.backflow.requeue import (
     SUSPECT_REQUEUE_THRESHOLD,
-    requeue_count,
     requeue_counts,
-    requeue_link,
 )
-from app.models.error_flow import ConversionRecord
 
 
 def _run(coro):
@@ -90,15 +87,6 @@ def test_requeue_counts_zero_rows_is_empty_dict():
     assert _run(requeue_counts(_RequeueSession([]), [7, 8])) == {}
 
 
-def test_requeue_count_single_link_zero_and_hit():
-    sess = _RequeueSession([ns(link_id=5, action="requeue")])
-    assert _run(requeue_count(sess, 5)) == 1
-    assert _run(requeue_count(sess, 6)) == 0   # 无历史 → 0（边界）
-
-
-# ---------- requeue_link：返回体口径 = 历史次数（不含本次） ----------
-
-
 def _link(**over):
     now = _now()
     base = dict(id=30, cluster_id=10, payload_id="pl-abc", case_id="c-1",
@@ -116,40 +104,7 @@ def _cluster(**over):
     return ns(**{**base, **over})
 
 
-def test_requeue_link_returns_historical_count_excluding_this_call():
-    # 已有 2 条历史 requeue 行 → 本次重推返回 2（不含本次；含本次则应为 3）
-    sess = _RequeueSession([ns(link_id=30, action="requeue"),
-                            ns(link_id=30, action="requeue")])
-    out = _run(requeue_link(sess, _link(), _cluster(), actor_id=1, now=_now()))
-    assert out["requeue_count"] == 2
-    assert out["offline_status"] == "assembled"
-    # 口径保证靠操作序：计数查在 add 本次审计行之前
-    assert sess.ops.index("count") < sess.ops.index("add:requeue")
-    assert [r.action for r in sess.added] == ["requeue"]   # 本次审计行确已写入
-
-
-def test_requeue_link_first_ever_requeue_is_zero():
-    sess = _RequeueSession([])
-    out = _run(requeue_link(sess, _link(), _cluster(), actor_id=1, now=_now()))
-    assert out["requeue_count"] == 0
-    assert sess.count_queries == 1
-
-
-def test_requeue_link_ignores_other_links_requeues():
-    # 计数按 link 隔离：别的 link 的历史重推不算进本 link
-    sess = _RequeueSession([ns(link_id=31, action="requeue")])
-    out = _run(requeue_link(sess, _link(), _cluster(), actor_id=1, now=_now()))
-    assert out["requeue_count"] == 0
-
-
 def test_suspect_requeue_threshold_value():
     # 拍定值（无数据支撑，上线后按真实 conversion_record 分布调）：前端有同值常量
     assert SUSPECT_REQUEUE_THRESHOLD == 2
 
-
-def test_conversion_record_added_is_the_requeue_audit_row():
-    sess = _RequeueSession([])
-    _run(requeue_link(sess, _link(), _cluster(), actor_id=7, now=_now()))
-    rec = sess.added[0]
-    assert isinstance(rec, ConversionRecord)
-    assert rec.action == "requeue" and rec.link_id == 30 and rec.actor_user_id == 7

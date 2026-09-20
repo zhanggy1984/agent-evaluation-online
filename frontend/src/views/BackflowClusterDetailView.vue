@@ -1,24 +1,16 @@
 <script setup lang="ts">
 // cluster 详情页（P2-6 T-3.7 / detail §9.2 独立路由 backflow-cluster）：元数据 + links 表 +
-// verify_runs 版本×pass/fail 时间线 + conversions 审计时间线 + 人工处置动作区（按状态门控）。
-// 角色：viewer 恒见 claim/ignore/reopen/needs-review 处置；admin 才渲染 fixed-review / invalidate / requeue。
-// claim 复核窗：本地 1s tick 倒计时 + 45s 后台轮询（visibility=visible 时）侦测 TTL 自动回退 open。
+// verify_runs 版本×pass/fail 时间线 + conversions 审计时间线。
+// ⚠️ 批 35-B：**本页只读**。人工处置动作区（认领/忽略/重开/通过复核/驳回/单条与整批复核/
+// link 失效与重推）连同按钮整块删除 —— 后端端点同期撤除，留着按钮只会点出 404。
+// 簇的收口全自动：assemble_job 每 60s 组装推送 → offline 拉取执行 → 回推 run → K 满自动 fixed。
+// claim 复核窗（1s tick + 45s 轮询）**展示面保留**：历史 claim 行仍可能处于复核窗内。
 // 时间戳 = 后端 _iso naive-UTC 字符串 → fmtISO / parseISODate。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import {
-  backflowClusterDetail,
-  batchResolve,
-  claimCluster,
-  fixedReview,
-  ignoreCluster,
-  linkInvalidate,
-  linkRequeue,
-  needsReviewResolve,
-  reopenCluster,
-} from '../api/backflow'
-import { ApiError, readStoredUser } from '../api/client'
+import { backflowClusterDetail } from '../api/backflow'
+import { ApiError } from '../api/client'
 import type { BackflowClusterDetail, BackflowLink } from '../api/types'
 import {
   CLUSTER_INTRO,
@@ -43,14 +35,9 @@ const route = useRoute()
 const router = useRouter()
 const clusterId = Number(route.params.clusterId)
 
-const isAdmin = readStoredUser()?.role === 'admin'
-
 const detail = ref<BackflowClusterDetail | null>(null)
 const loading = ref(true)
 const errorMsg = ref('')
-const actionMsg = ref('')
-const actionErr = ref('')
-const busy = ref(false)
 
 // claim 复核窗本地倒计时（1s tick）与 45s 轮询
 const now = ref(Date.now())
@@ -79,16 +66,8 @@ function fmtTs(v: string | null | undefined): string {
   return fmtISO(v)
 }
 
-// 状态门控（detail §9.4）：claim 仅 open；ignore 仅 open/claim；reopen 仅 fixed/inactive；
-// needs-review 单条处置仅 needs_review；batch 仅 unclean_run 且 open_batches 命中。
-const canClaim = computed(() => st.value === 'open')
-const canIgnore = computed(() => st.value === 'open' || st.value === 'claim')
-const canReopen = computed(() => st.value === 'fixed' || st.value === 'inactive')
+// 「待人工复核原因」展示用：needs_review 现只可能来自历史数据（处置面已删，进了没人能救出去）。
 const needsReview = computed(() => st.value === 'needs_review')
-const hasBatch = computed(() => (detail.value?.open_batches.length ?? 0) > 0)
-const openBatch = computed(() => detail.value?.open_batches[0] ?? null)
-
-const claimForm = ref({ open: false, fix_version: '', k: '2', note: '' })
 
 function showObserveCaption(): boolean {
   const o = detail.value?.reentry_observe
@@ -119,31 +98,6 @@ function actorName(c: { closed_by: string | null; actor_user_id: number | null }
   return c.closed_by || (c.actor_user_id != null ? `user#${c.actor_user_id}` : '系统')
 }
 
-// 写动作统一入口：busy 防抖 + ERR_CLUSTER_0002 并发提示 + 成功后重拉 detail
-async function runAction(fn: () => Promise<unknown>, okText: string): Promise<void> {
-  if (busy.value) return
-  busy.value = true
-  actionMsg.value = ''
-  actionErr.value = ''
-  try {
-    await fn()
-    actionMsg.value = okText
-    await loadDetail(false)
-  } catch (e) {
-    if (e instanceof ApiError) {
-      actionErr.value = `（${e.code}）：${e.message}`
-      if (e.code === 'ERR_CLUSTER_0002') {
-        actionErr.value += '——已被并发处置，列表已刷新'
-        await loadDetail(false)
-      }
-    } else {
-      throw e
-    }
-  } finally {
-    busy.value = false
-  }
-}
-
 async function loadDetail(showSpinner = true): Promise<void> {
   if (showSpinner) loading.value = true
   errorMsg.value = ''
@@ -166,109 +120,13 @@ function back(): void {
   void router.push({ name: 'backflow' })
 }
 
-function openClaimForm(): void {
-  claimForm.value.open = true
-  claimForm.value.fix_version = detail.value?.fix_version ?? ''
-  claimForm.value.k = String(detail.value?.claim_k || 2)
-}
-
-async function submitClaim(): Promise<void> {
-  const fv = claimForm.value.fix_version.trim()
-  if (!fv) {
-    actionErr.value = 'fix_version 必填（本次修复对应的版本号）'
-    return
-  }
-  const k = claimForm.value.k === '1' ? 1 : 2
-  claimForm.value.open = false
-  // 软提示不能在 fn 里写 actionMsg：runAction 随后会用 okText 覆盖同一 ref（D-2）。
-  // 改为闭包带出，成功后再追加——两段文案都不丢。
-  let warn: string | null = null
-  await runAction(
-    async () => {
-      const r = await claimCluster(clusterId, {
-        fix_version: fv,
-        k,
-        note: claimForm.value.note.trim() || null,
-      })
-      warn = r.warning
-    },
-    `已认领（K=${k}），复核窗开启`,
-  )
-  if (warn) actionMsg.value += `；${warn}`
-}
-
-function doIgnore(): void {
-  if (!window.confirm('确认忽略该 cluster（现行 pending link 将停回查）？')) return
-  void runAction(() => ignoreCluster(clusterId), '已忽略')
-}
-
-function doReopen(): void {
-  if (!window.confirm('确认重开该 cluster（回到未处置，供复发/误判反悔）？')) return
-  void runAction(() => reopenCluster(clusterId, null), '已重开')
-}
-
-function doFixedReview(approve: boolean): void {
-  const t = approve ? '确认通过复核（claim→fixed）？' : '确认驳回复核（claim→open）？'
-  if (!window.confirm(t)) return
-  void runAction(() => fixedReview(clusterId, approve), approve ? '已通过复核' : '已驳回复核')
-}
-
-function doResolveSingle(action: 'reopen_cluster' | 'escalated'): void {
-  const t = action === 'reopen_cluster'
-    ? '确认重开该 cluster（回到未处置）？'
-    : '确认 escalated（仅记录保留，状态不变）？'
-  if (!window.confirm(t)) return
-  void runAction(() => needsReviewResolve(clusterId, action, null),
-    action === 'reopen_cluster' ? '已重开' : '已记录 escalated')
-}
-
-function doBatch(): void {
-  const b = openBatch.value
-  if (!b) return
-  if (!window.confirm(`确认整批处置 batch#${b.batch_id}（run ${b.run_id}，${b.ref_count} 个 link 关联）为重开？`)) return
-  void runAction(() => batchResolve(b.batch_id, 'reopen_cluster'), '整批已重开')
-}
-
-function doInvalidateLink(lk: BackflowLink): void {
-  if (!window.confirm(`确认失效 link#${lk.link_id}（payload ${lk.payload_id}）？`)) return
-  void runAction(() => linkInvalidate(lk.link_id, null), 'link 已失效')
-}
-
-// 疑似不可自愈阈值（R-7 可愈性标注，判据 = 该 link 历史重推次数）：与后端
-// app/backflow/requeue.py:SUSPECT_REQUEUE_THRESHOLD 同值，改一处要改两处
-const SUSPECT_REQUEUE_THRESHOLD = 2
-
-function doRequeueLink(lk: BackflowLink): void {
-  if (lk.requeue_count >= SUSPECT_REQUEUE_THRESHOLD) {
-    // 强确认：已重推过阈值次数仍被打回 → 疑似不可自愈，连弹两次确认（防手滑无脑重推）
-    const warn = `⚠️ 该 link 已重推 ${lk.requeue_count} 次仍被驳回，疑似不可自愈`
-      + `（如版本不识别/配置长期未补齐）；继续重推可能无效。仍要继续？`
-    if (!window.confirm(warn)) return
-    if (!window.confirm(`二次确认：确认重推 link#${lk.link_id}？`)) return
-  } else if (!window.confirm(`确认重推 link#${lk.link_id}（复用 payload_id 重建）？`)) return
-  void runAction(() => linkRequeue(lk.link_id), 'link 已重推')
-}
-
-// link 行内 admin 动作门控：invalidate 仅 assembled/draft；requeue 仅 invalidated∧verify pending∧
-// cluster 可处置∧**非 offline_cap_gap**（该 reason 的恢复面在离线侧：online 补不了 agent/interface
-// 登记，重推会被离线重处理谓词跳过 ⇒ 假动作 + 污染可愈性计数；走后端守卫同一条判据）
-function linkCanInvalidate(lk: BackflowLink): boolean {
-  return isAdmin && (lk.offline_status === 'assembled' || lk.offline_status === 'draft')
-}
-
-function linkCanRequeue(lk: BackflowLink): boolean {
-  return isAdmin && lk.offline_status === 'invalidated' && lk.verify_status === 'pending'
-    && lk.invalidate_reason !== 'offline_cap_gap'
-    && ['open', 'claim', 'needs_review'].includes(detail.value?.status ?? '')
-}
-
 // claim 复核窗：1s 本地倒计时 tick + 45s 后台轮询（仅前台可见时拉，防后台堆积）
 function syncClaimTimers(): void {
   if (isClaim.value) {
     if (tickId === undefined) tickId = window.setInterval(() => { now.value = Date.now() }, 1000)
     if (pollId === undefined) {
       pollId = window.setInterval(() => {
-        if (document.visibilityState === 'visible' && !busy.value) void loadDetail(false)
+        if (document.visibilityState === 'visible') void loadDetail(false)
       }, 45000)
     }
   } else {
@@ -319,7 +177,6 @@ const convRows = computed(() =>
     <!-- 页头一句话（批 29）：此前进页只有一行 `cluster #123` + 一排裸字段
          （gen1 / 计数 23 / claim_k 2 …），新用户不知道这一页在讲什么、该从哪读起。 -->
     <p class="intro">{{ CLUSTER_INTRO }}</p>
-
     <p v-if="errorMsg" class="error-text">{{ errorMsg }}</p>
     <p v-if="loading" class="muted">加载中…</p>
 
@@ -376,6 +233,7 @@ const convRows = computed(() =>
         <!-- 结果推送缺失（后端派生，只标示「疑似少一笔」，不展开对账）：不限状态展示——
              卡在 claim/open 等结果时它是主因，判成 fixed 后仍需可见（可能是假修复） -->
         <p v-if="detail.result_gap_suspected" class="warn-line">{{ RESULT_GAP_WARN }}</p>
+
         <!-- 「回查结果未达」（F-18，§8.7 保活语义）：不限状态展示——后端判据已自带
              pending/claim 期抑制/本轮性三道闸，能命中即「真在等结果」，前端**不再叠状态
              白名单**（叠了会在将来新增非终态时静默漏报，正是本标记要修的失效模式）。
@@ -385,111 +243,6 @@ const convRows = computed(() =>
         </p>
         <p v-if="needsReview && reasonText()" class="note-line">待人工复核原因：{{ reasonText() }}</p>
       </section>
-
-      <p v-if="actionErr" class="error-text">操作失败{{ actionErr }}</p>
-      <p v-if="actionMsg" class="ok-text">{{ actionMsg }}</p>
-
-      <!-- 操作区（按 §9.4 状态门控） -->
-      <!-- 分支顺序敏感：claim ∧ admin 必须先于 canIgnore（canIgnore 值域 ⊇ claim，
-           排在前面会把复核动作整块吃掉——D-1 即此） -->
-      <section v-if="canClaim || canIgnore || canReopen || needsReview" class="panel ops">
-        <!-- 批 32：用户原话「【认领】【驳回】【忽略】这些按钮，到底是做什么用的」。
-             病根三条：① 本区块**没有标题**，按钮凭空出现；② 按钮**随簇状态变**，
-             而页面上没有任何东西告诉他「会变」（他同时提到「驳回」和「忽略」，
-             这两个永不同时出现 —— 说明他正在多个簇之间对比）；
-             ③ **后果不写**：「忽略」= 这簇不修了（终态 inactive），
-             「驳回」= 打回给认领人、还要继续修（回 open）—— 两个都像"否掉"，后果却相反。
-             处置 = 就地补标题 + 每个按钮下面跟一句「点了会怎样」。
-             ⚠️ **行为零改动**：只加文案节点，@click / :disabled / v-if 全部逐字原样。 -->
-        <h3 class="sec">现在能做什么<span class="sec-sub">按钮会随这一簇的状态变化；每个按钮下面写了点下去会发生什么</span></h3>
-        <template v-if="canClaim">
-          <div class="op">
-            <button v-if="!claimForm.open" class="btn" type="button" :disabled="busy" @click="openClaimForm">
-              认领并复核
-            </button>
-            <form v-else class="claim-form" @submit.prevent="submitClaim">
-              <input v-model="claimForm.fix_version" placeholder="fix_version（必填，本次修复版本号）" class="w-240" />
-              <!-- 批 29：原来只有 `K=2` / `K=1`，K 是什么全靠猜（= 需连续通过的回归次数，
-                   见 verify.py decide_k）。选项文案带上白话，值不变。 -->
-              <select v-model="claimForm.k" class="sel w-80" title="K = 需连续通过几次回归才判为已修复">
-                <option value="2">连续通过 2 次（K=2，默认）</option>
-                <option value="1">连续通过 1 次（K=1）</option>
-              </select>
-              <input v-model="claimForm.note" placeholder="备注（可选）" class="w-200" />
-              <button class="btn" type="submit" :disabled="busy">{{ busy ? '提交中…' : '提交认领' }}</button>
-              <button class="btn-ghost" type="button" @click="claimForm.open = false">取消</button>
-            </form>
-            <!-- 批 34：用户**第二次**问同一件事——「必须要点过它以后，这个问题才会被推给 offline 吗？」
-                 批 32 这句原文只说「认领会怎样」，**没说「不认领会怎样」**，而他的疑问恰好在后一半。
-                 实测（库直查，2026-09-20）：10 条 `open` 簇里 **9 条 payload 已在 offline 手上**
-                 （`active` / `invalidated`），**没有一条是等认领才推的** —— 推送由 assemble_job
-                 每 60s 自动扫，压根不查认领。
-                 故此处补一句**否定式**说明：先说「它不是什么」，再说「不点会怎样」。 -->
-            <span class="op-hint">
-              你接手这一簇：填本次修复版本号（offline 拿它做回归比对），连续通过 K 次后自动收口。<br />
-              <em class="warn">它不是「推给 offline」的开关</em>——payload 由系统每 60 秒自动组装推送、
-              offline 自己来拉，<b>不等你点</b>；但没认领的话，回归就算全绿也<b>不会自动收口</b>。
-            </span>
-          </div>
-          <div class="op">
-            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略</button>
-            <span class="op-hint">这簇不修了：进「已忽略」终态，不再跟踪，待回查的用例也停掉</span>
-          </div>
-        </template>
-        <template v-else-if="isClaim && isAdmin">
-          <div class="op">
-            <button class="btn" type="button" :disabled="busy" @click="doFixedReview(true)">通过复核（→fixed）</button>
-            <span class="op-hint">确认修好了：这一簇直接收口为「已修复」，回归序列结束</span>
-          </div>
-          <div class="op">
-            <button class="btn-ghost" type="button" :disabled="busy" @click="doFixedReview(false)">驳回（→open）</button>
-            <span class="op-hint">打回给认领人：回到「未处置」，还要继续修 —— 不是「不修了」</span>
-          </div>
-          <div class="op">
-            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">忽略（先回退）</button>
-            <span class="op-hint">这簇不修了：先退出复核、再进「已忽略」终态，不再跟踪</span>
-          </div>
-        </template>
-        <template v-else-if="canIgnore">
-          <div class="op">
-            <button class="btn-ghost" type="button" :disabled="busy" @click="doIgnore">
-              忽略（复核中，先回退再忽略）
-            </button>
-            <span class="op-hint">这簇不修了：先退出复核、再进「已忽略」终态，不再跟踪</span>
-          </div>
-        </template>
-        <template v-else-if="canReopen">
-          <div class="op">
-            <button class="btn-ghost" type="button" :disabled="busy" @click="doReopen">重开</button>
-            <span class="op-hint">反悔：回到「未处置」，重新走一遍认领 → 回归</span>
-          </div>
-        </template>
-        <template v-else-if="needsReview">
-          <div class="op">
-            <button class="btn" type="button" :disabled="busy" @click="doResolveSingle('reopen_cluster')">重开（回到未处置）</button>
-            <span class="op-hint">回到「未处置」，重新走一遍认领 → 回归</span>
-          </div>
-          <!-- 批 29：原按钮文案 `escalated（仅记录）` 是**英文枚举直接漏进 UI**，
-               新手既不知道它做什么、也不知道跟左边那个「重开」有什么区别。
-               行为一字未改，只把 action 值（'escalated'）留在代码里、按钮说人话。 -->
-          <div class="op">
-            <button
-              class="btn-ghost" type="button" :disabled="busy"
-              title="不重开也不忽略，只在流转记录里留一笔「已知悉」"
-              @click="doResolveSingle('escalated')"
-            >标记为已知悉（仅记录，不改变状态）</button>
-            <span class="op-hint">什么都不改：只在下面的流转记录里留一笔「已知悉」，状态与用例都不动</span>
-          </div>
-          <div v-if="hasBatch" class="op">
-            <button
-              class="btn" type="button" :disabled="busy"
-              @click="doBatch"
-            >处置整批（batch#{{ openBatch?.batch_id }}，run {{ openBatch?.run_id }}，{{ openBatch?.ref_count }} link）</button>
-            <span class="op-hint">这一簇下的所有用例一起处置，不用一条条点</span>
-          </div>
-        </template>
-      </section>
-
       <!-- links 表 -->
       <section class="panel">
         <h3 class="sec">
@@ -505,7 +258,6 @@ const convRows = computed(() =>
               <th>类型</th>
               <th>offline 状态</th>
               <th>回查状态</th>
-              <th>处理人</th>
             </tr>
           </thead>
           <tbody>
@@ -522,14 +274,6 @@ const convRows = computed(() =>
               <td>
                 {{ verifyLabel(lk) }}
                 <span v-if="lk.verify_status === 'failed'" class="red-dot">fail</span>
-              </td>
-              <td>
-                <template v-if="linkCanInvalidate(lk)">
-                  <button class="link-like" type="button" :disabled="busy" @click="doInvalidateLink(lk)">失效</button>
-                </template>
-                <template v-if="linkCanRequeue(lk)">
-                  <button class="link-like" type="button" :disabled="busy" @click="doRequeueLink(lk)">重推</button>
-                </template>
               </td>
             </tr>
           </tbody>
@@ -721,64 +465,9 @@ const convRows = computed(() =>
   font-size: 13px;
 }
 
-.ops {
-  display: flex;
-  gap: 10px 14px;
-  /* 批 32：每个操作是一个「按钮 + 后果小字」的竖列，各列高度不等 ⇒ 顶端对齐才不错位，
-     原来的 center 会让按钮基线随小字行数上下漂。 */
-  align-items: flex-start;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
-
-/* 批 32：标题必须独占一行 —— .ops 是 flex 容器，不加这条 h3 会跟按钮挤在同一行。 */
-.ops h3.sec { flex-basis: 100%; margin-bottom: 2px; }
-
-.op {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: flex-start;
-}
-
-/* 「点了会怎样」：一句话讲后果，不写教程。限宽防长句把整行撑开。 */
-.op-hint {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-  max-width: 300px;
-}
-
-/* 批 34：否定式说明（「它不是什么」）。比正文重一档，因为它回答的正是用户问的那半。
-   限宽比正文宽——这句天然更长，压到 260px 会折成 4 行。 */
-.op-hint em.warn {
-  font-style: normal;
-  color: var(--error);
-}
-
-.op-hint b { font-weight: 600; }
-
-.claim-form {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.w-240 { width: 240px; }
-.w-200 { width: 200px; }
-.w-80 { width: 80px; }
-
-input, .sel {
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-.ok-text {
-  color: var(--ok);
-}
+/* 批 35-B：操作区样式随人工处置写面一并删除（.ops / .ops h3.sec / .op / .op-hint
+   / .op-hint em.warn / .op-hint b / .claim-form / .w-240 / .w-200 / .w-80 /
+   input,.sel / .ok-text）—— 本组件模板已无任何使用者，留着会读成「功能在、只是没数据」。 */
 
 .red-dot {
   color: var(--error);

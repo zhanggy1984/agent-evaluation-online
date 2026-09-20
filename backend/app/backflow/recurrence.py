@@ -26,8 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analyzer.cluster import reentry_gate_allows
 from app.models.error_flow import ConversionRecord, TraceJudgeState
 
-# cluster → fixed 的迁移动作（claim.py auto_fixed / fixed_review）：fixed 锚 = max ts
-_FIXED_ACTIONS = ("auto_fixed", "fixed_review")
+# cluster → fixed 的迁移动作：现仅 claim.py `_apply_auto_fixed`
+# （fixed_review 已随批 35-B 的人工地基一并删除）。fixed 锚 = max ts
+_FIXED_ACTIONS = ("auto_fixed",)
 
 
 def _candidate_error_types(judgement: dict | None) -> set[str]:
@@ -101,7 +102,7 @@ def recurrence_rows_py(
 
 
 async def _fixed_anchor(session: AsyncSession, cluster_id: int):
-    """fixed 锚 = cluster→fixed 迁移（auto_fixed/fixed_review）的 max ts；无则 None。"""
+    """fixed 锚 = cluster→fixed 迁移（auto_fixed）的 max ts；无则 None。"""
     ts_list = list((await session.scalars(
         select(ConversionRecord.ts).where(
             ConversionRecord.cluster_id == cluster_id,

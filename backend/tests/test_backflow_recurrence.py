@@ -5,7 +5,7 @@
   interface/error_type 同键；anchor 边界（ts==anchor 计）；latest_version 字典序 max；
   fix_version 空 → 不展示；judged=0 / 键不符 / error_type 未命中 一律跳过。
 - cluster_reentry_observe：status∈{claim,fixed} 才现算，其余 None；fixed 无 fix_version
-  / 无 fixed 锚 → None；锚 = conversion_record auto_fixed/fixed_review max ts（claim =
+  / 无 fixed 锚 → None；锚 = conversion_record auto_fixed（fixed_review 已删） max ts（claim =
   claimed_at）——stub session 按目标实体回查行（列级 select 与整实体都走
   column_descriptions entity 判别）。
 - API 层：_cluster_item 带 first_trace_id；_open_batches 用 JSON_CONTAINS(link_refs,
@@ -32,7 +32,6 @@ from _fakes import (
 
 import app.api.backflow as backflow_api
 from app.api.backflow import (
-    _claim_warning,
     _cluster_item,
     _cluster_links,
     _link_item,
@@ -318,7 +317,7 @@ def test_observe_fixed_without_fix_version_none():
 
 
 def test_observe_fixed_without_anchor_none():
-    # 无 auto_fixed/fixed_review conv → 锚 None → 不展示
+    # 无 auto_fixed（fixed_review 已删） conv → 锚 None → 不展示
     cl = _observe_cluster(status="fixed", fix_version="1.4.0")
     sess = _ObserveSession({ConversionRecord: [], TraceJudgeState: []})
     assert _run(cluster_reentry_observe(sess, cl)) is None
@@ -373,7 +372,7 @@ def test_observe_claim_counts_after_claimed_at():
 
 
 def test_fixed_anchor_picks_max_of_fixed_actions():
-    # 只认 auto_fixed/fixed_review；其余 action（claim/needs_review_resolve）不算锚
+    # 只认 auto_fixed（fixed_review 已删）；其余 action（claim/needs_review_resolve）不算锚
     anchor = _dt(year=2026, month=1, day=5, hour=8)
     sess = _ObserveSession({ConversionRecord: [anchor, anchor + timedelta(hours=2)]})
     assert _run(_fixed_anchor(sess, 10)) == anchor + timedelta(hours=2)
@@ -586,46 +585,6 @@ class _ReceivedSession:
         if self.boom:
             raise RuntimeError("DB 抖动模拟")
         return _ReceivedRows(self.rows)
-
-
-def test_claim_warning_no_received_results_is_none():
-    # 该 agent 零已收结果 → 无可比版本集，不提示（原「offline 未配」分支的等价物）
-    assert _run(_claim_warning(_ReceivedSession(), "agent-x", 1, "1.4.0")) is None
-
-
-def test_claim_warning_fix_version_not_seen():
-    sess = _ReceivedSession([("1.3.0", "completed"), ("1.3.1", "completed")])
-    w = _run(_claim_warning(sess, "agent-x", 1, "1.4.0"))
-    assert w is not None and "未观测到 agent-x@1.4.0" in w
-    assert "已收结果的版本" in w and "1.3.0" in w and "1.3.1" in w
-
-
-def test_claim_warning_fix_version_seen_generation1_none():
-    sess = _ReceivedSession([("1.4.0", "completed")])
-    assert _run(_claim_warning(sess, "agent-x", 1, " 1.4.0 ")) is None  # trim 后精确成员
-
-
-def test_claim_warning_generation_gt1_completed_run_hits():
-    # R-7 沿用：同版本已有 completed run 结果 + generation>1 → reentry 提示
-    sess = _ReceivedSession([("1.4.0", "completed")])
-    w = _run(_claim_warning(sess, "agent-x", 2, "1.4.0"))
-    assert w is not None and "reentry" in w
-
-
-def test_claim_warning_generation_gt1_no_completed_none():
-    sess = _ReceivedSession([("1.4.0", "running")])
-    assert _run(_claim_warning(sess, "agent-x", 2, "1.4.0")) is None
-
-
-def test_claim_warning_query_error_is_none():
-    # best-effort 不变：本地查询异常不得把已 commit 的 claim 变成 500
-    assert _run(_claim_warning(_ReceivedSession(boom=True), "agent-x", 1, "1.4.0")) is None
-
-
-# ---------- API 层：_link_item / _cluster_links（P2-6 列表 link 摘要） ----------
-# 此前该读面零单测：overview/clusters 的探针断言只到「键存在」级。_link_item 的字段名
-# 与 _cluster_links 的「pending 优先」选取是全仓无人钉的契约——前端批量操作按
-# link_id + verify_status 决策，字段漂移会静默打错目标。
 
 
 def _link(lid, *, cluster_id=10, verify_status="pending", offline_status="assembled",

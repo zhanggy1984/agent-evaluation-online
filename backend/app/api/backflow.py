@@ -31,9 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AdminUser, EvaluatorUser, ViewerUser
-from app.backflow import batches as batch_flow
-from app.backflow import claim as claim_flow
+from app.api.deps import EvaluatorUser, ViewerUser
 from app.backflow import recurrence as recurrence_flow
 from app.backflow import requeue as requeue_flow
 from app.backflow.ack import CASE_TYPES, SCHEMA_VERSION, _iso_to_naive
@@ -42,7 +40,6 @@ from app.backflow.claim import (
     CLAIM_TTL_DEFAULT_DAYS,
     CONV_DETAIL_MAX,
 )
-from app.backflow.requeue import MANUAL_INVALIDATE_REASON
 from app.backflow.verify import TERMINAL_OUTCOMES, judge_link, link_gap_version
 from app.core.db import get_session
 from app.core.dict_config import get_global_int
@@ -63,102 +60,6 @@ _Session = Annotated[AsyncSession, Depends(get_session)]
 
 _STATUSES = ("open", "claim", "fixed", "inactive", "needs_review")
 _OFFLINE_STATES = ("assembled", "draft", "active", "invalidated")
-
-
-# ---------- 请求/响应模型（P2-3） ----------
-
-
-class LinkInvalidateRequest(BaseModel):
-    reason: str | None = None  # 缺省 = manual_invalidate（结构化码）
-
-
-class LinkInvalidateResponse(BaseModel):
-    link_id: int
-    payload_id: str
-    offline_status: str
-
-
-class RequeueLinkResponse(BaseModel):
-    link_id: int
-    payload_id: str
-    offline_status: str
-    assembled_ts: str  # ISO8601 UTC（刷新后的增量锚）
-    # R-7 可愈性标注：本次重推**之前**的历史重推次数（不含本次；前端据此转强确认）
-    requeue_count: int
-
-
-class RequeueBatchFilter(BaseModel):
-    agent: str | None = None
-    invalidate_reason: Literal["online_content_gap"] = "online_content_gap"  # v1 仅内容缺愈
-
-
-class RequeueBatchRequest(BaseModel):
-    filter: RequeueBatchFilter
-
-
-class RequeueBatchResponse(BaseModel):
-    requeued: list[dict]  # {link_id, payload_id, offline_status, assembled_ts}
-    skipped: list[dict]  # {link_id, payload_id, reason}
-
-
-# ---------- 请求/响应模型（P2-4 人工处置状态机） ----------
-
-
-class ClaimRequest(BaseModel):
-    fix_version: str  # 必填；trim 归一（比较 lower、存储保原串）
-    k: int | None = None  # 值域 {1,2}；缺省 dict_config auto_fixed_k_default
-    note: str | None = None
-
-
-class ClaimResponse(BaseModel):
-    cluster_id: int
-    fix_version: str
-    claim_k: int
-    claim_due_ts: str  # ISO8601 UTC（复核窗截止）
-    # R-7 软提示：generation>1 reentry 命中；offline 未配/读面不可达 = None（best-effort）
-    warning: str | None = None
-
-
-class NoteRequest(BaseModel):
-    note: str | None = None
-
-
-class StatusResponse(BaseModel):
-    cluster_id: int
-    status: str
-
-
-class NeedsReviewResolveRequest(BaseModel):
-    action: Literal["reopen_cluster", "escalated"]
-    note: str | None = None
-
-
-class NeedsReviewResolveResponse(BaseModel):
-    cluster_id: int
-    status: str
-    action: str
-
-
-class BatchResolveRequest(BaseModel):
-    # §8.4 batch resolve 动作集：reopen_cluster / escalated（缺省 reopen_cluster 保 v1 兼容）
-    action: Literal["reopen_cluster", "escalated"] = "reopen_cluster"
-    note: str | None = None
-
-
-class BatchResolveResponse(BaseModel):
-    batch_id: int
-    action: str
-    results: list[dict]  # [{cluster_id, status, detail?}]（escalated 时 status=cluster 现行态）
-
-
-class FixedReviewRequest(BaseModel):
-    approve: bool
-
-
-class FixedReviewResponse(BaseModel):
-    cluster_id: int
-    status: str
-
 
 # ---------- 请求/响应模型（v1.23 第 2 刀：结果推送接收面） ----------
 
@@ -218,14 +119,6 @@ def _utc_now() -> datetime:
 def _iso(value) -> str | None:
     """datetime → ISO8601（naive UTC 不加时区后缀）；None 透传。"""
     return value.isoformat() if isinstance(value, datetime) else None
-
-
-async def _load_link(session: AsyncSession, link_id: int) -> ErrorCaseLink:
-    """link 定位（§8.4）：不存在 → ERR_CLUSTER_0001(404)。"""
-    link = await session.get(ErrorCaseLink, link_id)
-    if link is None:
-        raise AppError("ERR_CLUSTER_0001", f"link 不存在：{link_id}", http=404)
-    return link
 
 
 async def _load_cluster(session: AsyncSession, cluster_id: int) -> ErrorCluster:
@@ -344,8 +237,9 @@ async def _result_overdue(
     ⑤ **本轮性**：`anchor.assembled_ts` 非空，且回退记录 `ts > anchor.assembled_ts`
        （回退必须发生在本轮等待开始**之后**，见下方「为什么必须有 ⑤」）。
     为什么 ③ 必带 `pending`（**不能用 `links[0]` 兜底**）：本函数的 anchor 兜底取最新一条 link，
-    而 cluster 离开「等结果」态时 link 必被终结——`claim_flow.fixed_review(approve=True)` 把现行
-    link 打 `passed`、`ignore` 打 `superseded`（claim.py:246 / backflow.py:602），此后
+    而 cluster 离开「等结果」态时 link 必被终结——自动收口时 `_mark_pending_links("passed")`
+    把现行 link 打 `passed`（claim.py；原论据另举的 fixed_review / ignore 两条人工路径已随
+    批 35-B 删除，判据本身不动），此后
     conv(`claim_ttl_expire`) 在、`fix_version` 在、`anchor_runs` 空，**四个条件全成立** →
     在已 fixed / 已 inactive 的簇上误报「offline 停摆」。加 `pending` 后二者自然落空。
     不用「`cluster.status ∈ {open,claim}` 白名单」的理由：白名单在将来新增非终态时**静默漏报**
@@ -357,9 +251,9 @@ async def _result_overdue(
     为什么必须有 ④：回退 open 后 cluster 可**再次 claim**（人工正常处置），而旧的
     claim_ttl_expire 记录仍留在库里 → 不抑制就会在人工等结果期间误报「offline 停摆」。
     为什么必须有 ⑤（`pending` 拦不住「link 被换了一条新的」）：cluster 回退 open 后若走
-    `reopen`/`invalidate→requeue`，assemble_job 会给它装配一条**全新的 pending link**
-    （旧 link 终结不影响 uk_link_current 放宽），此时 ①②③④ 全成立——fix_version 与旧 conv
-    都还在（`reopen_cluster` 只置 status，不清 fix_version/conv），新 link 零 run——而
+    （`_apply_verify_reopen` 记 conv(action=reopen)），assemble_job 会给它装配一条**全新的
+    pending link**（旧 link 终结不影响 uk_link_current 放宽），此时 ①②③④ 全成立——
+    fix_version 与旧 conv 都还在（回退路径不清 fix_version/conv），新 link 零 run——而
     since_ts 会是**几十天前**那个陈旧回退时刻，簇却刚刚重新组装。⑤ 用本轮起点（assembled_ts
     由 requeue 刷新）一比即排除。这也说明 ③ 的 `pending` 谓词与 ⑤ **不重叠、都要**：③ 挡
     「link 已被终结」，⑤ 挡「link 已被替换」。
@@ -622,248 +516,6 @@ async def get_cluster_detail(
         cluster_id, len(links), len(runs), overdue["kind"] or "-", gap_suspected,
     )
     return item
-
-
-# ---------- 写面（P2-4 状态机；cluster/link 不存在 404、非法迁移 400、CAS 竞态 409） ----------
-
-
-@router.post("/clusters/{cluster_id}/claim", response_model=ClaimResponse)
-async def claim_cluster_endpoint(
-    user: ViewerUser,
-    session: _Session,
-    cluster_id: int,
-    body: ClaimRequest,
-) -> ClaimResponse:
-    """viewer 认领：open→claim（fix_version 必填、k 固化、TTL 起算）+ conv；R-7 软提示。"""
-    logger.debug(
-        "claim 入参: viewer=%s cluster_id=%s fix_version=%s k=%s",
-        user.username, cluster_id, body.fix_version, body.k,
-    )
-    cluster = await _load_cluster(session, cluster_id)
-    agent = cluster.agent
-    generation = int(cluster.generation)
-    result = await claim_flow.claim_cluster(
-        session, cluster, fix_version=body.fix_version, note=body.note,
-        k=body.k, actor_id=user.id,
-    )
-    await session.commit()  # claim 先落库：软提示查询不拖慢/不随查询异常回滚认领
-    warning = await _claim_warning(session, agent, generation, result["fix_version"])  # R-5/R-7
-    out = ClaimResponse(**result, warning=warning)
-    logger.debug("claim 出参: cluster_id=%s claim_k=%s due=%s", cluster_id,
-                 out.claim_k, out.claim_due_ts)
-    return out
-
-
-async def _received_versions(session: AsyncSession, agent: str) -> list[tuple[str, str | None]]:
-    """online 已收该 agent 结果的行（bound_version, run_status）去重列表（v1.23 第 3 刀）。
-
-    数据源 = `verify_run_record` 关联到本 agent 的 cluster（link→cluster 两跳 join）。
-    为什么是这张表：结果推送落的就是它（offline 出站读面已随第 3 刀整删，online 不再持有
-    发版拓扑，只剩「已收到过哪些版本的结果」这一自证事实）。
-    边界：orphan 行（link_id 哨兵 0，trigger_signal_id 关联断裂）无 link 可 join → **不在本
-    列表内**（要对账这类断裂有详情读面/result_overdue 标记，不为此加一次全表 JSON 扫描）。
-    """
-    rows = await session.execute(
-        select(VerifyRunRecord.bound_version, VerifyRunRecord.run_status)
-        .join(ErrorCaseLink, ErrorCaseLink.id == VerifyRunRecord.link_id)
-        .join(ErrorCluster, ErrorCluster.id == ErrorCaseLink.cluster_id)
-        .where(ErrorCluster.agent == agent)
-        .distinct()
-    )
-    return [(str(bv), st) for bv, st in rows.all() if bv]
-
-
-async def _claim_warning(
-    session: AsyncSession, agent: str, generation: int, fix_version: str
-) -> str | None:
-    """claim 软提示（best-effort，非硬拦；本地零已收结果 → 退 None）。
-
-    - R-5 版本预检（v1.20 做全、**v1.23 第 3 刀降级**，detail §8.7/§9.3）：数据源由 offline
-      「agent 已见版本」只读面降为**「online 已收结果的版本集」**（见 `_received_versions`）
-      ——fix_version 不在其中 → 「未观测到…可能未发版或字面量不匹配，已收结果的版本：…」。
-      **语义弱化必须知道**：该集只反映「结果推送到达过」，正常新 fix 尚未跑完回归时照样会亮，
-      属 informational，**不再等价于「未发版」**（唯一还能判「未发版」的是判定内核的发版水位
-      守卫，见 verify.judge_link）。
-    - R-7 reentry（沿用）：generation>1 且该版本已收到 completed run 结果 → 提示同版本重试
-      命中 reentry。
-    """
-    try:
-        received = await _received_versions(session, agent)
-    except Exception:  # 软提示绝不把已成功的 claim 变成 500（调用方已先 commit）
-        logger.warning("claim 软提示查询失败（忽略）", exc_info=True)
-        return None
-    if not received:
-        return None  # 该 agent 零已收结果：无可比版本集，宁缺勿假（原 offline 未配分支的等价物）
-    fv = claim_flow.normalize_fix_version(fix_version)
-    # 比较 lower、存储保原串（ClaimRequest 约定）：normalize_fix_version 是落库路径故只 trim，
-    # 大小写归一在本比较处。不 lower 时人工填 V1.2、agent 自报 v1.2 → 假告警 + R7 漏报。
-    fv_key = fv.lower()
-    seen = sorted({bv for bv, _ in received})
-    if fv_key not in {bv.lower() for bv in seen}:
-        shown = "、".join(seen[:12])
-        if len(seen) > 12:
-            shown += f" 等 {len(seen)} 个"
-        return (f"注意：未观测到 {agent}@{fv} 评测 run——可能未发版或字面量"
-                f"不匹配，已收结果的版本：{shown}")
-    if generation > 1 and any(
-        bv.lower() == fv_key and st == "completed" for bv, st in received
-    ):
-        return (f"注意：{agent}@{fv} 已存在 completed run（generation>1 同版本"
-                f"重试命中 reentry）——是否确为新修复？verify 判定按实际结果；硬闸属 P2-5")
-    return None
-
-
-@router.post("/clusters/{cluster_id}/ignore", response_model=StatusResponse)
-async def ignore_cluster_endpoint(
-    user: ViewerUser, session: _Session, cluster_id: int
-) -> StatusResponse:
-    """viewer ignore：open→inactive（现行 pending link superseded 停回查）+ conv。"""
-    logger.debug("ignore 入参: viewer=%s cluster_id=%s", user.username, cluster_id)
-    cluster = await _load_cluster(session, cluster_id)
-    result = await claim_flow.ignore_cluster(session, cluster, actor_id=user.id)
-    await session.commit()
-    return StatusResponse(**result)
-
-
-@router.post("/clusters/{cluster_id}/reopen", response_model=StatusResponse)
-async def reopen_cluster_endpoint(
-    user: ViewerUser, session: _Session, cluster_id: int,
-    body: NoteRequest | None = None,
-) -> StatusResponse:
-    """viewer reopen：fixed/inactive/needs_review→open（复发/误判反悔，note 留痕）。"""
-    body = body or NoteRequest()
-    logger.debug("reopen 入参: viewer=%s cluster_id=%s", user.username, cluster_id)
-    cluster = await _load_cluster(session, cluster_id)
-    result = await claim_flow.reopen_cluster(
-        session, cluster, note=body.note, actor_id=user.id)
-    await session.commit()
-    return StatusResponse(**result)
-
-
-@router.post("/clusters/{cluster_id}/needs-review-resolve",
-             response_model=NeedsReviewResolveResponse)
-async def needs_review_resolve_endpoint(
-    user: ViewerUser,
-    session: _Session,
-    cluster_id: int,
-    body: NeedsReviewResolveRequest,
-) -> NeedsReviewResolveResponse:
-    """viewer 单条 needs_review 处置：reopen_cluster → open；escalated → §16 只记录保留。"""
-    logger.debug("needs-review-resolve 入参: viewer=%s cluster_id=%s action=%s",
-                 user.username, cluster_id, body.action)
-    cluster = await _load_cluster(session, cluster_id)
-    result = await claim_flow.needs_review_resolve_single(
-        session, cluster, action=body.action, note=body.note, actor_id=user.id)
-    await session.commit()
-    return NeedsReviewResolveResponse(**result)
-
-
-@router.post("/needs-review-batches/{batch_id}/resolve", response_model=BatchResolveResponse)
-async def needs_review_batch_resolve_endpoint(
-    user: ViewerUser,
-    session: _Session,
-    batch_id: int,
-    body: BatchResolveRequest,
-) -> BatchResolveResponse:
-    """viewer 处置 unclean_run 聚合批：整批同动作单事务 CAS，逐 cluster R-9 语义化。"""
-    logger.debug("batch resolve 入参: viewer=%s batch_id=%s action=%s",
-                 user.username, batch_id, body.action)
-    result = await batch_flow.resolve_batch(
-        session, batch_id=batch_id, action=body.action,
-        actor_id=user.id, note=body.note)
-    await session.commit()
-    return BatchResolveResponse(**result)
-
-
-@router.post("/clusters/{cluster_id}/fixed-review", response_model=FixedReviewResponse)
-async def fixed_review_endpoint(
-    user: AdminUser,
-    session: _Session,
-    cluster_id: int,
-    body: FixedReviewRequest,
-) -> FixedReviewResponse:
-    """admin 复核（closed_by=admin_review）：approve → claim→fixed；驳回 → claim→open。"""
-    logger.debug("fixed-review 入参: admin=%s cluster_id=%s approve=%s",
-                 user.username, cluster_id, body.approve)
-    cluster = await _load_cluster(session, cluster_id)
-    result = await claim_flow.fixed_review(
-        session, cluster, approve=body.approve, actor_id=user.id)
-    await session.commit()
-    return FixedReviewResponse(**result)
-
-
-# ---------- P2-3 admin link 处置（保持原有语义） ----------
-
-
-@router.post("/links/requeue-batch", response_model=RequeueBatchResponse)
-async def requeue_batch_endpoint(
-    user: AdminUser,
-    session: _Session,
-    body: RequeueBatchRequest,
-) -> RequeueBatchResponse:
-    """批量复位（§8.4/§7.4 R-7）：筛选 invalidated+online_content_gap 逐行守卫+防抖复位。"""
-    logger.debug(
-        "requeue-batch 入参: admin=%s filter=%s",
-        user.username, body.filter.model_dump(),
-    )
-    result = await requeue_flow.requeue_batch(
-        session,
-        agent=body.filter.agent,
-        actor_id=user.id,
-        now=_utc_now(),
-    )
-    logger.debug(
-        "requeue-batch 出参: requeued=%s skipped=%s",
-        len(result["requeued"]), len(result["skipped"]),
-    )
-    return RequeueBatchResponse(**result)
-
-
-@router.post("/links/{link_id}/invalidate", response_model=LinkInvalidateResponse)
-async def invalidate_link_endpoint(
-    user: AdminUser,
-    session: _Session,
-    link_id: int,
-    body: LinkInvalidateRequest | None = None,
-) -> LinkInvalidateResponse:
-    """admin 人工失效（§8.4）：仅 assembled/draft；reason 缺省 manual_invalidate。"""
-    body = body or LinkInvalidateRequest()
-    reason = body.reason or MANUAL_INVALIDATE_REASON
-    logger.debug(
-        "link invalidate 入参: admin=%s link_id=%s reason=%s",
-        user.username, link_id, reason,
-    )
-    link = await _load_link(session, link_id)
-    result = await requeue_flow.invalidate_link(
-        session, link, reason=reason, actor_id=user.id
-    )
-    await session.commit()
-    logger.debug(
-        "link invalidate 出参: link_id=%s offline_status=%s",
-        link_id, result["offline_status"],
-    )
-    return LinkInvalidateResponse(**result)
-
-
-@router.post("/links/{link_id}/requeue", response_model=RequeueLinkResponse)
-async def requeue_link_endpoint(
-    user: AdminUser,
-    session: _Session,
-    link_id: int,
-) -> RequeueLinkResponse:
-    """单 link 复位重推（§7.4 R-24 守卫）：invalidated→assembled，复用 payload_id。"""
-    logger.debug("link requeue 入参: admin=%s link_id=%s", user.username, link_id)
-    link = await _load_link(session, link_id)
-    cluster = await session.get(ErrorCluster, link.cluster_id)
-    result = await requeue_flow.requeue_link(
-        session, link, cluster, actor_id=user.id, now=_utc_now()
-    )
-    await session.commit()
-    logger.debug(
-        "link requeue 出参: link_id=%s offline_status=%s",
-        link_id, result["offline_status"],
-    )
-    return RequeueLinkResponse(**result)
 
 
 # ---------- 结果推送接收面（v1.23 第 2 刀，§8.7；evaluator 凭证，不接平台 JWT） ----------

@@ -1,8 +1,11 @@
-"""P2-3 backflow 单测（detail §7.2/§7.3/§7.4/§8.7/§8.8）：ack 矩阵 + requeue 守卫 + 鉴权负例。
+"""P2-3 backflow 单测（detail §7.2/§7.3/§7.4/§8.7/§8.8）：ack 矩阵 + 鉴权负例 + 写面撤除护栏。
+
+- 批 35-B 写面撤除护栏：9 个人工处置端点（claim/ignore/reopen/needs-review-resolve/
+  batch-resolve/fixed-review/links-requeue-batch/links-invalidate/links-requeue）**全部 404**，
+  且读端点仍在（对照组，防「全站都 404」把护栏变成假绿）。
 
 - ack_decide：§7.3 前置矩阵全分支（draft/active/invalidated + R2 例外 gate link 现行
   invalidate_reason + 幂等 noop + 未知 action）——纯函数直打。
-- requeue_guard_errors：R-24 守卫链各分支 + 防抖 5min 边界（纯函数直打）。
 - cursor / since_ts ISO：encode/decode roundtrip + naive UTC 归一（纯函数直打）。
 - HTTP 鉴权负例（真实 deps 链 + FakeAsyncSession，仿 test_api_trace）：/pull 缺/错/
   未配置 secret → ERR_PULL_0001；schema_version 不符 → ERR_PULL_0002；case_type 非白名单
@@ -11,15 +14,13 @@
   DB 写面语义（多行扫/分页/CAS 竞态）留给集成探针 pull_probe（FakeAsyncSession 装不下）。
 """
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
-from _fakes import FakeAsyncSession, ns
+from _fakes import FakeAsyncSession
 
 from app.backflow.ack import _iso_to_naive, ack_decide, decode_cursor, encode_cursor
-from app.backflow.requeue import requeue_guard_errors
 from app.core.config import Settings
 from app.core.db import get_session
-from app.core.security import create_access_token
 from app.main import create_app
 
 _PAYLOAD = "pl-2f9c1a"
@@ -34,18 +35,6 @@ def _settings(mock_secret=_MOCK_SECRET):
     )
 
 
-def _ns_link(**over):
-    base = dict(
-        id=1, cluster_id=1, payload_id=_PAYLOAD, case_id=None,
-        case_type="regression_error", offline_status="invalidated",
-        verify_status="pending", invalidate_reason="online_content_gap",
-        invalidated_by=2, payload_json="{}",
-        assembled_ts=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=6),
-    )
-    base.update(over)
-    return ns(**base)
-
-
 @contextmanager
 def _enter(app):
     from fastapi.testclient import TestClient
@@ -56,15 +45,6 @@ def _enter(app):
 
 def _eval_hdr(token=_MOCK_SECRET):
     return {"Authorization": f"Bearer {token}"}
-
-
-def _admin_user(role="admin"):
-    return ns(id=1, username="admin1", display_name="管理员", password_hash="x",
-              role=role, status=1)
-
-
-def _admin_token():
-    return create_access_token(_settings(), 1, "admin")
 
 
 # ---------- ack_decide：§7.3 前置矩阵（纯函数） ----------
@@ -147,72 +127,6 @@ def test_ack_illegal_transition_reports_message():
     _, _, detail = ack_decide("assembled", "active", current_reason=None,
                               has_case_id=False, reason=None)
     assert "case_id" in detail
-
-
-# ---------- requeue_guard_errors：§7.4 R-24 守卫链（纯函数） ----------
-
-
-def _now():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def test_requeue_guard_passes_open_cluster_after_debounce():
-    now = _now()
-    link = _ns_link(assembled_ts=now - timedelta(minutes=6))
-    cluster = ns(status="open")
-    assert requeue_guard_errors(link, cluster, now=now) is None
-
-
-def test_requeue_guard_status_checks():
-    now = _now()
-    cluster = ns(status="open")
-    assert "仅 invalidated" in requeue_guard_errors(
-        _ns_link(offline_status="assembled"), cluster, now=now)
-    assert "verify_status=pending" in requeue_guard_errors(
-        _ns_link(verify_status="passed"), cluster, now=now)
-    # cluster 缺失 / closed（fixed/inactive）→ 禁（需 superseded+reopen 重建）
-    assert "cluster 不存在" in requeue_guard_errors(_ns_link(), None, now=now)
-    for closed in ("fixed", "inactive"):
-        msg = requeue_guard_errors(
-            _ns_link(), ns(status=closed), now=now)
-        assert "closed" in msg and "superseded" in msg
-
-
-def test_requeue_guard_debounce_boundary():
-    now = _now()
-    cluster = ns(status="needs_review")
-    # 恰 <5min → 拦（锚 = assembled_ts）；恰 =5min → 放（>= 5min 语义）
-    just_below = now - timedelta(minutes=5) + timedelta(seconds=1)
-    assert "防抖" in requeue_guard_errors(_ns_link(assembled_ts=just_below), cluster, now=now)
-    exactly = now - timedelta(minutes=5)
-    assert requeue_guard_errors(_ns_link(assembled_ts=exactly), cluster, now=now) is None
-    assert requeue_guard_errors(_ns_link(assembled_ts=now), cluster, now=now) is not None
-
-
-def test_requeue_guard_rejects_cap_gap():
-    """cap_gap 一律禁 requeue（2026-09-16 补）：恢复面在离线侧，重推是假动作。
-
-    离线端对 `offline_cap_gap` 只放 `ack_status ∈ {none,pending}` 重处理，而这类行已
-    acked ⇒ requeue 后离线必跳过 ⇒ admin 看到 200 但零处理，且 requeue_count 被计入
-    R-7 可愈性标注（前端 ≥2 转强确认）。故判据 = 拒绝，文案须指出「离线侧」而非泛泛。
-    """
-    now = _now()
-    msg = requeue_guard_errors(
-        _ns_link(invalidate_reason="offline_cap_gap"), ns(status="open"), now=now)
-    assert msg is not None
-    assert "offline_cap_gap" in msg and "离线侧" in msg
-
-
-def test_requeue_guard_allows_other_reasons():
-    """正对照：另两个 reason 仍放行 —— 证明是**按 reason 分流**，不是把守卫整体打死。
-
-    无此对照，「cap_gap 被拒」与「守卫本来就全拒」观测特征相同（判据无判别力）。
-    """
-    now = _now()
-    cluster = ns(status="open")
-    for reason in ("online_content_gap", "manual_invalidate"):
-        assert requeue_guard_errors(
-            _ns_link(invalidate_reason=reason), cluster, now=now) is None
 
 
 # ---------- pull cursor / since_ts（纯函数） ----------
@@ -300,26 +214,35 @@ def test_pull_ack_missing_body_field_422():
         assert r.status_code == 422  # action 必填（pydantic）
 
 
-def test_backflow_requires_admin():
-    # viewer token → ERR_AUTH_0002(403)；无 token → 401
-    app = _pull_app()
-    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(
-        users=[_admin_user(role="viewer")])
-    viewer_hdr = {"Authorization": f"Bearer {create_access_token(_settings(), 1, 'viewer')}"}
-    with _enter(app) as c:
-        r = c.post("/api/v1/backflow/links/1/invalidate", headers=viewer_hdr, json={})
-        assert r.status_code == 403 and r.json()["code"] == "ERR_AUTH_0002"
-        r2 = c.post("/api/v1/backflow/links/1/invalidate", json={})
-        assert r2.status_code == 401
+# ---------- 批 35-B：人工处置写面已整体撤除（端点级护栏） ----------
+
+# 9 个被删端点。**别删这条清单** —— 它是「online 只读」这个产品决策在代码里唯一的可执行
+# 断言：删代码不会被任何东西发现，只有打一次请求会。
+_GONE_WRITE_PATHS = (
+    "/api/v1/backflow/clusters/1/claim",
+    "/api/v1/backflow/clusters/1/ignore",
+    "/api/v1/backflow/clusters/1/reopen",
+    "/api/v1/backflow/clusters/1/needs-review-resolve",
+    "/api/v1/backflow/needs-review-batches/1/resolve",
+    "/api/v1/backflow/clusters/1/fixed-review",
+    "/api/v1/backflow/links/requeue-batch",
+    "/api/v1/backflow/links/1/invalidate",
+    "/api/v1/backflow/links/1/requeue",
+)
 
 
-def test_backflow_link_not_found_404():
-    # admin 到位后 link 不存在 → ERR_CLUSTER_0001（FakeAsyncSession.get 非白名单模型 → None）
-    app = _pull_app()
-    app.dependency_overrides[get_session] = lambda: FakeAsyncSession(users=[_admin_user()])
-    hdr = {"Authorization": f"Bearer {_admin_token()}"}
+def test_backflow_write_face_is_gone_but_read_face_survives():
+    """写面 9 端点全 404 + 读端点仍可达（对照组）。
+
+    对照组是必要的：只断言 404 的话，把整个 backflow 路由摘掉（或应用根本没挂上）也会全绿。
+    故同时要求 `/overview` 返回 401（路由在、被鉴权拦下）—— 401 与 404 的差别正是本用例的
+    判别力所在。仅需 FakeAsyncSession 占位：401 由鉴权依赖在落库前产生，不触达 SQL。
+    """
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: FakeAsyncSession()
     with _enter(app) as c:
-        r = c.post("/api/v1/backflow/links/999/invalidate", headers=hdr, json={})
-        assert r.status_code == 404 and r.json()["code"] == "ERR_CLUSTER_0001"
-        r2 = c.post("/api/v1/backflow/links/999/requeue", headers=hdr)
-        assert r2.status_code == 404 and r2.json()["code"] == "ERR_CLUSTER_0001"
+        for path in _GONE_WRITE_PATHS:
+            r = c.post(path, json={})
+            assert r.status_code == 404, (path, r.status_code)
+        assert c.get("/api/v1/backflow/overview").status_code == 401  # 对照组
+
