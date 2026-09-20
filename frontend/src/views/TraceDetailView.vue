@@ -211,7 +211,10 @@ onMounted(() => { void loadDetail(); void loadLogs(true); void useAgents().load(
          ⚠️ 分页的「加载更多」保留 —— 去掉它会让第 2 页起的日志彻底不可达（page_size=50）。 -->
     <div class="panel logs">
       <div class="logs-head">
-        <strong>日志</strong>
+        <!-- 「应用日志」不是「日志」的同义词改写，是**收窄**（2026-09-20）：本面板只装
+             应用自己 logger.* 打印的行，不是「这次请求的记录」——记录是上方的事件网格。
+             用户把「日志」读成常识义的「记录」，于是把空态理解成「系统连记录都没有了」。 -->
+        <strong>应用日志</strong>
         <span v-if="logsLoading && !logsLoaded" class="muted">加载中…</span>
         <span v-else-if="logsTotal > logs.length" class="muted">
           {{ logs.length }} / {{ logsTotal }} 条
@@ -230,7 +233,12 @@ onMounted(() => { void loadDetail(); void loadLogs(true); void useAgents().load(
           <span class="log-body">{{ lg.log_message ?? bodyGapText }}</span>
         </div>
       </div>
-      <p v-else-if="logsLoaded" class="muted">无日志</p>
+      <!-- 空态（2026-09-20）：原为「无日志」。实测本仓约 60% 的 trace 无日志，且几乎全是
+           contract-check 的 `GET /api/tasks/{id}` 轮询——该路径不打日志，轮询越勤这类 trace 越多。
+           故「无日志」是**常态、不是故障**，但原措辞读起来像数据丢了。 -->
+      <p v-else-if="logsLoaded" class="muted">
+        本次请求未产生应用日志（事件由 SDK 自动采集、每条请求必有；日志需应用主动打印）
+      </p>
     </div>
   </div>
 </template>
