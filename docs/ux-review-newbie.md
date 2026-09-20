@@ -2940,3 +2940,103 @@ if decision["action"] == "unclean_run" and rec.id == trigger_id:
      `task.md:119`（T-3.7 收口注）、`revision-design-register.md:472`（P2-6 登记行）
    - 另：`docs/integration-report.md:49`（T-4.11 覆盖范围列举）—— 归类待定。
    ⇒ 与既有待办 **#33（文档同步：端点契约与人工处置流程描述）** 同面，**建议并入 #33**。
+
+---
+
+## 四十四、批 42（2026-09-20）：删除「修复版本」展示面 + 清空存量 fix_version
+
+### 44.1 取证（回应「还有地方生成吗」）
+
+**产品运行时已零生成入口**，证据链五步、每步均为全量 grep 非抽样：
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | `backend/app/` 全量搜 `fix_version` 的赋值/构造形态 | **零命中**（4 处「像写入」的全是文案或**透传** kwarg：`cluster.py:222` 写 conv 的 detail 串、`recurrence.py:145`/`envelope.py:112` 透传、`claim_ttl_job.py:78` 明写「**保留**溯源」只不清） |
+| 2 | 唯一合法生成函数 `claim_cluster` | 在 `backend/app` **零命中**，随批 35-B 整体删除 |
+| 3 | 入站（含 offline 回写） | `backend/app/api/schemas.py` **不在**命中文件列表 ⇒ 无请求模型携带该字段 |
+| 4 | offline 仓 | **零写点** |
+| 5 | 库内 | 13 条带值，最新 `3881=0.2.1`（2026-09-17，早于 09-20 删写面） |
+
+⇒ 只剩**造数脚本/手工改库**能产生它（`c2_push_seed.py:47` 直接 ORM 赋值、`push_probe.py` 的 `_seed_cluster` 等，均为测试资产）。
+
+### 44.2 为什么要连数据一起处置（用户拍板的路）
+
+字段**仍被核心逻辑读着**：`analyzer/cluster.py:199-205` 的 **reentry 版本门控** ——
+最高代终态簇 = `fixed` **且 `fix_version` 非空**时，新现版本过不了「等值 + 日期前缀」序
+就直接 `return "blocked"`，**零落库、不开新簇**；且代理取证确认那两个调用方
+（`worker/cluster_job.py:64`、`consumer/state.py:309`）**都丢弃返回值**，
+judged 行照常被 CAS 置 `processed=1` ⇒ **事件被静默吞掉、不重试、不落任何审计**。
+
+**而出口不存在**：现存端点仅 4 个（`overview`/`clusters`/`clusters/{id}`/`regression-results`），
+**零写端点**；`reopen` 只剩系统自动路径（回归 failed），而被 blocked 的复发**不产生新 link**，够不着。
+
+**但门控的触发条件已死**：新建簇永远拿不到 `fix_version` ⇒ 门控**只对现存带值簇生效**。
+⇒ 清空存量 = 让 `gate_fix` 恒为 `None`，**效果与「退役门控」等价，却零核心逻辑改动**，
+也不连带废掉 P2-6 的 blocked 复发可见性（`reentry_observe` 的 `mode="fixed"` 分支
+正是靠 `reentry_gate_allows` 反推，门控一退役就没了前提，连带约三分之一的
+`test_backflow_recurrence` 用例）。
+
+⚠️ **删的是 13 条不是 9 条**：9 个 `fixed` + **4 个 `claim`**（3839/3842/3845/3875）。
+后者现在不被门控吃，但一旦 K 满转 `fixed` 会**带着老值**进门控，成为新的无出口键。
+
+| fix_version | 条数 | 簇 id |
+|---|---|---|
+| `2026.09.14-r99` | 7 | 3839, 3840, 3841, 3842, 3845, 3859, 3860 |
+| `0.2.1` | 2 | 3870, 3881 |
+| `c1-signal-20260916` / `-2` | 1 / 1 | 3865 / 3861 |
+| `verify-20260917` | 1 | 3880 |
+| `0.03` | 1 | 3875 |
+
+**13 条全部是走查/探针造数**，无一条来自真实业务修复。清空前 `SELECT` 存证返回 **13** 行、
+与预期相等（唯一机械拦得住的手续），`UPDATE` 后 `ROW_COUNT()` = **13**，复核 0 行。
+
+### 44.3 前端改动（两处展示，三样刻意保留）
+
+- **列表页** `BackflowView.vue`：删「修复版本」表头 + `<td>`；**CSS 的 `nth-child` 编号前移**
+  （offline 态 6→5、操作 7→6）。该文件自带护栏注释警告「漏改的症状是列宽错位、**不报错不红测**」。
+- **详情页** `BackflowClusterDetailView.vue`：删 meta 行「修复版本 {x} / 未填写」。
+- `backflowLabels.ts` 的 `TERM.fixVersion` 词条随两处引用一并删（已零消费方）。
+
+**保留**（删了会丢信息，不是同一件事）：① 详情页 `:83` 的「待 {fix_version} 回归 run」——
+它把值当**上下文**用，删了退化成「待回归」；② `backflowLabels.ts:139` 流转记录里的
+「修复版本 X」渲染 —— 那是**历史认领行的审计痕**；③ `api/types.ts` 的字段类型
+（后端仍返回该字段、offline 信封仍发它）。
+
+### 44.4 验证
+
+- **后端 496 passed**（门控与 recurrence 一字未动，预期持平，实测持平）。
+- 前端 **240 passed / 17 files**（基线 238 + 2 条新增反向钉住）；`npm run build` 绿。
+- **新增两条反向钉住**：列表页（值 + 表头 + **剩余列数 = 6**）、详情页（值 + 「修复版本」字样）。
+  ⚠️ 不写这两条，将来有人把列加回来**没有任何判据会红**。
+- **真机（新标签页，bundle `index-CzGVBjs-.js`）**：
+  - 列表页：6 列表头、无「修复版本」；**宽度实测 `[80, 185, 625, 56, 116, 96]`** ——
+    offline 态拿到 116px、操作拿到 96px，正是编号前移后的值（**若漏改，offline 态会拿到 96、
+    操作落到不存在的 `nth-child(7)` = auto**）⇒ 这是「不报错不红测」那一类的唯一判据。
+  - 详情页 3845（claim 态）：meta 行「修复版本 2026.09.14-r99」已消失；
+    **唯一残留的「修复版本」在流转记录里**（历史认领行，刻意保留）；
+    API `fix_version: null`；同页「回归阈值 K=2」/「复核中」/ 流转记录区均在。
+  - 详情页 3881（fixed 态）：正常渲染、`.error-text` 为空（防缺字段崩溃）。
+
+### 44.5 连带后果（**超出用户要求，如实登记**）
+
+**9 个 `fixed` 簇的「复发观察」caption 消失**。成因 = `recurrence.py:125`
+`if mode == "fixed" and not cluster.fix_version: return None` —— 清空后失去门控基础。
+实测这 9 个**全部有 fixed 锚**（`conversion_record` 有 `auto_fixed` 行）⇒ 清空前
+`reentry_observe` **不是 None**（会返回 dict），API 返回值确实变了（dict → null）。
+语义自洽（无 fix_version ⇒ 无「门控不过」这回事），但**用户会看到 UI 变化**。
+
+⚠️ **我的流程失误**：**清空前没有先抓这 9 个簇的 `reentry_observe` 读数**，
+所以「前端是否可见变化」（需 caption 的 `count > 0`）**已不可观测** ——
+这与我方约定「先删数据再用删除后的读数决定 UI 是错的顺序」是**同一类病的镜像**
+（删数据早于抓取将来要用的读数）。**未取证项，不许当已验**。
+
+### 44.6 顺带观测（未处置）
+
+- `solve_detail.md:996` / `solution.md:996` 仍写旧语义「修复上线中再现 → 按 §6.2 窗口
+  count+1 不开新簇」，与 P2-5 实际实现（`"blocked"` **零落、不 count+1**）不一致 ——
+  权威口径在 `cluster.py` 模块 docstring `:11-13`。**属文档漂移，并入 #33。**
+- `backflowLabels.ts:273` 的 `reentryCaption` 硬编码「…版本未过 reentry 门控未开新簇…」，
+  在 9 个 fixed 簇上现**不可达**（`:125` 已返回 None）。**未动。**
+- `DetailView.vue:83` 的三元真值分支现恒不可达（数据里 fix_version 恒 null）。
+  保留是刻意的（防手工改库后丢上下文），但**读起来像「有值时会显示」** ⇒ 属
+  [[deliverable-must-show-implementation-status]] 的同型风险。**未动。**

@@ -260,7 +260,20 @@ describe('字段与边界', () => {
     expect(t).not.toContain('undefined')
     expect(t).not.toContain('null')
     expect(t).not.toContain('1970')
-    expect(t).toContain('-')   // fix_version 空 / 无 link 各出一处
+    expect(t).toContain('-')   // 无 link 时那一格（批 42 删「修复版本」列后此处只剩这一处）
+  })
+
+  it('批 42：删掉的「修复版本」列不再渲染', async () => {
+    // 判别性：`v9.9.9` 真实存在于 fixture，若列还在必然渲染出来；表头同理。
+    // 不写这条的话，将来有人把列加回来**没有任何判据会红**。
+    const w = await mountView({ items: [row({ fix_version: 'v9.9.9' })] })
+    expect(w.text()).not.toContain('v9.9.9')
+    const heads = w.findAll('thead th').map(h => h.text())
+    expect(heads.some(h => h.includes('修复版本'))).toBe(false)
+    // ⚠️ 同时钉住「列数没塌」：删列必须同步改 CSS 的 nth-child 编号，否则宽度会套到
+    // 别的列上 —— 而那个症状**不报错、不红测**（见 BackflowView.vue 的护栏注释）。
+    // 这里钉住剩余列数 = 6（状态/agent·接口/错误/次数/offline 态/操作）。
+    expect(heads.length).toBe(6)
   })
 
   it('批 33：删掉的三列不再渲染（入参指纹 / 代表 trace / 首现·最新）', async () => {

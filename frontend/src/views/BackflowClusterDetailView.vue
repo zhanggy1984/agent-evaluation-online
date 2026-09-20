@@ -209,7 +209,10 @@ const convRows = computed(() =>
         <div class="meta-row muted small">
           <span :title="TERM.gen">第 {{ detail.generation }} 代</span>
           <span title="本簇累计发生的次数">发生 {{ detail.count }} 次</span>
-          <span :title="TERM.fixVersion">修复版本 {{ detail.fix_version || '未填写' }}</span>
+          <!-- 批 42：原「修复版本 {x} / 未填写」已删 —— 该字段已零生成入口（认领端点随批 35-B
+               撤除、offline 侧也无填写处），留着只会渲染一个永远不再变、也无人能改的值。
+               ⚠️ 保留下方「待 {fix_version} 回归 run」的 link 文案：它把值当**上下文**用，
+               删了退化成「待回归」，信息更少。 -->
           <!-- 批 40：K 进度。`seq` 为 null = 不适用（无现行 link / 非 pending / 无 case_id），
                此时退回只报阈值 —— 显示「0/2」会把「还没轮到」误读成「一次都没通过」。 -->
           <span v-if="typeof detail.seq === 'number'" :title="TERM.claimK">

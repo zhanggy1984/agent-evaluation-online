@@ -307,7 +307,9 @@ function agentCounts(): BackflowByAgent[] {
             <th>agent / 接口</th>
             <th>错误</th>
             <th>次数<span class="th-sub">同类失败出现几次</span></th>
-            <th>修复版本<span class="th-sub">{{ TERM.fixVersion }}</span></th>
+            <!-- 批 42：原「修复版本」列已删。该字段**已零生成入口**（认领端点随批 35-B 撤除，
+                 offline 侧也没有填写处），库内 13 条带值全是走查/探针造数。列留着会持续渲染
+                 一堆永远不会再变、也无人能改的历史值。 -->
             <!-- 补列（批 29）：本列是筛选下拉「offline 态」的承载物 ——
                  改前能选不能见，选完了页面上无处对照（与 L1/L2 同病）。 -->
             <th>offline 态<span class="th-sub">{{ TERM.offlineStatus }}</span></th>
@@ -330,7 +332,6 @@ function agentCounts(): BackflowByAgent[] {
               <div class="muted small" :title="row.error_msg ?? ''">{{ row.error_msg }}</div>
             </td>
             <td>{{ row.count }}</td>
-            <td>{{ row.fix_version || '-' }}</td>
             <td>
               <span v-if="row.link" class="status" :class="statusCls(row.link.offline_status)">
                 {{ offlineShort(row.link.offline_status) }}
@@ -557,15 +558,14 @@ table {
   table-layout: fixed;
 }
 
-/* ⚠️ 改列 = 改这张表。批 33（删 3 列 + 加「操作」）与批 35-B（删「现在轮谁」）都动过它，
-   每次都**必须同步改编号**；漏改的症状是列宽错位（宽度还在，只是套到了别的列上），
-   **不报错、不红测**，只能靠眼睛看出来。 */
+/* ⚠️ 改列 = 改这张表。批 33（删 3 列 + 加「操作」）、批 35-B（删「现在轮谁」）、
+   批 42（删「修复版本」）都动过它，每次都**必须同步改编号**；漏改的症状是列宽错位
+   （宽度还在，只是套到了别的列上），**不报错、不红测**，只能靠眼睛看出来。 */
 th:nth-child(1) { width: 80px; }    /* 状态 */
 th:nth-child(2) { width: 16%; }     /* agent / 接口 */
 th:nth-child(4) { width: 56px; }    /* 次数 */
-th:nth-child(5) { width: 96px; }    /* 修复版本 */
-th:nth-child(6) { width: 116px; }   /* offline 态 */
-th:nth-child(7) { width: 96px; }    /* 操作 */
+th:nth-child(5) { width: 116px; }   /* offline 态 */
+th:nth-child(6) { width: 96px; }    /* 操作 */
 
 th, td {
   text-align: left;

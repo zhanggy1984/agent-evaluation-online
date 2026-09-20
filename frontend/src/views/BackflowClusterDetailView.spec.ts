@@ -99,6 +99,16 @@ describe('needs_review：整批处置徽标', () => {
   })
 })
 
+describe('批 42：meta 行的「修复版本」已删', () => {
+  it('即使 fix_version 有值，meta 行也不再渲染「修复版本」', async () => {
+    // 判别性：旧实现在 fix_version 有值时必渲染「修复版本 v9.9.9」，无值时为「未填写」。
+    // ⚠️ 文案「修复版本」本身也要钉 —— 只钉值会让「标签还在、值空了」这种半删状态蒙混过关。
+    const w = await mountWith(mk({ fix_version: 'v9.9.9' }))
+    expect(w.text()).not.toContain('修复版本')
+    expect(w.text()).not.toContain('v9.9.9')
+  })
+})
+
 describe('claim 复核窗展示面 —— 批 41 已删（认领人 + 倒计时）', () => {
   it('claim 态 + 有认领人 + 有到期时间：三处一并不再渲染', async () => {
     // 判别性：旧实现在这三处**都会渲染** ——「认领人 181（…）」「复核窗剩余 …」，

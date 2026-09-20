@@ -243,7 +243,8 @@ export const TERM = {
   cluster: '同一类错误的聚合',
   link: '本簇在 offline 侧的评测用例',
   inputHash: '入参指纹：相同则归为同一簇',
-  fixVersion: '修复版本号。早期认领时填写',
+  // 批 42：原 fixVersion 词条已删 —— 两处引用（列表页表头、详情页 meta 行）随「修复版本」
+  // 展示面一并移除，词条已零消费方。
   gen: '第几代簇（复发会开新簇）',
   claimK: '需连续通过几次回归才算修复',
   offlineStatus: '评测用例在 offline 侧的流转态',
