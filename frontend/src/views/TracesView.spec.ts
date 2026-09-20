@@ -58,8 +58,12 @@ const nextBtn = (w: ReturnType<typeof mount>) =>
 describe('P1-10 后半（2026-09-20）时间窗控件', () => {
   beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset(); routeQuery.value = {} })
 
-  // [0] = agent 下拉，[1] = 时间窗下拉（模板顺序）
-  const winSel = (w: ReturnType<typeof mount>) => w.findAll('select')[1]
+  // ⚠️ **按下标取 select 是脆的**：2026-09-20 在 agent 与时间窗之间插入「状态」下拉后，
+  // 原来写的 `[1]` 直接指到了状态下拉 —— 本用例仍会「跑得过」，但量的已是另一个控件。
+  // 故改为**按选项文案认领**（改的是「取哪个元素」，不是断言）。
+  // 顺序：[0] agent · [1] 状态 · [2] 时间窗
+  const winSel = (w: ReturnType<typeof mount>) =>
+    w.findAll('select').filter(s => s.text().includes('近 1 小时'))[0]
 
   it('首屏按默认 7d 发 start_ts（= now - 7d，容差 60s 容忍用例自身耗时）', async () => {
     await mountView({ items: [], total: 0 })
@@ -223,7 +227,7 @@ describe('P1-11 URL 带筛选落地', () => {
     expect(q.interface).toBeUndefined()
   })
 
-  it('点「清除筛选」→ 清掉两者并重查（无表单控件可改，只能整块清）', async () => {
+  it('点「清除筛选」→ 清掉两者并重查（`status` 已有控件，但按钮叫「清除筛选」故一并清）', async () => {
     routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
     const w = await mountView({ items: [], total: 29 })
     await w.find('.filter-hint button').trigger('click')
@@ -233,5 +237,48 @@ describe('P1-11 URL 带筛选落地', () => {
     const last = apiMock.listTraces.mock.lastCall![0]
     expect(last.status).toBeUndefined()
     expect(last.interface).toBeUndefined()
+  })
+})
+
+describe('状态控件（2026-09-20，P1-21 改判后）', () => {
+  beforeEach(() => { apiMock.listTraces.mockReset(); push.mockReset(); routeQuery.value = {} })
+
+  const stSel = (w: ReturnType<typeof mount>) =>
+    w.findAll('select').filter(s => s.text().includes('全部状态'))[0]
+
+  // ⚠️ **本组只证明「控件驱动了 listTraces」，证明不了「status 进了 URL」** ——
+  //    api 模块被 mock，边界恰在这里（[[mock-boundary-hides-wiring-break]]）。
+  //    「进 URL」那半边由 `api/traces.spec.ts` 的「真取 URL」用例承担，两半合起来才是完整证据链。
+  it('选「仅错误」→ 重发请求，且 status=error 真的传给了 api 层', async () => {
+    const w = await mountView({ items: [], total: 1949 })
+    await stSel(w).setValue('error')
+    await Promise.resolve(); await Promise.resolve()
+    expect(apiMock.listTraces).toHaveBeenCalledTimes(2)
+    expect(apiMock.listTraces.mock.lastCall![0].status).toBe('error')
+  })
+
+  it('切状态必须回第 1 页（与切窗同因：换了结果集，旧页码会越界）', async () => {
+    const w = await mountView({ items: Array.from({ length: 20 }, (_, i) => row(i)), total: 100 })
+    await w.find('.page-no').exists()            // 分页行在 ⇒ 确实能翻
+    const next = nextBtn(w)!
+    await next.trigger('click')
+    await Promise.resolve(); await Promise.resolve()
+    expect(apiMock.listTraces.mock.lastCall![0].page).toBe(2)
+    await stSel(w).setValue('error')
+    await Promise.resolve(); await Promise.resolve()
+    expect(apiMock.listTraces.mock.lastCall![0].page).toBe(1)
+  })
+
+  it('选与当前相同的档 → 不重发（下拉 change 会抖，别白打一次请求）', async () => {
+    const w = await mountView({ items: [], total: 9 })
+    await stSel(w).setValue('')
+    await Promise.resolve(); await Promise.resolve()
+    expect(apiMock.listTraces).toHaveBeenCalledTimes(1)
+  })
+
+  it('URL 带 status 进来 → 下拉停在对应档，不是停在「全部状态」', async () => {
+    routeQuery.value = { interface: 'POST /api/chat/{id}', status: 'error' }
+    const w = await mountView({ items: [], total: 104 })
+    expect((stSel(w).element as HTMLSelectElement).value).toBe('error')
   })
 })

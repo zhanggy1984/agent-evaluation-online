@@ -20,8 +20,9 @@ const route = useRoute()
 
 // P1-11（2026-09-18）：本页原**完全不读 URL** ⇒ 「从别处带着筛选跳过来」做不到。
 // 现从 route.query 初始化 —— 接口页的错误数就是这么跳进来的（带 interface + status）。
-// ⚠️ 这两个筛选**没有对应的表单控件**，故模板里渲染了「当前筛选」提示条：否则用户会
-// 看到一个说不清为什么这么少的条数，这是本页最容易被误判成 bug 的形态。
+// ⚠️（2026-09-20 更新）此前 `interface` 与 `status` **都没有对应的表单控件** ⇒ 只能靠提示条认领。
+// 现 `status` 已提为控件（见模板），**只剩 `interface` 仍是隐形筛选**（它只从接口页下钻带入）。
+// 提示条因此保留，但只对 `interface` 负责 —— 看不见的筛选才会被误判成 bug。
 const qs = (k: string): string => String(route.query[k] ?? '')
 const queryForm = ref({
   trace_id: qs('trace_id'), keyword: qs('keyword'), agent: qs('agent'), interface: qs('interface'),
@@ -109,10 +110,20 @@ function resetAndSearch(): void {
   void doSearch(1)
 }
 
-/** 清掉「从别处带过来」的隐形筛选（interface / status）—— 它们没有表单控件可改，只能整块清 */
+/** 清掉「从别处带过来」的筛选。`interface` 没有表单控件可改、只能整块清；
+ *  `status` 自 2026-09-20 起有控件，但一并清掉 —— 这个按钮叫「清除筛选」，
+ *  只清一半会让用户以为它坏了。清完同样回第 1 页（结果集变了）。 */
 function clearInheritedFilters(): void {
   queryForm.value.interface = ''
   statusFilter.value = ''
+  void doSearch(1)
+}
+
+/** 切状态 = 换结果集 ⇒ 与 `pickWindow` **同因**，必须回第 1 页。
+ *  ⚠️ 本页既有的 agent 下拉是「只写状态、等点查询」；状态**刻意不跟它** —— 见下方注释。 */
+function pickStatus(v: string): void {
+  if (statusFilter.value === v) return
+  statusFilter.value = v
   void doSearch(1)
 }
 
@@ -155,6 +166,26 @@ onMounted(() => {
           agent 列表重试
         </button>
       </label>
+      <!-- 状态（2026-09-20）：此前 `status` 是**隐形筛选** —— 后端早已支持、本页也早已从 URL
+           读它，只差一个能改的入口（接口页错误数下钻就是这么带进来的）。
+           动机 = 默认列表 1949 条里只有 104 条 error（约 5%），而「看有问题的链路」是进本页
+           最高频的意图 ⇒ 一个下拉把 1949 收到 104，且**不需要对「什么算噪声」做任何启发式判断**
+           （判不做的三条后端路见 `docs/ux-review-newbie.md` P1-21）。
+           ⚠️ 口径（与后端 docstring 同款警告）：判的是该 trace **最新命中行**的状态，
+              **不是**「trace 内存在 error」⇒ 「仅正常」不等于「这条链路全程没出错」。
+           ⚠️ 改动即重查（不学隔壁 agent 下拉的「等点查询」）：本页时间窗已是此行为，且切状态
+              同属「换结果集、必须回第 1 页」；若不重查，用户改完看不到任何变化，会当成没生效。 -->
+      <label class="agent-field">
+        <select
+          :value="statusFilter"
+          class="sel" @change="pickStatus(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">全部状态</option>
+          <option value="error">仅错误</option>
+          <option value="timeout">仅超时</option>
+          <option value="ok">仅正常</option>
+        </select>
+      </label>
       <!-- P1-10 后半：时间窗。默认 7d = 改动前行为；用户可主动收到 1h / 24h，
            这样后端那条「检索深度上限 200，请缩小范围」终于有了对应的 UI 动作。 -->
       <label class="agent-field">
@@ -170,7 +201,8 @@ onMounted(() => {
       </button>
     </form>
 
-    <!-- P1-11：status / interface 没有表单控件 ⇒ 必须显式告诉用户「你正被什么筛着」，
+    <!-- P1-11：`interface` 没有表单控件（`status` 自 2026-09-20 起有下拉了，但从接口页下钻
+         带入时仍在此汇总一次）⇒ 必须显式告诉用户「你正被什么筛着」，
          否则条数少得像 bug。散文里的口径提示是**认领**，不是装饰。
          ⚠️ 口径差异有**三个**独立成因，缺一个都会让用户认定提示条在胡说：
            ① 时间窗：接口页的窗由该页筛选条决定（进页默认 24h），本页由**本页自己的档位下拉**决定
