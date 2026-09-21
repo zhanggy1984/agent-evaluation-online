@@ -15,11 +15,21 @@
 里只有 HTTP 访问日志、**一条 job 日志都没有**，那正是「worker 不在这个容器里」的判据）。
 批 37 为此白跑一轮取证（以为「改了没生效」）。
 
+⚠️ **2026-09-21 批 55 又踩一次，且这次是「假绿」而不是「白跑」**：给 `converter/envelope.py` 的
+`build_envelope` 加了 `"error_type": cluster.error_type`（批 B），**没重启 `obs-worker`** ⇒ 此后
+**每个信封都不带该字段**，离线侧据此的分支**恒走错的那条**，整条替换链在部署上**从未生效过**。
+判据：`payload_json.source` 只有 `{agent, trace_id, interface, cluster_id, generation}`；
+`obs-worker` 启动 `2026-09-20T11:00:07Z` vs `envelope.py` mtime `2026-09-21T00:01`。
+**为什么表没拦住**：改动不在 `worker/*.py` 里，而在 worker **import 的**模块里 ——
+**照「我改了哪个文件」查表，查不到它**。⇒ 判据是「**这份代码谁在跑**」，不是文件名。
+⚠️ 这类陈旧**不产生任何红灯**：接口照回 200、驳回理由长得像正常的 `missing_sample_file`。
+
 | 改了什么 | 为什么没生效 | 正确动作 |
 |---|---|---|
 | 前端 | `obs-frontend` 是**多阶段构建的 baked 镜像**（`docker inspect -f '{{.Mounts}}' obs-frontend` ⇒ `[]`，**无 bind mount**）⇒ 宿主 build 不出现在容器里 | `docker compose build frontend && docker compose up -d --force-recreate frontend`；也可 `docker cp` 产物进容器（批 6 用过） |
 | 后端 API | `obs-backend` **有** bind mount（`./backend:/app`），但 uvicorn **没带 `--reload`** ⇒ **文件是新的、进程跑的是旧代码** | 重启进程：`docker compose restart backend`。⚠️ 「文件在容器里」**不等于**「改动生效」 |
-| 后端 **job**（worker/*.py） | 跑在**另一个容器** `obs-worker` 里（同 bind mount、同样无 `--reload`） | `docker compose restart worker`。⚠️ **`docker compose ps` 先看有几个 service**，别默认「后端 = 一个容器」 |
+| 后端 **job** —— **不只是 `worker/*.py`** | 跑在**另一个容器** `obs-worker` 里（同 bind mount、同样无 `--reload`） | `docker compose restart worker`。⚠️ **`docker compose ps` 先看有几个 service**，别默认「后端 = 一个容器」 |
+| **`app/` 下任何被 job import 的模块**（`converter/`、`backflow/`、`analyzer/`…） | 同上 —— 它是**经 `obs-worker` 的 import 进入运行时的**，改的是哪个文件不影响这条 | 同样 `docker compose restart worker`。⚠️ **本表的触发面是「谁在跑它」，不是「我改的文件名」** |
 | 真机取证 | **旧标签页的模块级单例早已加载**（如 `useAgents` 的 `displayMap`）⇒ 在旧页上看等于没验 | **必须新开标签页**再验 |
 | 删容器内文件（`docker exec <容器> rm <文件>`） | 文件属主不是默认 exec 用户 —— `obs-backend` 默认跑 `appuser`，而 `/tmp` 下的探针常属 `root` ⇒ **`Operation not permitted`**（是**没做成**，不是没生效） | 加 `-u root`：`docker exec -u root <容器> rm <文件>`。⚠️ 别误判成「路径写错了」去反复核对路径 |
 

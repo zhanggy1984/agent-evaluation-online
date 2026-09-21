@@ -4064,7 +4064,10 @@ compose」的方式恢复。
 仍解析出活口令、`obs-backend` 持续 **healthy**。它原有的唯一影响面 =「宿主侧且 cwd=`backend/`
 的运行」，现已消失。
 
-#### 55.14 补验切批（2026-09-21，**下一批从这里开始**）
+#### 55.14 补验切批（2026-09-21）
+
+> ⚠️ **本节的「缝」半已于同日办结 —— 读 §55.15，别照本节重建探针**；
+> **「推回」半仍未做，下一批从那里开始**（其前置勘误见 §55.15 末段）。
 
 > 上一节末的侦察把这条缺口劈成了两段，**切分线是验证面**（依赖不同、能否取得真实输入不同），
 > 不是一个批拆成两步做。**不要合成一批** —— 44-B 会真跑 cc agent，绿了也不能替 44-A 作证，
@@ -4098,3 +4101,60 @@ compose」的方式恢复。
 ② ~~`backend/.env` 里躺着一个陈旧的 `DB_PASSWORD`~~ → **2026-09-21 已删**（先备份后删）；
 删前已证它对容器**完全惰性**（14 键全被 compose `environment:` 遮蔽），删后三项验证全绿。
 **动 compose 所需的全部知识到此为止，无需再查这条。**
+
+#### 55.15 「缝」批办结（2026-09-21，批 55）
+
+> **§55.14 的「缝」半已办结，本节的读数为准**；「推回」半仍未做（见本节末）。
+> 探针脚本 `_probe_batch55.py`（online 仓根，untracked）可原样复用，五个子命令：
+> `dryrun` / `insert` / `status` / `check` / `cleanup`。
+
+**一、两向读数（链路首次走通）**
+
+| 向 | 簇 | 结果 |
+|---|---|---|
+| **正例** `llm_connection` + 平台无此文件 | 999546 → link → offline case **4087** | `input._substituted_from` = `/app/uploads/probe55_missing_a.pdf`；落库 `file_path` = `/app/uploads/cc_b1_missing_date.pdf`（平台样例）✓ |
+| **反例** `llm_timeout` + 同形状 | 999547 | `rejected` / `offline_cap_gap` / `missing_sample_file: 样例文件不存在: …probe55_missing_b.pdf`，**零 case** ✓ |
+
+离线侧同步日志：`回放输入已降级为平台样例：payload_id=4f902de6… agent=contract-check
+error_type=llm_connection /app/uploads/probe55_missing_a.pdf -> /app/uploads/cc_b1_missing_date.pdf`。
+
+两条附带确证：① 新旧信封对照 ⇒ `error_type` 现已在 `source` 里；② case 4087 的 `eval_result`
+**0 行** ⇒ **印证 §55.14「建 case 不会自动变 run」**（这条此前只是断言，本批量到了）。
+
+**探针行已清**（`cleanup`，两库六项回 0）；保留侧同轮计数无伤：全库簇 **17** / 全库 link **18** /
+`assembled` link **2**（2226、2223）/ offline `test_case` **151**。
+
+**二、🔴 本批最贵的发现：整条替换链在部署上从未生效过**
+
+第一次跑（**重启 `obs-worker` 之前**）**正例也被驳回了**，两条 reject_detail 逐字同形。追下去：
+
+| 证据 | 值 |
+|---|---|
+| `payload_json.source` 的键集 | `{agent, trace_id, interface, cluster_id, generation}` —— **没有 `error_type`** |
+| `obs-worker` 进程启动 | **`2026-09-20T11:00:07Z`** |
+| `backend/app/converter/envelope.py` mtime（`"error_type": cluster.error_type` 所在文件） | **`2026-09-21T00:01`** |
+
+组装跑在 worker 容器里，worker 是 13 小时前的旧进程 ⇒ **每个信封都不带 `error_type`** ⇒ 离线侧
+`src.get("error_type")` 恒为 `""` ⇒ **恒走「非瞬态」分支**。**全库 `_substituted_from` 0 行**就是这么来的。
+
+**两个假绿特征齐了**：① 驳回长得像一次正常的 `missing_sample_file`；② 批 A/批 B 的单测**全打桩**
+（`_self_check` 是直调的），验的是**代码**不是**部署** ⇒ **没有任何判据会红**。
+
+**本表没拦住它的原因（已订正进 `CLAUDE.md` 一）**：那张表按「我改了哪个文件」查，改动不在
+`worker/*.py` 里，而在 worker **import 的** `converter/envelope.py` 里 ⇒ **照文件名查表查不到它**。
+判据应是「**这份代码谁在跑**」。⚠️ 这是「改完没生效」的**第四次同型，也是第一次落在 job 容器上**。
+
+**三、途中我自己踩的两个（同为「谓词/断言写错且不报错」）**
+
+1. **哨兵进了计数**：`dryrun` 报「建行前 `error_cluster` 已有 1 行」，查库却是 0 —— 脚本里
+   `cids = cids or ["-1"]` 让空集 `len()` 恒为 1；另一处哨兵只加了一半，空集时拼出 `IN ()` 语法错。
+   **这正是「建行前先空跑」要抓的东西，抓到了** —— §55.14 那条硬要求不是仪式。
+2. **断言写错**：把离线 inbox 的 `status` 期望成 `case_created`，而 ack 之后它是 `active` ——
+   **正例明明成功，我的 `check` 却报 ✗**。属 [[unreachable-assertion-vs-false-red]] 的红脸：
+   FAIL 的成因是「我的期望错了」，不是「被测对象错了」。
+
+**四、仍未验的（「推回」批的范围）**
+
+`error_push` 发 `input_substituted` → online `raw_json` 键为 `true` → 详情页该 run 行出 `.warn-tag`。
+前置 = case 要**真的跑出一次 run**，而本批已量到**建 case 不会自动变 run** ⇒ 需先勘
+「谁能发车」（`maybe_auto_schedule` 的触发条件），**这是「推回」批开工前必须先查的一件事**。
