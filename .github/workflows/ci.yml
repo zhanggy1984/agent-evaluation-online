@@ -51,34 +51,7 @@ jobs:
       - name: 安装依赖（dev extra 含 pytest）
         run: pip install -e ".[dev]"
       - name: pytest
-        run: |
-          set -o pipefail   # 不加则管道退出码取 tee 的（恒 0）⇒ 步骤变假绿
-          set +e            # 不加则 pytest 一失败脚本即中止，下面取不到 PIPESTATUS
-          pytest -q 2>&1 | tee /tmp/pytest.out
-          rc=${PIPESTATUS[0]}
-          set -e
-          echo "$rc" > /tmp/pytest.rc
-          exit "$rc"
-
-      # ⚠️ 临时探针（2026-09-21 加，定位后即撤）：CI 的 job 日志匿名取不到
-      #    （`/actions/jobs/{id}/logs` → 403 Must have admin rights，public 仓也一样），
-      #    而 check-run 的 annotations 是公开可读的 ⇒ 把 rc 与报错尾巴发成 annotation 取回。
-      #    **无条件发**（不只失败时）：绿的时候也要能看到 rc=0 —— 否则无法区分
-      #    「测试真过了」与「管道把失败吞了、这一步假绿」这两种同形的观测。
-      - name: 回报 pytest rc 与报错尾巴（临时，用后撤）
-        if: always()
-        run: |
-          python - <<'PY'
-          import pathlib
-          rc_p, out_p = pathlib.Path("/tmp/pytest.rc"), pathlib.Path("/tmp/pytest.out")
-          rc = rc_p.read_text().strip() if rc_p.exists() else "?"
-          t = out_p.read_text(encoding="utf-8", errors="replace") if out_p.exists() else "(没有 /tmp/pytest.out)"
-          tail = "\n".join(t.splitlines()[-30:])
-          msg = "pytest_rc=%s\n--- 末尾 30 行 ---\n%s" % (rc, tail)
-          # 注上限 ~64KB；百分比与换行必须转义，否则 GitHub 会截断在第一个换行
-          print("::%s title=pytest rc=%s::" % ("error" if rc not in ("0", "") else "notice", rc)
-                + msg[-50000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))
-          PY
+        run: pytest -q
 
   frontend-test:
     name: 前端 vitest

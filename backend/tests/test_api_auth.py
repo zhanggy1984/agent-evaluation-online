@@ -85,17 +85,23 @@ def test_login_disabled_account_denied():
 def test_login_lockout_after_5_fails_15min():
     # §13.2：5 次/15min → 第 6 次（即使口令对）423 ERR_AUTH_0003
     fake = FakeAsyncSession(users=[_user_row()])
+    # 锁窗从**第一次失败**起算（见下一个用例），而这 6 次请求本身要耗时
+    # ⇒ 剩余秒数 = 900 - 请求耗时。下界写死 899 等于把「本机够快」当成断言：
+    # 2026-09-21 CI 实测得 898（**偶发红**，本机快所以复现不出）。故用单调钟自标定。
+    t0 = time.monotonic()
     with _client(fake) as c:
         for _ in range(5):
             assert c.post("/api/v1/auth/login",
                           json={"username": "admin", "password": "wrong"}).status_code == 401
         locked = c.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+    elapsed = time.monotonic() - t0
     assert locked.status_code == 423
     body = locked.json()
     assert body["code"] == "ERR_AUTH_0003"
     assert body["message"] == "登录失败次数过多，已锁定 15 分钟"
-    # P0-5：随 423 下发剩余秒数。刚锁上 ⇒ 应贴近整窗（不写 ==900 防取整抖动）
-    assert 899 <= body["retry_after_s"] <= 900
+    # P0-5：随 423 下发剩余秒数。刚锁上 ⇒ 应贴近整窗：上界 900，
+    # 下界 = 900 - 实测耗时 - 1s（减 1 防取整抖动；不写 ==900 同理）
+    assert 900 - elapsed - 1 <= body["retry_after_s"] <= 900
 
 
 def test_lockout_retry_after_counts_down_from_oldest_fail():
