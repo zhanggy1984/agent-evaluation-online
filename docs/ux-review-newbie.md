@@ -3797,7 +3797,7 @@ version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 
 
 | 类别 | 与输入内容 | 回放输入 |
 |---|---|---|
-| 瞬态：**`llm_timeout` / `llm_connection`**（实际落地集，见下） | 无关 | **平台自有等价样例足够** |
+| 瞬态：**只有 `llm_connection`**（实际落地集，见 55.12） | 无关 | **平台自有等价样例足够** |
 | 内容相关：`llm_interface_business`/`llm_other`/`external_non_llm` 等 | 强相关 | **必须原始输入 ⇒ 平台无解 ⇒ 驳回** |
 
 **S1 动作（已实现）**：装载时 `file_path` 指向平台没有的文件 → 见 55.10。
@@ -3827,13 +3827,45 @@ version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 
 
 | 原稿 | 实际落地 | 为什么改 |
 |---|---|---|
-| 瞬态集 5 个（含 `llm_rate_limit`/`db_error`/`redis_error`） | **2 个**（`llm_timeout`/`llm_connection`） | 那 3 个**实测发生数为 0**。取窄是唯一安全方向：放宽一项即**静默假绿**（换了输入 ⇒ pass ⇒ 判「已修复」，而真实用户的文件仍会让它挂），不可见、无判据会红。零发生的 3 个是**刻意未纳入**（不是「已排除」），将来真产生了簇再议。 |
+| 瞬态集 5 个（含 `llm_rate_limit`/`db_error`/`redis_error`） | **1 个**（只有 `llm_connection`，见 55.12） | 原稿列 5 个只凭「看起来像瞬态」；实测那 3 个**发生数为 0**，而 `llm_timeout` **证据够不到本分支**（55.12）。取窄是唯一安全方向：放宽一项即**静默假绿**（换了输入 ⇒ pass ⇒ 判「已修复」，而真实用户的文件仍会让它挂），不可见、无判据会红。 |
 | 驳回「复用 `content_gap`」 | 新增内部细码 `missing_sample_file` → 映射 online 粗码 **`offline_cap_gap`** | 文件在**离线侧**的 uploads 里，online admin 补不了。落 `online_content_gap` 会让 `_needs_reprocess`「任意 ack_status 都重处理」⇒ 每轮重拉、每轮同一原因驳回，**无限循环**。 |
 | case 记 `input_substituted` + 原引用（**必须可见**） | 落库 input 内记 `_substituted_from` + 一条 `logger.warning`；**无 case 级字段、UI 上不可见** | ⚠️ **这是能力缺口，不是措辞问题** —— 见下方「未办」。 |
 
-**瞬态集取值的实测依据**（不是推理）：`llm_timeout` ← 簇 3861（customer-service）
-**同一输入 4 fail → 2 pass**（2026-09-16 02:23→08:46）；`llm_connection` ← 14 条簇
-**全部用原输入跑通**（S1 前不存在替换通道，故这是纯观测）。两者覆盖全库 17 条簇的 100%。
+**瞬态集取值的实测依据**（不是推理）：`llm_connection` ← cc 的 **7 条簇全部**是它，
+且全部用**原输入**跑通（S1 前不存在替换通道，故这是纯观测）。
+
+⚠️ 曾据簇 3861（customer-service，`llm_timeout`，「同一输入 4 fail → 2 pass」）把
+`llm_timeout` 一并纳入，**已撤回** —— 见 55.12。
+
+#### 55.12 瞬态集的准入门槛（2026-09-21，收窄到 1 个）
+
+**两条独立条件，缺一不可**（这条是踩坑后写下的，原实现只看了第 ① 条）：
+
+1. **判据**：成因在原理上与输入内容无关 ⇒ 换样例仍是有效回归。
+2. **证据的适用范围**：支撑它的实测必须来自**会进入本分支的群体**（有 `file_path`
+   的文件型 agent）。
+
+`llm_timeout` 两条都不成立：
+
+- 对**文件型** agent，超时**可能由文件大小/复杂度驱动**（大 PDF ⇒ LLM 调用过长）
+  ⇒ 换小样例跑通 ≠ 原场景修好，而它会计进 K、可能把簇判成 `fixed`。
+- 更要命的是证据范围：当初据以纳入的簇 3861 是 **customer-service**，输入是自包含的
+  `content`、**没有 `file_path`，永远进不了这条分支**。全库 `llm_timeout` 簇 7 条**全在
+  cs/gq，cc 零条** —— 等于用一个够不到该分支的群体的实测，为该分支内的一个类型背书。
+  这是 `measurement-scope-is-not-claim-scope` 的原型（量了 A 群体，结论下在 B 群体上）。
+
+**收窄后的实测交叉表**（2026-09-21 真库）：
+
+| agent | `llm_connection` | `llm_timeout` |
+|---|---|---|
+| contract-check | **7**（唯一会进本分支的 agent） | **0** |
+| customer-service | 1 | 2 |
+| good-question | 1 | 5 |
+| smart-procurement | 1 | 0 |
+
+**成本**：将来 cc 真出现 `llm_timeout` 簇且文件不在平台 ⇒ 驳回到 `offline_cap_gap`
+（可见、可恢复：把文件放进平台 uploads 即自愈），而不是自动回归。这是**有意**用
+「少一次回归」换「不产生假绿」。
 
 **未办（本批未做、已知悉）**：
 
@@ -3865,7 +3897,7 @@ SUCCESS）。而批 B 的逻辑 **100% 在 offline**、online 半边只是一行
 | 输入 | verdict | 落库 `file_path` | `_substituted_from` |
 |---|---|---|---|
 | `llm_connection` + 平台无此文件 | `None`（放行） | → 平台样例 | 原路径 ✓ |
-| `llm_timeout` + 平台无此文件 | `None`（放行） | → 平台样例 | 原路径 ✓ |
+| `llm_timeout` + 平台无此文件 | `missing_sample_file`（收窄后，见 55.12） | — | — |
 | `llm_other` + 平台无此文件 | `missing_sample_file` | — | — |
 | **旧信封（无该字段）** + 平台无 | `missing_sample_file` | — | — |
 | `llm_connection` + 平台**有**此文件 | `None` | **原路径不变** | **None**（不替换）✓ |
