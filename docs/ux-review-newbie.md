@@ -4066,8 +4066,8 @@ compose」的方式恢复。
 
 #### 55.14 补验切批（2026-09-21）
 
-> ⚠️ **本节的「缝」半已于同日办结 —— 读 §55.15，别照本节重建探针**；
-> **「推回」半仍未做，下一批从那里开始**（其前置勘误见 §55.15 末段）。
+> ⚠️ **本节两半均已办结 —— 读 §55.15（「缝」）与 §55.16（「推回」），别照本节重建探针**。
+> 本节只留作切批依据与前置勘误的记录。
 
 > 上一节末的侦察把这条缺口劈成了两段，**切分线是验证面**（依赖不同、能否取得真实输入不同），
 > 不是一个批拆成两步做。**不要合成一批** —— 44-B 会真跑 cc agent，绿了也不能替 44-A 作证，
@@ -4177,3 +4177,76 @@ error_type=llm_connection /app/uploads/probe55_missing_a.pdf -> /app/uploads/cc_
 `error_push` 发 `input_substituted` → online `raw_json` 键为 `true` → 详情页该 run 行出 `.warn-tag`。
 前置 = case 要**真的跑出一次 run**，而本批已量到**建 case 不会自动变 run** ⇒ 需先勘
 「谁能发车」（`maybe_auto_schedule` 的触发条件），**这是「推回」批开工前必须先查的一件事**。
+（✅ 已于 2026-09-21 办结 —— **读 §55.16**。）
+
+#### 55.16 「推回」批办结（2026-09-21，批 56）
+
+> **办结了 §55.15 四、留下的那一半**。⚠️ 顺带抓到一条**不属本批**的新发现，按用户裁定只登记（见「五」）。
+
+**一、开工前的勘误：cc 发不出车（不查清则整批开不了工）**
+
+`maybe_auto_schedule(agent_id, version, signal_run_id)` 要求 `version` 非空（否则「非发版语义」直接
+`return None`）。入口两个：`orchestrator._finish` 的 `fire_auto_schedule`、`reconcile_loop._reconcile_agent`（60s）。
+
+对账判据 = `_version_diff(信号版本, 已有 error run 版本)` —— **差集空则不发车**。cc 实测两侧**逐项相同**
+（`{0.1.0, 0.2.0, 0.2.1, 0.2.2, 1.16.0, 1.16.1}`）⇒ **差集恒空**。
+
+⇒ 批 55 那句「建 case 不会自动变 run」的真因**不是 case**，是**该 agent 的每个信号版本都已经有 error run**
+了，补偿路径无事可做。cc 当时 8 个 active error case **全在等一个新版本**。
+
+**二、走的路：造一条新版本信号 run**（用户拍板。被测对象——对账发车 → 建 run → 跑 → 推回——**全是真代码**，
+只有「信号」这一个入参是合成的）
+
+| # | 读数 |
+|---|---|
+| ① | 对账日志：`agent=2299 version=probe55-push 差集对账补建 error run=3721（锚 run=3720）` |
+| ② | run 3721 终态 `partial_failed`，9 case / 7 pass（探针 case=4088 在其中） |
+| ③ | 推回落 `verify_run_record` id=884：`run_id=3721 / bound_version=probe55-push / case_pass=1`，`$.cases[*].input_substituted` = **`[true]`** |
+| ④ | **同 run 负向钉住**：另 8 条真实簇的推回载荷该键 = `[false]`（键由 online 的 Pydantic 补默认值，**不是 offline 发的**） |
+| ⑤ | 真机（**新开标签页**）`/backflow/clusters/999548` 渲染 `.warn-tag` =「**样例输入·此 pass 不证明原场景已修**」，可见 |
+
+**三、顺带更正一条旧认知 + 一处措辞**
+
+- **offline 是单容器**：`docker compose ps` 只有 `backend`/`frontend`，启动日志显示
+  scanner / judge / 回流拉取 / 差集对账**全在 `backend` 里** —— 与 online 的 `backend`/`worker` 分离**不同**。
+  「改完没生效」按容器记时，**别把两仓套同一套**。
+- `backflow.py:793` 写「载荷**原样**留档」，实际 `body.model_dump(mode="json")` **不带 `exclude_unset`**
+  ⇒ 形状过了模型归一化（默认值被补全）。行为无碍：`bool(c.get(...))` 对「缺键」与「false」同义，
+  且 `backflow.py:83-87` 的注释已明确承认这两义合并。**只记录，未动代码**。
+
+**四、途中我自己踩的两个（都在清理脚本里，都是「谓词写错且不报错」）**
+
+1. **重言式谓词**：为反例方向补的兜底写成
+   `case_id IN (SELECT case_id FROM inbox WHERE payload_id IN (SELECT payload_id FROM inbox))`
+   —— 内层就是全表，**会删掉全库回流 case**。写出来当场看出并改掉。
+2. **清理入口 = 自己要删的那张表**：首版以 online 簇为入口，而簇先被删 ⇒ 重跑时 `if not cids: return`
+   ⇒ **离线残留永远够不着**（`test_case` 及其 FK 子表）。改成自包含谓词 + 不 early return。
+   该改同时暴露 `test_case` 有 **5 张 FK 子表**（`case_annotation` / `case_scene` / `case_version` /
+   `eval_result` / `judge_task`）—— 批 55 的 case 没跑过 run ⇒ 无子行 ⇒ 没暴露；本批跑过后
+   `case_version` 直接挂住删除。
+
+**五、🔴 真机顺带抓到的新发现（不属本批；用户裁定：只登记、不动代码）**
+
+真机页头显示「**回归已连续通过 1 次（需连续 2 次才自动收口）**」，而这个 `1` **正是本次样例输入跑出的
+pass**（该 link 此前无任何 run；`claim_k`=2）。
+
+静态读码：`input_substituted` 在 `backend/` 里**只出现在 `api/backflow.py`**（86/535/549/559），
+**判定链 `verify.py` 完全不读它**（`decide_k` / `_replay_k` 均不涉及）。
+
+⇒ 批 54 的 warn-tag 只做了**显示层说破**，**计数层照收**。后果具体：**再来一次样例 pass（2/2），
+簇会被判成「已修复」，而原场景从未被验证** —— 正是批 54 想防的那种假绿，在判定层原样活着。
+
+⚠️ **证据范围（连范围一起报）**：`1/2` 是**读面**进度计数（`link_k_progress`）的**实测**；
+**judge 收口路径未实测** —— 该簇当时非 `claim`，判定被 `backflow.py` 的 status 守卫静默跳过，
+那一半是**静态读码**。
+
+**登记为待办**。若处置属 A 级（动判定内核），且改 K 语义会影响存量 verify 记录的全链重放，需单独出方案。
+
+**六、清理与真实数据复核**
+
+探针残留 **0**；真实数据回基线（全库簇 **17** / link **18** / offline `test_case` **151**）。
+conv 128→117（= 9 条本次 run + 2 条探针簇自己的 assemble 行）。
+
+⚠️ 本次 run 会评测 cc **全部 9 个 active error case** ⇒ 向 8 条真实簇各推了一笔。清理按
+`run_id=3721` 反查删除 —— **不能按 `cluster_id` 删**：`3883` 上还挂着更早的合法行 `run_id=3719`，
+按簇删会误伤。已抽验该行**原封未动**。
