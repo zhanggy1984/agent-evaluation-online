@@ -84,7 +84,11 @@ def _patch_envelope(monkeypatch, *, marker="REBUILT"):
     # 只回可 JSON 序列化的载荷（真 envelope 含 ORM 对象，替身不解释结构）
     monkeypatch.setattr(
         R, "build_envelope",
-        lambda **kw: {"marker": marker, "payload_id": kw.get("payload_id"), "words": kw.get("words")},
+        lambda **kw: {
+            "marker": marker,
+            "payload_id": kw.get("payload_id"),
+            "words": kw.get("words"),
+        },
     )
 
 

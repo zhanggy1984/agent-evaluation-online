@@ -1,4 +1,4 @@
-"""API 路由组合（detail §8）：/api/v1 挂载面 = auth + traces + metrics + backflow + pull + admin。
+r"""API 路由组合（detail §8）：/api/v1 挂载面 = auth + traces + metrics + backflow + pull + admin。
 
 - auth（§8.1）：登录/刷新/登出/me——T-1.6 登录页数据源 + 全部 API 的鉴权前置。
 - admin（§8.6，T-3.12 批 1）：配置管理 + 账号管理（admin-only）。
@@ -13,8 +13,9 @@
   ⚠️ **批 50（#33）订正**：本行原写「**12 条**……（overview、clusters 列表/详情、
   claim/ignore/reopen/needs-review-resolve/fixed-review、needs-review-batches/{id}/resolve、
   links 三动作、regression-results）」——**该清单里的写端点已全部删除**，只剩 4 条（实测
-  `grep -nE '^@router\.' backend/app/api/backflow.py`）：`overview`(373) / `clusters`(413) /
-  `clusters/{cluster_id}`(475) / `regression-results`(829)。**数字与清单都以该命令为准，别照抄本行。**
+  `grep -nE '^@router\.' backend/app/api/backflow.py`）：`overview`(373) /
+  `clusters`(413) / `clusters/{cluster_id}`(475) / `regression-results`(829)。
+  **数字与清单都以该命令为准，别照抄本行。**
   ⚠️ 本行原写「clusters（§8.5）留空待后续阶段（由各自 router 按批接入）」——**两处均误且引入于
   阶段 1（`76611d2`）后未随批更新**：① clusters 属 §8.4 不属 §8.5；② 它不空，早已随回流批落地。
 """
