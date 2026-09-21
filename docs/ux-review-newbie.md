@@ -3841,6 +3841,38 @@ version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 
   落库的 case input JSON 里 + 一条 worker 日志。**没有任何页面显示「这条回归用的不是现场输入」**
   ⇒ 用户看到一次 pass，无从知道它跑的是平台样例。当前 `na → pass` 的量级为 0（尚无真实流量
   走这条分支），故未修；真出现时这是**优先级最高的一项**。
-- **端到端未真机验收。** 现存信封 `error_type` 全为 `None`（批 B 之前组装），无任何链路会命中
-  新分支 ⇒ 只验到单元层与「样例来源查询对真库成立」。真机验收需**新造一条外部驱动的
-  `llm_connection` 错误**（走 online 组装 → 离线拉取），另开一批。
+- **两半之间的「缝」未验。** 见下方验收记录 —— 两侧各自都已在真库真数据上验过，
+  没验的是**这一条真实信封真的从 online 的 HTTP 载荷走到离线 `_process_envelope`**
+  （现存信封 `error_type` 全为 `None`，无链路命中新分支）。要补齐需新造一条外部驱动的
+  `llm_connection` 错误。
+
+#### 55.11 验收记录（2026-09-21，拆两半）
+
+走完整造数需把 cc 的 `DEEPSEEK_BASE_URL` 指向黑洞并 **recreate**（`.env` 走 `env_file`，
+`restart` 不重读），期间 cc 的真实业务流会失败（上一批实测：造错期 668 FAILED / 回滚后 669
+SUCCESS）。而批 B 的逻辑 **100% 在 offline**、online 半边只是一行取值 ⇒ 用改配置去证一行，
+代价与收益不对等。改拆两半：
+
+**① online 半边（纯只读，零副作用）**：拿真库的真实簇行跑 `build_envelope`，逐条比对
+`cluster.error_type` 与 `source.error_type` —— 17 条簇**全部一致**（含 `llm_connection` ×10 /
+`llm_timeout` ×7 / 三个非 cc agent）。同批看到：**簇 3883 正是 S1 的那个 case**
+（`et=llm_connection` + `file_path=/app/uploads/cc_gen_good.pdf`，平台没有），
+而 3870-3875 指向平台**有**的 `b1_missing_date.pdf`。
+
+**② offline 半边（只读打真库，零写库）**：直接调 `_self_check`（它只 `_resolve_sample_file`
+读、不写），五个分支全对：
+
+| 输入 | verdict | 落库 `file_path` | `_substituted_from` |
+|---|---|---|---|
+| `llm_connection` + 平台无此文件 | `None`（放行） | → 平台样例 | 原路径 ✓ |
+| `llm_timeout` + 平台无此文件 | `None`（放行） | → 平台样例 | 原路径 ✓ |
+| `llm_other` + 平台无此文件 | `missing_sample_file` | — | — |
+| **旧信封（无该字段）** + 平台无 | `missing_sample_file` | — | — |
+| `llm_connection` + 平台**有**此文件 | `None` | **原路径不变** | **None**（不替换）✓ |
+
+**③ 「换成样例后确实落库」那一次赋值**：`_activate` 此前**从未被真跑过**（单测全打桩），
+属「mock 掉哪层就验不到那层之后」。已补一条真跑 `_activate` 的单测（只 patch `_inbox_put`），
+并同时钉住留档不被污染：`backflow_envelope` 必须保持原文（⑤环 `trigger_signal_id` 的唯一
+取值来源）。A/B：改回重读信封 ⇒ 恰好该条红、其余 45 条绿。
+
+**仍未验的**：两半之间的缝（见上）；以及 §55.9 「必须可见」那条能力缺口。
