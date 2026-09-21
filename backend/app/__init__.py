@@ -1,5 +1,5 @@
 """agent-evaluation-online backend（error-only v1）。
 
-包目录规划（solution_detail §1.2，可在首 commit 内调整）：
-api / consumer / store / analyzer / converter / worker / models / core。
+包目录（solution_detail §1.2 规划 + 实装增补 backflow）：
+api / consumer / store / analyzer / converter / backflow / worker / models / core。
 """
