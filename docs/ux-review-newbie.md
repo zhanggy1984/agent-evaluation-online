@@ -4010,13 +4010,59 @@ SUCCESS）。而批 B 的逻辑 **100% 在 offline**、online 半边只是一行
   （会真跑 cc agent）。**按验证面切批，不要合成一批做**。
 - **online 侧建 link 的入口**在 `converter/envelope.py:112`（**没有** `assemble_job.py` 这个文件）。
 
-**⚠️ 一条与本功能无关、但由本批操作暴露的环境风险（2026-09-21）**：跑
-`docker compose up -d --force-recreate frontend` 时，compose **顺带重建了 `obs-backend`**，
-新容器起来后 MySQL 报 `Access denied for user 'obs_backend'`、进入重启循环。取证结论：
-授权本身是 `obs_backend@%`（**host 不是成因**），`DB_USER/DB_HOST/DB_NAME/DB_PORT` 两容器
-全同、**只有 `DB_PASSWORD` 不同** —— 即 **`.env` 里的口令与库里的活口令不一致**
-（`obs-worker` 仍未重启、用的是活口令故连得上）。恢复方式 = 从 `obs-worker` 取现行口令传入
-compose 重建 backend。**根因未修**：`.env` 里那个值是旧的，谁再跑一次 `up` 会再挂一次。
+**⚠️ 一条与本功能无关、但由本批操作暴露的事件（2026-09-21，同日两轮取证）**
+
+**观测**：跑 `docker compose up -d --force-recreate frontend` 时，compose **顺带重建了
+`obs-backend`**，新容器起来后 MySQL 报 `Access denied for user 'obs_backend'`、进入重启循环。
+（host 不是成因 —— 授权是 `obs_backend@%`。）当时用「从 `obs-worker` 取现行口令传入
+compose」的方式恢复。
+
+🔴 **第一轮归因（错的，留作反面教材）**：我写成「`.env` 里的口令与库里的活口令不一致……
+谁再跑一次 `up` 会再挂一次」。**当天一条命令就证伪**：
+
+| 来源 | `DB_PASSWORD` sha256 前缀 |
+|---|---|
+| 根 `.env` | `355715439bee` |
+| `obs-backend` 现行 | `355715439bee` |
+| `obs-worker` 现行 | `355715439bee` |
+
+三者**全同**，且 `.env` 的 mtime = `2026-09-18 14:19:55`（早于出事**三天**，本批没碰过它）。
+**我写的不是观测，是一条没测过的归因**，还派生出「下次会再挂」这种关于未来的主张 ——
+这正是 `no-evidence-still-explained` 的形状：**解释越像样越容易被采信**，写进文档后我
+自己都当既成事实往下接。
+
+🔴 **第二轮：真因早已写在我自己的台账里，我没查就现编了一个**。台账有现成一行：
+
+> ④ **`backend/.env` CWD 陷阱**：docker compose 按运行 CWD 加载 `.env`，嵌套
+> `backend/.env`（stale DB_PASSWORD）覆盖仓根 `.env`（正确）→ obs_backend Access denied
+
+实测**坐实了前半**：
+
+| 文件 | `DB_PASSWORD` sha256 前缀 | 是活口令？ |
+|---|---|---|
+| 根 `.env` | `355715439bee` | ✅ |
+| **`backend/.env`** | **`136f0702a090`** | ❌ **陈旧** |
+| `frontend/.env` | 不存在 | — |
+
+⚠️ **但后半在当前版本下不复现**（同日实测，零风险）：`docker compose config` —— 只插值、
+不碰容器 —— 在 **cwd=仓根** 与 **cwd=`backend/`（`-f ../docker-compose.yml`）** 两种情形下
+**都**解析出 `355715439bee`（活口令）⇒ **现行 compose 按项目目录取 `.env`，不按 CWD**。
+功能侧同向：从仓根 `docker compose up -d --force-recreate backend` → 容器 **healthy**，
+全量日志里 `Access denied` / `1045` **命中 0 行**，`alembic upgrade` 正常跑完（它本身就要连库）。
+
+**⚠️ 所以今晚那次失败的成因**仍**未查明** —— 候选（当时 shell 带遮蔽值 / 更老的 compose
+行为 / 别的）**一个都没复现**。按纪律**只留观测、不立待办、也不再编第四个解释**。
+
+**已处置（2026-09-21）：`backend/.env` 已删**（删前备份到 `%TEMP%\backend.env.bak-*` ——
+它是 gitignored 的不可恢复文件，故先备份）。依据是删之前补的两条实测：
+
+1. 它的 **14 个键全部**出现在 compose 的 `environment:` 块里，而 pydantic-settings 的优先级
+   是**真实环境变量 > `.env`** ⇒ 该文件**对容器完全惰性**；
+2. `docker compose config` 在 cwd=仓根 与 cwd=`backend/` 两种情形下**都**解析出活口令。
+
+删后三项验证：`backend/` CWD 下 pytest **500 passed**（与基线持平）、`docker compose config`
+仍解析出活口令、`obs-backend` 持续 **healthy**。它原有的唯一影响面 =「宿主侧且 cwd=`backend/`
+的运行」，现已消失。
 
 #### 55.14 补验切批（2026-09-21，**下一批从这里开始**）
 
@@ -4045,5 +4091,10 @@ compose 重建 backend。**根因未修**：`.env` 里那个值是旧的，谁�
 `assemble_job` 周期扫描里被触发（每 60s），则探针行要在两次周期之间活着 —— 自销脚本按
 **最长等待（含重试）** 设 TTL，不要用固定 sleep。
 
-**⚠️ 进「缝」批之前先决定 `.env` 口令那条**：若打算再跑任何 `docker compose up`，
-**先把 `.env` 的 `DB_PASSWORD` 与库里的活口令对齐**，否则会重现 `obs-backend` 重启循环。
+**关于容器**：动 `docker compose up` 前**不需要**前置动作 —— §55.13 末段那条「口令不一致」
+的第一轮归因已被证伪，现行 compose 按**项目目录**取 `.env`（已用 `docker compose config`
+在 cwd=仓根 与 cwd=`backend/` 两种情形下实测，取到的都是活口令）。两条**仍成立**的观测：
+① `--force-recreate frontend` 会**顺带重建 `obs-backend`**（本项目既有形态，不是缺陷）；
+② ~~`backend/.env` 里躺着一个陈旧的 `DB_PASSWORD`~~ → **2026-09-21 已删**（先备份后删）；
+删前已证它对容器**完全惰性**（14 键全被 compose `environment:` 遮蔽），删后三项验证全绿。
+**动 compose 所需的全部知识到此为止，无需再查这条。**
