@@ -513,6 +513,49 @@ def test_detail_claim_response_carries_reentry_observe_and_open_batches():
     assert d["first_trace_id"] == "tr-t1"
 
 
+def _detail_with_cases(cases):
+    """把详情页那一个 run 的载荷换成给定 `cases[]`，返回详情响应里的 verify_runs[0]。"""
+    rows, claimed_at = _detail_claim_cluster_rows()
+    rows[VerifyRunRecord] = [
+        ns(id=1, link_id=30, run_id="run-9", bound_version="1.4.0", case_pass=1,
+           run_status="completed", verified_ts=claimed_at + timedelta(hours=1),
+           raw_json={"cases": cases}),
+    ]
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: _DetailSession(
+        users=[_admin_user()], rows=rows)
+    from fastapi.testclient import TestClient
+    with TestClient(app) as c:
+        d = c.get("/api/v1/backflow/clusters/10", headers=_token()).json()
+    return d["verify_runs"][0]
+
+
+def test_detail_flags_substituted_input_on_the_run():
+    """批 54：替换过的回放必须在读面可见。
+
+    不可见时，一次「样例跑通的 pass」与「原场景真修好了」在页面上**逐字同形** ——
+    用户只会看到 pass ⇒ 假绿，且两侧测试全绿、没有任何判据会红。
+    """
+    r = _detail_with_cases([{"case_id": "c-1", "pass_fail": "pass",
+                             "input_substituted": True}])
+    assert r["input_substituted"] is True
+    assert r["case_pass"] == 1
+
+
+def test_detail_ignores_substitution_on_other_cases():
+    """反方向钉住：载荷是**整单**的 `cases[]`，而标记只该落在**本 link 的那个 case** 上。
+
+    若写成「有一条替换过就标」，别的 case 替换过会把本 case 一次正常的 pass
+    误标成「跑的是样例」—— 与它要防的假绿正好反向（这次是冤假，不是漏报）。
+    缺行 / 无该键同样是 False：没证据说替换过，就不许说。
+    """
+    assert _detail_with_cases([{"case_id": "other", "pass_fail": "pass",
+                                "input_substituted": True}])["input_substituted"] is False
+    assert _detail_with_cases([{"case_id": "c-1", "pass_fail": "pass"}])[
+        "input_substituted"] is False
+    assert _detail_with_cases([])["input_substituted"] is False
+
+
 def test_detail_links_carry_requeue_count():
     # R-7 可愈性标注：详情读面 links[] 与 cluster.link 同值带 requeue_count（成批一次取）
     rows, claimed_at = _detail_claim_cluster_rows()

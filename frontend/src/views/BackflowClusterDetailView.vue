@@ -314,6 +314,10 @@ const convRows = computed(() =>
             <span class="muted">v{{ r.bound_version }}</span>
             <span class="muted">状态 {{ r.run_status }}</span>
             <span v-if="r.excluded_hit" class="warn-tag">excluded</span>
+            <!-- 批 54：本次回放用的不是现场输入。文案分两档，因为两者的危害不同——
+                 没 pass 时「用了样例」只是背景信息；**pass 时它才是误导源**（读者会把它
+                 读成「原场景修好了」，而它证明的只是样例跑得通），故只有这一档说破后果。 -->
+            <span v-if="r.input_substituted" class="warn-tag">{{ r.case_pass ? '样例输入·此 pass 不证明原场景已修' : '样例输入' }}</span>
             <span class="muted tl-ts">{{ fmtTs(r.verified_ts) }}</span>
           </div>
         </div>

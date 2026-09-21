@@ -8,7 +8,7 @@
 // 手法：mock 掉 vue-router 与 api 模块，断言「渲染出的按钮集合」与「发出的请求体」，不碰真实网络。
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { BackflowClusterDetail, BackflowLink } from '../api/types'
+import type { BackflowClusterDetail, BackflowLink, BackflowVerifyRun } from '../api/types'
 import BackflowClusterDetailView from './BackflowClusterDetailView.vue'
 
 const push = vi.fn()
@@ -174,10 +174,30 @@ describe('时间线与角色显示', () => {
       verify_runs: [{
         record_id: 1, run_id: 'run-1', bound_version: 'v2', case_pass: 0,
         run_status: 'failed', verified_ts: '2026-09-10T00:00:00', excluded_hit: true,
+        input_substituted: false,
       }],
     }))
     expect(w.text()).toContain('待 v3 回归 run')
     expect(w.text()).toContain('excluded')   // 排除命中标记
+  })
+
+  it('input_substituted：替换过且 pass → 说破「不证明原场景已修」；未替换 → 一个字都不出', async () => {
+    const run = (over: Partial<BackflowVerifyRun>): BackflowVerifyRun => ({
+      record_id: 1, run_id: 'run-1', bound_version: 'v2', case_pass: 1,
+      run_status: 'completed', verified_ts: '2026-09-10T00:00:00',
+      excluded_hit: false, input_substituted: true, ...over,
+    })
+    // ① 替换 + pass：唯一会被读成「原场景已修复」的那一档，必须写破后果。
+    //   只断言「样例输入」不够——那样它退化成和 ② 同一条背景信息，读者仍会误读。
+    const hit = await mountWith(mk({ verify_runs: [run({})] }))
+    expect(hit.text()).toContain('样例输入·此 pass 不证明原场景已修')
+    // ② 替换 + fail：没有误导空间，只报事实、不加长句（长句只该出现在真有害处）
+    const miss = await mountWith(mk({ verify_runs: [run({ case_pass: 0 })] }))
+    expect(miss.text()).toContain('样例输入')
+    expect(miss.text()).not.toContain('不证明原场景已修')
+    // ③ 未替换：反方向钉住。少了这条，标记将来恒显示（或条件写反）没有任何判据会红
+    const none = await mountWith(mk({ verify_runs: [run({ input_substituted: false })] }))
+    expect(none.text()).not.toContain('样例输入')
   })
 
   it('input_truncated → 出 R-10 截断警示（仅 fixed/claim 态）', async () => {

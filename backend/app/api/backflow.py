@@ -77,6 +77,13 @@ class RegressionCaseItem(BaseModel):
     pass_fail: Literal["pass", "fail", "na"]
     error_type: str | None = Field(default=None, max_length=48)
     error_detail: str | None = None
+    # 批 54：本次回放用的**不是现场输入**（离线侧换了平台样例文件，见 offline
+    # `pull_loop` 的 `_substituted_from` / `error_push._cases_of_cluster`）。
+    # 默认 False 承载两种情形——旧 offline（不发该键）与「确实没替换」——两者在本字段上
+    # 语义相同（当时没发生替换），故不需要区分，也不需要 None 三态。
+    # ⚠️ 它与 `pass_fail` 组合出的才是判据：「替换过 **且** pass」= 这条 pass 证明的是
+    # 样例文件跑得通，不是原场景修好了。单看 pass 会被读成后者。
+    input_substituted: bool = False
 
 
 class RegressionResultsRequest(BaseModel):
@@ -520,12 +527,36 @@ async def get_cluster_detail(
         return all(str(c.get("case_id") or "") != str(cid)
                    for c in cases if isinstance(c, dict))
 
+    def _substituted_hit(r: VerifyRunRecord) -> bool:
+        """本 run 里本 link 的 case 是否用了**替身输入**（批 54；读面对账标记）。
+
+        与 `_excluded_hit` 同一取材面（本行 `raw_json.cases[]`），但答的是另一个问题：
+        前者问「跑到没跑到本 case」，本函数问「跑到的那次用的是不是**现场输入**」。
+        两者正交——`excluded_hit=True`（没跑到）与 `input_substituted=True`（跑的是替身）
+        可以同时为假而不矛盾，也可以分别单独为真。
+
+        缺行 / 旧格式无 `cases` 键 / 载荷无该字段 → False。这是「没有证据说它替换过」，
+        不是「确认用的是现场输入」——与 `_excluded_hit` 的「宁缺勿假报」同一取态：
+        未知一律不入标记，绝不让读面把没把握的事说成替换（那会反过来冤枉正常回归）。
+        """
+        cid = link_case.get(r.link_id)
+        if not cid:
+            return False
+        cases = (r.raw_json or {}).get("cases")
+        if not isinstance(cases, list):
+            return False
+        return any(
+            str(c.get("case_id") or "") == str(cid) and bool(c.get("input_substituted"))
+            for c in cases if isinstance(c, dict)
+        )
+
     verify_items = [
         {
             "record_id": r.id, "run_id": r.run_id, "bound_version": r.bound_version,
             "case_pass": r.case_pass,
             "run_status": r.run_status, "verified_ts": _iso(r.verified_ts),
             "excluded_hit": _excluded_hit(r),
+            "input_substituted": _substituted_hit(r),
         }
         for r in runs
     ]

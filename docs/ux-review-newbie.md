@@ -3829,7 +3829,7 @@ version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 
 |---|---|---|
 | 瞬态集 5 个（含 `llm_rate_limit`/`db_error`/`redis_error`） | **1 个**（只有 `llm_connection`，见 55.12） | 原稿列 5 个只凭「看起来像瞬态」；实测那 3 个**发生数为 0**，而 `llm_timeout` **证据够不到本分支**（55.12）。取窄是唯一安全方向：放宽一项即**静默假绿**（换了输入 ⇒ pass ⇒ 判「已修复」，而真实用户的文件仍会让它挂），不可见、无判据会红。 |
 | 驳回「复用 `content_gap`」 | 新增内部细码 `missing_sample_file` → 映射 online 粗码 **`offline_cap_gap`** | 文件在**离线侧**的 uploads 里，online admin 补不了。落 `online_content_gap` 会让 `_needs_reprocess`「任意 ack_status 都重处理」⇒ 每轮重拉、每轮同一原因驳回，**无限循环**。 |
-| case 记 `input_substituted` + 原引用（**必须可见**） | 落库 input 内记 `_substituted_from` + 一条 `logger.warning`；**无 case 级字段、UI 上不可见** | ⚠️ **这是能力缺口，不是措辞问题** —— 见下方「未办」。 |
+| case 记 `input_substituted` + 原引用（**必须可见**） | **已满足**（批 54）：落库 input 内记 `_substituted_from`（离线侧原有）+ 载荷外层发 `input_substituted: true` + 详情页 run 行出徽标。⚠️ 中间曾长期停在「无 case 级字段、UI 上不可见」的能力缺口态，见 55.13。 | 原缺口**不是措辞问题**——替换后的 `pass` 与「原场景真修好了」在 online 侧逐字同形，**没有任何判据会红**。 |
 
 **瞬态集取值的实测依据**（不是推理）：`llm_connection` ← cc 的 **7 条簇全部**是它，
 且全部用**原输入**跑通（S1 前不存在替换通道，故这是纯观测）。
@@ -3869,10 +3869,7 @@ version `0.2.1` 触发）。`pull_loop._activate` 收到信封只建 case + 记 
 
 **未办（本批未做、已知悉）**：
 
-- **替换对用户不可见。**「必须可见」这条原稿要求**尚未满足**：`_substituted_from` 只存在于
-  落库的 case input JSON 里 + 一条 worker 日志。**没有任何页面显示「这条回归用的不是现场输入」**
-  ⇒ 用户看到一次 pass，无从知道它跑的是平台样例。当前 `na → pass` 的量级为 0（尚无真实流量
-  走这条分支），故未修；真出现时这是**优先级最高的一项**。
+- ~~**替换对用户不可见。**~~ **已办结（批 54，2026-09-21）** —— 见 55.13。
 - **两半之间的「缝」未验。** 见下方验收记录 —— 两侧各自都已在真库真数据上验过，
   没验的是**这一条真实信封真的从 online 的 HTTP 载荷走到离线 `_process_envelope`**
   （现存信封 `error_type` 全为 `None`，无链路命中新分支）。要补齐需新造一条外部驱动的
@@ -3907,4 +3904,146 @@ SUCCESS）。而批 B 的逻辑 **100% 在 offline**、online 半边只是一行
 并同时钉住留档不被污染：`backflow_envelope` 必须保持原文（⑤环 `trigger_signal_id` 的唯一
 取值来源）。A/B：改回重读信封 ⇒ 恰好该条红、其余 45 条绿。
 
-**仍未验的**：两半之间的缝（见上）；以及 §55.9 「必须可见」那条能力缺口。
+**仍未验的**：两半之间的缝（见上）。~~§55.9「必须可见」那条能力缺口~~ **批 54 已办结**（见 55.13）。
+
+#### 55.13 「必须可见」办结（2026-09-21，批 54）
+
+
+
+**一、先证残余为真 —— 否则这条缺口只是纸面要求。**
+
+原判「`llm_connection` 与输入内容无关 ⇒ 换样例是有效回归」被两轮取证推翻：
+
+- **一轮**：只成立一半 —— 已观测的 7 条簇确实与文件无关（报文 + 跨 4 天 + 跨 2 文件 + 跨 3
+  agent 四重证据），但证不到**类型级**无关。
+- **二轮（活体探针，真打 DeepSeek）**：把整条链走通 ——
+
+| 送入字符数 | 抛出的异常 | 归类 |
+|---|---|---|
+| 5,000,000 | `openai.BadRequestError`（400） | `llm_other` |
+| **20,000,000** | **`openai.APIConnectionError`**（内层 `RemoteProtocolError`，`str(e)` = `'Connection error.'`） | **`llm_connection`** |
+
+链路：`文件 ≤50MB` → 抽取文本（`extractor.py:490` 有 20000/3500 界）→ `semantic_evaluator`
+的 `full_seg.content = "\n".join(所有段)`（**无界**）→ `llm.invoke` 超大 body →
+`RemoteProtocolError` → `APIConnectionError` → `llm_connection`。而 `aggregation:"all"` 是活的
+（`backend/rules/manual/` 4 条规则）⇒ `full_rules` 在生产非空。
+
+> 🔴 **我原本用来论证「与内容无关」的正是 `'Connection error.'` 这串报文 —— 它恰恰是超大 body
+> 路径的产出。论据是反的。**
+
+**两个命题必须分开**（本条的可迁移结论）：
+
+| 命题 | 判定 |
+|---|---|
+| 已观测的这 7 条簇与文件无关 | ✅ 成立 |
+| `llm_connection` 这个**类型**与文件无关 | ❌ 不成立（无界路径存在且活着） |
+
+原「未做」的理由是「当前量级为 0，故未修」。二轮取证后该理由不再成立：**量级 0 是因为
+现存簇全是小样例文件**，不代表路径不通。
+
+**二、落地（两仓一批）**
+
+- **offline** `error_push._cases_of_cluster`：**仅在真替换时落键** `input_substituted: true`
+  （不落 `false` —— 与同函数 `error_type`/`error_detail` 同写法，旧载荷形状不变）。
+- **online** `RegressionCaseItem.input_substituted: bool = False`（默认值承载「旧 offline 不发」
+  与「确实没替换」两种情形，二者语义相同，不需要三态）+ 详情端点 `_substituted_hit()`
+  （**按 `case_id` 做归属校验**，否则旁证 case 的标记会挂到本条 link 上）。
+- **前端** 详情页 run 行徽标，文案**分两档**：没 pass 时只是背景信息；**pass 时才说破后果**
+  （「样例输入·此 pass 不证明原场景已修」）—— 因为误导源只在那一档。
+
+**三、判据形状**：单看 `input_substituted` 无意义，**`input_substituted ∧ pass_fail == "pass"`
+才是判据**。代码注释与 UI 文案都按这个组合写。
+
+**四、验证**
+
+- 后端 online **500 passed**（基线 498）／offline **1025 passed, 100 skipped**（基线 1022）／
+  前端 **261 passed**（19 files）+ `npm run build` 通过（含 `vue-tsc --noEmit`）。
+- **改名后复跑（2026-09-21）**：本批由「批 43」重定为「批 54」（13 站点），改后三套**逐字持平**
+  —— online 500 ／ offline 1025 passed, 100 skipped ／ 前端 261。改名只动注释与文档，
+  **不构成新证据**，但必须复跑：`sed` 落到 docstring 里同样能改坏语法。
+- **A/B 双向**：删掉 `case_id` 归属校验 ⇒ `test_detail_ignores_substitution_on_other_cases` 红；
+  恒 `False` ⇒ `test_detail_flags_substituted_input_on_the_run` 红。两条都有判别力。
+- **真机（online 半边）**：POST 真端点 → 查库 `raw_json` 键在且值为 `true`；旧 offline 形状
+  （不带键）→ 落 `false` **而非丢键**；真实簇 3883 的历史行（`raw_json` 无该键）→ 详情照常
+  返回 `False`、不炸 ⇒ 向后兼容成立。探针用不存在的 `cluster_id` 落行（`judge_link` 找不到
+  link ⇒ 零真实状态变更），取完证即删、复核残留 0。
+- **真机（前端徽标，2026-09-21）**：自建一个探针簇（复制 3883 结构、换 `generation` 与
+  `payload_id`，收工连根删）后向它推**两条** run —— 一条带 `input_substituted`、一条不带，
+  两条都是 `pass`。同一次详情页读数（`getClientRects` 滤隐藏）：
+
+  | 行 | run | 可见 `.warn-tag` |
+  |---|---|---|
+  | 1 | `probe543rev-*`（**未发标记**） | **0** |
+  | 2 | `probe543ui-*`（发了标记） | **1** = 「样例输入·此 pass 不证明原场景已修」 |
+
+  **两行同为 pass、差别只有标记**，故这一读数是**正反双向**的：无标记那行一个字都不出，
+  排除了「该元素被无条件渲染」。探针簇/link/run 全部删净、残留 0；复制源 3883 与 link 2257
+  **未动**（复核 `(3883,'open',1,2257,'4085','pending')`）。
+- 🔴 **真机首轮两条读数全红，且是假红**：容器跑的是**旧代码**（uvicorn 无 `--reload`，
+  `restart` 才生效）⇒ 旧 `RegressionCaseItem` 无该字段、pydantic 默认忽略未知键 ⇒
+  「落库无键」与「详情缺键」**是同一个成因**。**先重启再读**，勿据此判「实现没写」。
+
+**仍未验（显式，勿被上文的绿盖过）**：**offline 半边只到单测级** —— 验的是
+`_cases_of_cluster` 的**发射分支**（给定带 `_substituted_from` 的 case 会落键），
+**没有端到端跑过一次真实替换并把该字段推到 online**。所以「两仓合起来这条链路真的通」
+**尚未取得证据**，它与上文「两半之间的缝未验」是同一处缺口的两面。
+
+**补这一环的前置侦察（2026-09-21 现场取证，供接手时免于重查）**：
+
+- **入口条件（`pull_loop._self_check:255-316`）**：一条信封要走到「替换」须**八项全过** ——
+  `validate_envelope` → agent 已登记 → interface 已登记 → 词表净化后非空 →
+  **形状闸**（`check_input_wiring`，须确认 `file_path` 真被模板引用）→ **文件在闸**失败 →
+  `error_type ∈ {"llm_connection"}` → `_resolve_sample_file` 取到实存样例。
+  ⚠️ 顺序不可调：形状闸在文件闸**之前**，`file_path` 不被模板引用时它只是无关字段。
+- **两侧前置已核实**（2026-09-21）：离线 `uploads/` 有 `cc_b1_missing_date.pdf` 等实存样例
+  （第 8 项取得到）；`cc_gen_good.pdf` **不在**（第 6 项按预期失败，正是 S1 那个 case 的形状）。
+- **离线运行形态**：容器 `ai-eval-backend`（`offline/backend`→`/app`，`uploads` 单独挂载），
+  单进程 uvicorn `workers=1`，所有后台循环在 `app/main.py:151-166` 起；
+  `pull_loop` 间隔 **30s**、`reconcile_loop` **60s**，两者都受 `settings.backflow_enabled` 门控
+  —— **现场实测该值为 `True`**（离线侧跑得起来）。
+- 🔴 **「建 case」不会自动变成 run**（这一条改变了补验的切法）：真正建 `error_regression` run 的
+  只有 `orchestrator.maybe_auto_schedule`，两条**自动**触发线 —— ① 一个 `manual`/`held_out`
+  信号 run 收尾后的事件（`_finish` → `fire_auto_schedule`）；② `reconcile_loop` 的版本差集对账。
+  **无人工端点**（`api/runs.py:389` 对 error run 的 rerun 直接 400）。另有两条约束：
+  `ERROR_CASE_CAP=200` 截断、`ERROR_ACTIVE_QUOTA=1`（同 agent 同时只 1 条活跃 error run）。
+  ⇒ **「缝」与「推回」是两个不同的验证面**：前者只依赖 `pull_loop`，后者还要一次真 run 发车
+  （会真跑 cc agent）。**按验证面切批，不要合成一批做**。
+- **online 侧建 link 的入口**在 `converter/envelope.py:112`（**没有** `assemble_job.py` 这个文件）。
+
+**⚠️ 一条与本功能无关、但由本批操作暴露的环境风险（2026-09-21）**：跑
+`docker compose up -d --force-recreate frontend` 时，compose **顺带重建了 `obs-backend`**，
+新容器起来后 MySQL 报 `Access denied for user 'obs_backend'`、进入重启循环。取证结论：
+授权本身是 `obs_backend@%`（**host 不是成因**），`DB_USER/DB_HOST/DB_NAME/DB_PORT` 两容器
+全同、**只有 `DB_PASSWORD` 不同** —— 即 **`.env` 里的口令与库里的活口令不一致**
+（`obs-worker` 仍未重启、用的是活口令故连得上）。恢复方式 = 从 `obs-worker` 取现行口令传入
+compose 重建 backend。**根因未修**：`.env` 里那个值是旧的，谁再跑一次 `up` 会再挂一次。
+
+#### 55.14 补验切批（2026-09-21，**下一批从这里开始**）
+
+> 上一节末的侦察把这条缺口劈成了两段，**切分线是验证面**（依赖不同、能否取得真实输入不同），
+> 不是一个批拆成两步做。**不要合成一批** —— 44-B 会真跑 cc agent，绿了也不能替 44-A 作证，
+> 反之亦然。
+
+**批名**：本批 = 批 54（落笔时曾误用「批 43」，与已提交的 `9b2e4f3` 撞号，已改）。
+两半不另起编号，就用下表的叫法。
+
+| 批 | 验什么 | 依赖面 | 判据 |
+|---|---|---|---|
+| **「缝」批** | 真信封走 online HTTP → 离线 `_process_envelope` → 替换落库 | 只需 online 建 link + 离线 `pull_loop`（`backflow_enabled=True` 已实测） | 库里该 case 的 `input.file_path` = 样例、`input._substituted_from` = 原引用 |
+| **「推回」批** | 真 run 跑完 → `error_push` 发 `input_substituted` → online 出徽标 | 还要一条 `maybe_auto_schedule` 自动发车 | online `raw_json` 键为 `true` + 详情页该 run 行出 `.warn-tag` |
+
+**「缝」批必须先做的两件事**（顺序不能反）：
+
+1. **自销脚本先落地再建行** —— 上一批踩过：探针行建完才发现清理谓词写错，
+   结果是「按 id 删删不掉、且不报错」。所以清理脚本要在**建行之前**写好并空跑一遍。
+2. **正反双向**：除了一条会**被替换**的信封（`error_type=llm_connection` + 引用不存在的文件），
+   还要造一条同形状但 `error_type` 为**非瞬态**的，它必须落在 `missing_sample_file` 分支
+   **被驳回**。只读「替换发生了」不排除「任何类型都会被替换」—— 那是负向断言缺正向钉住。
+
+**「缝」批已知的卡点**：建 case 不会自动变 run，而它只依赖 `pull_loop` ⇒ 链路里的
+「online 出 link 信封」这一步走 `converter/envelope.py:112`。若该入口只能在
+`assemble_job` 周期扫描里被触发（每 60s），则探针行要在两次周期之间活着 —— 自销脚本按
+**最长等待（含重试）** 设 TTL，不要用固定 sleep。
+
+**⚠️ 进「缝」批之前先决定 `.env` 口令那条**：若打算再跑任何 `docker compose up`，
+**先把 `.env` 的 `DB_PASSWORD` 与库里的活口令对齐**，否则会重现 `obs-backend` 重启循环。

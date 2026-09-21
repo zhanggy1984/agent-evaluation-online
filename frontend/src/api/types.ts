@@ -284,6 +284,9 @@ export interface BackflowVerifyRun {
   run_status: string | null
   verified_ts: string | null
   excluded_hit: boolean
+  /** 本次回放用的是**平台样例文件**而非现场输入（批 54）。与 case_pass 组合才有判据：
+   *  替换过 **且** pass ⇒ 这条 pass 证明的是样例跑得通，不是原场景修好了。 */
+  input_substituted: boolean
 }
 
 export interface BackflowConversion {
