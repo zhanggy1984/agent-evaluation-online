@@ -17,7 +17,9 @@
 
 ⚠️ **2026-09-21 批 55 又踩一次，且这次是「假绿」而不是「白跑」**：给 `converter/envelope.py` 的
 `build_envelope` 加了 `"error_type": cluster.error_type`（批 B），**没重启 `obs-worker`** ⇒ 此后
-**每个信封都不带该字段**，离线侧据此的分支**恒走错的那条**，整条替换链在部署上**从未生效过**。
+**每个信封都不带该字段**，离线侧据此的分支**恒走错的那条** ⇒ 在「该提交落地 → 重启 worker」
+这段窗口内，链路**不可能生效**（**不是**「从未生效过」：该提交之前信封里压根没这个字段，
+0 行区分不了「坏了」与「没被用到」—— 详见 `ux-review-newbie.md` §55.15 的订正表）。
 判据：`payload_json.source` 只有 `{agent, trace_id, interface, cluster_id, generation}`；
 `obs-worker` 启动 `2026-09-20T11:00:07Z` vs `envelope.py` mtime `2026-09-21T00:01`。
 **为什么表没拦住**：改动不在 `worker/*.py` 里，而在 worker **import 的**模块里 ——
