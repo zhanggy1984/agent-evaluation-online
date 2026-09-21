@@ -62,6 +62,12 @@ def build_envelope(
             "trace_id": cluster.first_trace_id,
             "cluster_id": cluster.id,
             "generation": cluster.generation,
+            # S1（批 B）：离线侧据此**分流回放输入**——文件型 agent 的现场文件若不在
+            # 平台 uploads 内，**瞬态类错误**（成因与输入内容无关，见 offline
+            # `pull_loop.TRANSIENT_ERROR_TYPES`）允许换成平台样例文件继续回归；
+            # 内容相关类则干净驳回。不定此字段 ⇒ 离线一律按「不可替换」处理（向后兼容：
+            # 离线 `validate_envelope` 是必填项白名单，不拒未知字段）。
+            "error_type": cluster.error_type,
         },
         "versions": {
             "trigger_version": cluster.trigger_version,

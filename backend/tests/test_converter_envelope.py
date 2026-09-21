@@ -53,6 +53,38 @@ def _session(*, words=None, version=7, has_agent=True):
     return FakeAsyncSession(registry=rows)
 
 
+class TestSourceErrorType:
+    """S1（批 B）：`source.error_type` 是**跨仓契约字段**，离线按它分流回放输入。
+
+    离线的判据是 `error_type in TRANSIENT_ERROR_TYPES` 的白名单。两种链路失效各自对应一个
+    真实失败模式，故都钉住：
+
+    - **字段没发** ⇒ 离线取到 `None` ⇒ 一律按「不可替换」驳回。这本身是安全的
+      （fail-closed），但会让 S1 整条静默失效：文件缺失的瞬态簇照旧被驳，而
+      **没有任何判据会红**（本仓测试全绿、离线测试全绿）。
+    - **值抄错簇** ⇒ 瞬态簇被当成内容相关簇驳回（或反之，更糟：内容相关簇被换样例掩盖）。
+
+    跨仓字段无法在本仓测到离线侧的读法，故此处只钉**值的来源与存在性**。
+    """
+
+    def test_error_type_is_taken_from_cluster(self):
+        env = build_envelope(cluster=_cluster(error_type="llm_connection"),
+                             words=["抱歉"], wordlist_version=7)
+        assert env["source"]["error_type"] == "llm_connection"
+
+    def test_key_always_present_even_when_cluster_has_none(self):
+        """簇的 `error_type` 为空时**键仍须在**（值为 null）。
+
+        键缺与值为 null 对离线的判定**等价**（都取不到 ⇒ 驳回），故这不是正确性问题；
+        钉它是为了区分「assemble 忘了填」与「簇本来就没有」—— 前者是 bug、后者是数据，
+        两者在库内读数上完全同形，只有本断言能分开。
+        """
+        env = build_envelope(cluster=_cluster(error_type=None),
+                             words=["抱歉"], wordlist_version=7)
+        assert "error_type" in env["source"]
+        assert env["source"]["error_type"] is None
+
+
 # ---- parse_snapshot_input：evidence.input 嵌入规则 ---------------------------------
 
 class TestParseSnapshotInput:
@@ -90,6 +122,7 @@ class TestBuildEnvelope:
         assert env["source"] == {
             "agent": "good-question", "interface": "POST /api/chat/{id}",
             "trace_id": "tr-9f2c1a", "cluster_id": 10, "generation": 1,
+            "error_type": "llm_timeout",   # S1：离线据它分流回放输入
         }
         assert env["versions"] == {"trigger_version": "2026.08.31-r47", "fix_version": None}
         assert env["evidence"]["input"] == {"question": "帮我查一下XX政策"}

@@ -168,7 +168,9 @@ async def a1_assemble(engine) -> None:
               and env["payload_id"] == lk.payload_id
               and env["source"] == {"agent": agent, "interface": IFACE,
                                     "trace_id": f"asm-{agent}-1",
-                                    "cluster_id": cid, "generation": 1}
+                                    "cluster_id": cid, "generation": 1,
+                                    # S1：离线据它分流回放输入（seed 行见本文件 :103）
+                                    "error_type": "llm_timeout"}
               and env["versions"] == {"trigger_version": "2026.09.09-r1", "fix_version": None}
               and env["evidence"]["input"] == {"question": "帮我查一下XX政策"}
               and env["evidence"]["output"] is None
